@@ -93,7 +93,7 @@ export default async function AgentHome() {
             >
               <div className="flex items-center gap-3">
                 <div className={cn("flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-[11px] text-white", avatarGradClass[a.glyph])}>
-                  <Icon name={a.icon as IconName} size={18} strokeWidth={1.8} />
+                  <Icon name={a.iconKey as IconName} size={18} strokeWidth={1.8} />
                 </div>
                 <div>
                   <div className="text-[16px] font-bold tracking-tight">{a.name}</div>

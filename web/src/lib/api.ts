@@ -94,7 +94,7 @@ export async function createProgram(input: { name: string; track?: string; price
 
 export async function updateProgram(
   id: string,
-  patch: { name?: string; track?: string | null; enabled?: boolean },
+  patch: { name?: string; track?: string | null; price?: string | null; enabled?: boolean },
 ): Promise<Program> {
   const r = await fetch(`${API_URL}/programs/${id}`, {
     method: "PATCH",
@@ -115,6 +115,12 @@ export async function updateLead(idOrNumber: string, patch: Partial<{
   stage: string; score: number; heat: string;
   nbaLabel: string; nbaIcon: string;
   programId: string | null; advisorId: string | null;
+  description: string | null;
+  feePaid: string | null;
+  feeDue: string | null;
+  dueDate: string | null;
+  registeredDate: string | null;
+  paymentProofUrl: string | null;
 }>): Promise<void> {
   const r = await fetch(`${API_URL}/leads/${encodeURIComponent(idOrNumber)}`, {
     method: "PATCH",

@@ -113,16 +113,22 @@ export interface Batch {
   id: string;
   name: string;
   code: string | null;
+  slot: BatchSlot | null;
+  timeLabel: string | null;
   schedule: string | null;
   startDate: string | null;
   endDate: string | null;
   seats: number | null;
-  price: string | null;
   status: BatchStatus;
   enabled: boolean;
-  programId: string;
-  programName: string;
-  programEnabled: boolean;
+  // Course is the canonical parent of a batch; program is denormalized for labels.
+  courseId: string | null;
+  courseName: string | null;
+  courseCode: string | null;
+  courseEnabled: boolean | null;
+  programId: string | null;
+  programName: string | null;
+  programEnabled: boolean | null;
   enrolmentCount: number;
   activeCount: number;
 }
@@ -212,14 +218,15 @@ export interface LearnerRecord {
 }
 
 export interface BatchInput {
-  programId: string;
+  courseId: string;
   name: string;
   code?: string | null;
+  slot?: BatchSlot | null;
+  timeLabel?: string | null;
   schedule?: string | null;
   startDate?: string | null;
   endDate?: string | null;
   seats?: number | null;
-  price?: string | null;
   status?: BatchStatus;
   enabled?: boolean;
 }
