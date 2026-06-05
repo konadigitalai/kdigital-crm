@@ -1,0 +1,38 @@
+# Node
+node_modules/
+*.log
+*.tsbuildinfo
+npm-debug.log*
+
+# Next.js
+.next/
+out/
+.vercel/
+
+# Build artifacts
+dist/
+build/
+
+# Env files (NEVER commit)
+.env
+.env.local
+.env.*.local
+api/.env
+web/.env.local
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Editor
+.vscode/
+.idea/
+*.swp
+
+# Local logs / temp
+dev.log
+*.log
+
+# Drizzle local snapshots are committed; only ignore studio cache
+.drizzle/

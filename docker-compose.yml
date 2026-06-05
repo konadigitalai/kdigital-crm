@@ -1,0 +1,25 @@
+# Local Postgres parity: same major version + extensions as Azure Flexible Server.
+# Use this when you want to develop offline. Switch DATABASE_URL in api/.env to:
+#   postgres://decrm:decrm@localhost:5433/decrm
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: decrm-postgres
+    restart: unless-stopped
+    ports:
+      - "5433:5432"
+    environment:
+      POSTGRES_USER: decrm
+      POSTGRES_PASSWORD: decrm
+      POSTGRES_DB: decrm
+    volumes:
+      - decrm-pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U decrm -d decrm"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+volumes:
+  decrm-pg:

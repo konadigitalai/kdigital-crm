@@ -1,0 +1,163 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@import url("https://fonts.googleapis.com/css2?family=Inter+Tight:wght@400;500;600;700&family=Instrument+Serif:ital@0;1&family=JetBrains+Mono:wght@500;600;700&display=swap");
+
+:root {
+  --ink: #0e0a14;
+  --ink2: #3b2e4a;
+  --mute: #6b5e74;
+  --hint: #a89dac;
+  --paper: #ffffff;
+  --canvas: #f4f0ea;
+  --warm: #fbf7f1;
+  --warm2: #f0eae1;
+  --rule: #e6dfd5;
+  --rule2: #dcd3c7;
+  --blue: #1f3fcf;
+  --violet: #6b1fb8;
+  --magenta: #c7197a;
+  --ochre: #c69a3a;
+  --ok: #2e9e6a;
+  --warn: #d9534f;
+  --amber: #e08a1e;
+  --grad: linear-gradient(120deg, #1f3fcf 0%, #6b1fb8 52%, #c7197a 100%);
+}
+
+html,
+body {
+  background: var(--canvas);
+  color: var(--ink);
+  font-family: "Inter Tight", system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  height: 100vh;
+  overflow: hidden;
+}
+
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background-image: radial-gradient(rgba(14, 10, 20, 0.04) 1px, transparent 1px);
+  background-size: 22px 22px;
+  mask-image: radial-gradient(ellipse at 60% 40%, #000 40%, transparent 85%);
+  -webkit-mask-image: radial-gradient(ellipse at 60% 40%, #000 40%, transparent 85%);
+}
+
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--rule2); border-radius: 999px; }
+
+@layer components {
+  .grad-text {
+    background: var(--grad);
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
+  .mono-cap {
+    font-family: "JetBrains Mono", ui-monospace, monospace;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+  }
+  .btn {
+    @apply inline-flex items-center gap-2 rounded-[10px] border border-rule2 bg-paper px-4 py-[10px] text-[13px] font-semibold text-ink transition hover:bg-warm;
+  }
+  .btn-primary {
+    @apply inline-flex items-center gap-2 rounded-[10px] border-transparent bg-ink px-4 py-[10px] text-[13px] font-semibold text-white transition hover:bg-[#241a2e];
+  }
+  .btn-grad {
+    @apply inline-flex items-center gap-2 rounded-[10px] border-0 bg-grad px-4 py-[10px] text-[13px] font-semibold text-white shadow-glow;
+  }
+  .acard {
+    @apply rounded-[14px] border border-rule bg-paper p-[18px];
+  }
+}
+
+/* Conic score rings — Tailwind can't express the dynamic conic-gradient cleanly */
+.ring-hot { background: conic-gradient(#C7197A var(--p, 86%), #F0EAE1 0); }
+.ring-warm { background: conic-gradient(#E08A1E var(--p, 60%), #F0EAE1 0); }
+.ring-cold { background: conic-gradient(#6B5E74 var(--p, 34%), #F0EAE1 0); }
+
+/* Timeline rail */
+.tl-rail {
+  position: relative;
+  padding-left: 30px;
+}
+.tl-rail::before {
+  content: "";
+  position: absolute;
+  left: 12px;
+  top: 8px;
+  bottom: 8px;
+  width: 1.5px;
+  background: linear-gradient(180deg, var(--blue), var(--violet), var(--magenta), var(--rule));
+}
+.tl-node {
+  position: relative;
+  padding: 0 0 22px 6px;
+}
+.tl-node::before {
+  content: "";
+  position: absolute;
+  left: -24px;
+  top: 4px;
+  width: 13px;
+  height: 13px;
+  border-radius: 999px;
+  background: var(--canvas);
+  border: 2px solid var(--violet);
+}
+.tl-node.ai::before {
+  background: var(--violet);
+  box-shadow: 0 0 10px rgba(107, 31, 184, 0.5);
+}
+.tl-node.human::before { border-color: var(--blue); }
+
+/* NBA dark card aurora */
+.nba-aurora::before {
+  content: "";
+  position: absolute;
+  top: -80px;
+  right: -60px;
+  width: 300px;
+  height: 300px;
+  background: var(--grad);
+  opacity: 0.35;
+  filter: blur(80px);
+  pointer-events: none;
+}
+
+@keyframes pulse-soft {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.45; }
+}
+.live-dot { animation: pulse-soft 2s infinite; }
+
+/* Tooltip on rail buttons */
+.rail-tip {
+  position: absolute;
+  left: 54px;
+  top: 50%;
+  transform: translateY(-50%) scale(0.92);
+  background: var(--ink);
+  color: #fff;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  padding: 6px 11px;
+  border-radius: 8px;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+  opacity: 0;
+  pointer-events: none;
+  transition: 0.14s;
+  z-index: 40;
+  box-shadow: 0 8px 22px rgba(0, 0, 0, 0.4);
+}
+.rail-btn:hover .rail-tip {
+  opacity: 1;
+  transform: translateY(-50%) scale(1);
+}
