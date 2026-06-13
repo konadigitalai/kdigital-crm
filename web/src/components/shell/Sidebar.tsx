@@ -1,26 +1,43 @@
 "use client";
 
 import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import { Icon, type IconName } from "@/components/ui/Icon";
 import { cn } from "@/lib/cn";
+import { logout } from "@/lib/api";
 import type { CurrentUser, RecentRun, SummaryResponse } from "@/lib/types";
 
-function buildNavItems(summary: SummaryResponse): {
-  href: string; icon: IconName; label: string; badge?: string; pillBeta?: boolean;
-}[] {
+interface NavItem {
+  href: string;
+  icon: IconName;
+  label: string;
+  badge?: string;
+  pillBeta?: boolean;
+  requires?: string;
+}
+
+function buildNavItems(summary: SummaryResponse): NavItem[] {
+  const ticketBadge = summary.tickets?.open ? String(summary.tickets.open) : undefined;
   return [
     { href: "/", icon: "home", label: "Agent Home" },
     { href: "/leads", icon: "users", label: "Leads", badge: String(summary.overall.total) },
     { href: "/pipeline", icon: "chart", label: "Pipeline" },
+    { href: "/tickets", icon: "inbox", label: "Tickets", badge: ticketBadge },
     { href: "/learners", icon: "stamp", label: "Learners" },
+    { href: "/timesheet", icon: "clock", label: "Timesheet" },
+    { href: "/calendar",  icon: "spark", label: "Calendar" },
     { href: "/scheduled", icon: "clock", label: "Scheduled" },
     { href: "/live-artifacts", icon: "globe", label: "Live artifacts" },
     { href: "/dispatch", icon: "doc", label: "Dispatch", pillBeta: true },
     { href: "/customize", icon: "star", label: "Customize" },
-    { href: "/admin/programs", icon: "doc", label: "Admin · Programs" },
-    { href: "/admin/courses",  icon: "doc", label: "Admin · Courses" },
-    { href: "/admin/cohorts",  icon: "build", label: "Admin · Batches" },
+    { href: "/admin/users",      icon: "users", label: "Admin · Users",      requires: "users.manage" },
+    { href: "/admin/groups",     icon: "users", label: "Admin · Groups",     requires: "groups.manage" },
+    { href: "/admin/programs",   icon: "doc",   label: "Admin · Programs",   requires: "admin.programs.manage" },
+    { href: "/admin/courses",    icon: "doc",   label: "Admin · Courses",    requires: "admin.courses.manage" },
+    { href: "/admin/cohorts",    icon: "build", label: "Admin · Batches",    requires: "admin.batches.manage" },
+    { href: "/admin/clients",    icon: "money", label: "Admin · Clients",    requires: "clients.manage" },
+    { href: "/admin/timesheets", icon: "clock", label: "Admin · Timesheets", requires: "timesheets.read.all" },
+    { href: "/admin/reports/timesheets", icon: "chart", label: "Admin · Reports", requires: "timesheets.read.all" },
   ];
 }
 
@@ -38,10 +55,25 @@ export function Sidebar({
   summary: SummaryResponse;
 }) {
   const pathname = usePathname();
-  const navItems = buildNavItems(summary);
+  const router = useRouter();
+  const perms = new Set(currentUser?.permissions ?? []);
+  const navItems = buildNavItems(summary).filter(
+    (it) => !it.requires || perms.has(it.requires),
+  );
+
+  async function onSignOut() {
+    try {
+      await logout();
+    } catch {
+      /* ignore — even if the request fails, the cookie is gone */
+    }
+    router.replace("/login");
+    router.refresh();
+  }
   return (
-    <aside className="hidden flex-col overflow-hidden border-r border-rule bg-warm p-[16px_14px] lg:flex">
-      <div className="mb-[18px] flex gap-[3px] rounded-[12px] border border-rule bg-warm2 p-1">
+    <aside className="hidden h-screen flex-col overflow-hidden border-r border-rule bg-warm p-[16px_14px] lg:flex">
+      {/* Pinned: tab strip + new task */}
+      <div className="mb-[18px] flex flex-shrink-0 gap-[3px] rounded-[12px] border border-rule bg-warm2 p-1">
         <SideTab icon="chat" label="Chat" />
         <SideTab icon="agents-grid" label="Agents" on />
         <SideTab icon="build" label="Build" />
@@ -49,12 +81,15 @@ export function Sidebar({
 
       <Link
         href="/"
-        className="mb-2 flex w-full items-center gap-3 rounded-[11px] border border-rule bg-warm2 px-[14px] py-[11px] text-sm font-semibold text-ink transition hover:border-rule2 hover:bg-paper"
+        className="mb-2 flex w-full flex-shrink-0 items-center gap-3 rounded-[11px] border border-rule bg-warm2 px-[14px] py-[11px] text-sm font-semibold text-ink transition hover:border-rule2 hover:bg-paper"
       >
         <span className="grid h-[18px] w-[18px] place-items-center rounded-md bg-grad text-sm font-medium leading-none text-white">+</span>
         New agent task
       </Link>
 
+      {/* Scrollable middle: nav + recent runs share one scroll region so the
+          full nav is reachable when there are many entries. */}
+      <div className="-mx-[14px] flex flex-1 flex-col overflow-y-auto px-[14px]">
       <nav className="mb-[18px] flex flex-col gap-px">
         {navItems.map((it) => {
           const active = isActive(pathname, it.href);
@@ -89,10 +124,10 @@ export function Sidebar({
       <div className="mb-2.5 px-[14px] font-mono text-[9.5px] font-semibold uppercase tracking-[.14em] text-hint">
         Recent agent runs
       </div>
-      <div className="flex flex-1 flex-col gap-px overflow-y-auto">
-        {recentRuns.map((r) => (
+      <div className="flex flex-col gap-px">
+        {recentRuns.map((r, i) => (
           <div
-            key={r.label}
+            key={r.id ?? `${r.label}#${i}`}
             className="flex items-center gap-[11px] rounded-[9px] px-[14px] py-2 text-[13px] font-medium leading-tight text-ink2 hover:bg-warm2"
           >
             <span
@@ -107,15 +142,17 @@ export function Sidebar({
           </div>
         ))}
       </div>
+      </div>
 
-      <div className="mt-3 border-t border-rule pt-3.5">
+      {/* Pinned footer: app switcher + signed-in user */}
+      <div className="mt-3 flex-shrink-0 border-t border-rule pt-3.5">
         <div className="mb-3 flex items-center gap-3 rounded-[12px] border border-rule bg-warm2 p-3">
           <div className="grid h-[34px] w-[34px] flex-shrink-0 place-items-center rounded-[9px] bg-grad text-white">
             <Icon name="stamp" size={18} strokeWidth={1.8} />
           </div>
           <div className="flex-1">
             <div className="text-[13px] font-bold tracking-tight">Edify Agent OS</div>
-            <div className="font-mono text-[10px] tracking-[.04em] text-mute">v2.6 · MCP connected</div>
+            {/* <div className="font-mono text-[10px] tracking-[.04em] text-mute">v2.6 · MCP connected</div> */}
           </div>
           <span className="text-mute">→</span>
         </div>
@@ -123,11 +160,18 @@ export function Sidebar({
           <div className="grid h-[30px] w-[30px] place-items-center rounded-full bg-ink text-[12px] font-bold text-white">
             {currentUser?.initials ?? "?"}
           </div>
-          <div className="text-[13.5px] font-semibold">{currentUser?.name ?? "—"}</div>
-          {currentUser && (
-            <span className="text-[13.5px] capitalize text-mute">· {currentUser.role}</span>
-          )}
-          <span className="ml-auto text-[12px] text-mute">⌄</span>
+          <div className="min-w-0 flex-1">
+            <div className="truncate text-[13.5px] font-semibold">{currentUser?.name ?? "—"}</div>
+            {currentUser && (
+              <div className="truncate text-[11px] capitalize text-mute">{currentUser.role}</div>
+            )}
+          </div>
+          <button
+            onClick={onSignOut}
+            className="rounded-md border border-rule bg-paper px-2.5 py-1 text-[11px] font-semibold text-ink2 hover:border-brand-violet hover:text-brand-violet"
+          >
+            Sign out
+          </button>
         </div>
       </div>
     </aside>

@@ -1,9 +1,11 @@
 "use client";
 
 import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
+import { useState } from "react";
 import { Icon, type IconName } from "@/components/ui/Icon";
 import { cn } from "@/lib/cn";
+import { logout } from "@/lib/api";
 import type { CurrentUser, SummaryResponse } from "@/lib/types";
 
 function buildItems(summary: SummaryResponse): {
@@ -19,10 +21,11 @@ function buildItems(summary: SummaryResponse): {
       badge: o.pendingApprovals > 0 ? String(o.pendingApprovals) : undefined },
     { href: "/pipeline", icon: "chart", label: "Pipeline" },
     { href: "/learners", icon: "stamp", label: "Learners" },
+    { href: "/timesheet", icon: "clock", label: "Timesheet" },
+    { href: "/calendar", icon: "spark", label: "Calendar" },
     { href: "/agents", icon: "spark",
       label: o.liveAgents > 0 ? `Agents · ${o.liveAgents} live` : "Agents",
       dot: o.liveAgents > 0 },
-    { href: "/scheduled", icon: "clock", label: "Scheduled" },
     { href: "/inbox", icon: "inbox", label: "Inbox" },
   ];
 }
@@ -46,7 +49,20 @@ function isActive(pathname: string, href: string) {
 
 export function IconRail({ currentUser, summary }: { currentUser: CurrentUser | null; summary: SummaryResponse }) {
   const pathname = usePathname();
+  const router = useRouter();
   const items = buildItems(summary);
+  const [menuOpen, setMenuOpen] = useState(false);
+
+  async function onSignOut() {
+    setMenuOpen(false);
+    try {
+      await logout();
+    } catch {
+      /* ignore — even if API rejects, the cookie is gone */
+    }
+    router.replace("/login");
+    router.refresh();
+  }
   return (
     <nav className="relative z-[2] flex flex-col items-center gap-1.5 bg-ink py-3.5">
       <Link href="/" className="mb-2.5 flex h-10 w-10 items-center justify-center rounded-xl bg-grad shadow-rail">
@@ -103,8 +119,44 @@ export function IconRail({ currentUser, summary }: { currentUser: CurrentUser | 
         <span className="rail-tip">Settings</span>
       </Link>
 
-      <div className="mt-1 flex h-[38px] w-[38px] items-center justify-center rounded-xl border-[1.5px] border-white/[.18] bg-grad-mute text-[13px] font-bold text-white">
-        {currentUser?.initials ?? "?"}
+      <div className="relative mt-1">
+        <button
+          type="button"
+          onClick={() => setMenuOpen((v) => !v)}
+          aria-label="Account menu"
+          aria-expanded={menuOpen}
+          title={currentUser ? `${currentUser.name} · sign out` : "Sign out"}
+          className="flex h-[38px] w-[38px] items-center justify-center rounded-xl border-[1.5px] border-white/[.18] bg-grad-mute text-[13px] font-bold text-white transition hover:border-white/40"
+        >
+          {currentUser?.initials ?? "?"}
+        </button>
+        {menuOpen && (
+          <>
+            {/* click-away */}
+            <button
+              type="button"
+              aria-label="Close menu"
+              className="fixed inset-0 z-[40] cursor-default"
+              onClick={() => setMenuOpen(false)}
+            />
+            <div className="absolute bottom-[44px] left-[44px] z-[50] w-[200px] overflow-hidden rounded-[12px] border border-rule bg-paper shadow-card">
+              {currentUser && (
+                <div className="border-b border-rule px-3 py-2.5">
+                  <div className="truncate text-[13px] font-semibold text-ink">{currentUser.name}</div>
+                  <div className="truncate text-[11px] text-mute">{currentUser.email}</div>
+                </div>
+              )}
+              <button
+                type="button"
+                onClick={onSignOut}
+                className="flex w-full items-center gap-2 px-3 py-2.5 text-left text-[13px] font-semibold text-ink hover:bg-warm"
+              >
+                <Icon name="arrow-right" size={14} strokeWidth={2} className="text-mute" />
+                Sign out
+              </button>
+            </div>
+          </>
+        )}
       </div>
     </nav>
   );

@@ -1,40 +1,48 @@
 "use client";
 
 import Link from "next/link";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState, useTransition } from "react";
+import { useRouter } from "next/navigation";
 import { Icon, type IconName } from "@/components/ui/Icon";
 import { ScoreRing } from "@/components/ui/ScoreRing";
 import { NewLeadButton } from "@/components/leads/NewLeadDialog";
 import { FilterBar } from "@/components/filter/FilterBar";
 import { useFilter } from "@/components/filter/useFilter";
 import type { FilterField, FilterState } from "@/components/filter/types";
-import { avatarGradClass, stageStyles } from "@/lib/ui";
+import { avatarGradClass, ratingStyles } from "@/lib/ui";
 import { cn } from "@/lib/cn";
-import type { Lead, PipelineColumn, Stage } from "@/lib/types";
+import { updateLead } from "@/lib/api";
+import type { Lead, LeadRating, PipelineColumn } from "@/lib/types";
+import { LEAD_RATINGS } from "@/lib/types";
+
+const DRAG_MIME = "application/x-decrm-lead";
 
 // ─── helpers ──────────────────────────────────────────────────────────────
 
-const colDot: Record<Stage, string> = {
-  new: "bg-brand-blue",
-  qual: "bg-brand-violet",
-  demo: "bg-state-amber",
-  neg: "bg-brand-magenta",
-  won: "bg-state-ok",
+// Pipeline columns are keyed on lead.rating now. Visual styles come from
+// ratingStyles (lib/ui) — this map is just the dot color for the column header.
+const colDot: Record<LeadRating, string> = {
+  "new lead": "bg-brand-blue",
+  attempted:  "bg-brand-violet",
+  cold:       "bg-mute",
+  warm:       "bg-state-amber",
+  hot:        "bg-brand-magenta",
+  superhot:   "bg-brand-magenta",
+  enrolled:   "bg-state-ok",
 };
 
-const colHex: Record<Stage, string> = {
-  new:  "#1F3FCF",
-  qual: "#6B1FB8",
-  demo: "#E08A1E",
-  neg:  "#C7197A",
-  won:  "#2E9E6A",
+// Hex equivalents — used by the Chart view's SVG fills.
+const colHex: Record<LeadRating, string> = {
+  "new lead": "#1F3FCF",
+  attempted:  "#6B1FB8",
+  cold:       "#A89DAC",
+  warm:       "#E08A1E",
+  hot:        "#C7197A",
+  superhot:   "#C7197A",
+  enrolled:   "#2E9E6A",
 };
 
-const HEAT_OPTIONS = [
-  { value: "hot",  label: "🔥 Hot",  cls: "bg-[rgba(199,25,122,.10)] text-brand-magenta" },
-  { value: "warm", label: "Warm",     cls: "bg-[rgba(224,138,30,.12)] text-state-amber" },
-  { value: "cold", label: "Cold",     cls: "bg-warm2 text-mute" },
-];
+const RATING_OPTIONS = LEAD_RATINGS.map((r) => ({ value: r, label: ratingStyles[r].label }));
 
 function unique<T>(xs: T[]): T[] { return [...new Set(xs.filter(Boolean))]; }
 
@@ -46,9 +54,11 @@ function buildFields(allLeads: Lead[]): FilterField[] {
     { key: "number",     label: "Lead #",      type: "text",   get: (l: Lead) => l.number },
     { key: "program",    label: "Program",     type: "enum",   options: programs.map((p) => ({ value: p, label: p })), get: (l: Lead) => l.program },
     { key: "city",       label: "City",        type: "enum",   options: cities.map((c) => ({ value: c, label: c })),   get: (l: Lead) => l.city },
-    { key: "heat",       label: "Heat",        type: "enum",   options: HEAT_OPTIONS,                                  get: (l: Lead) => l.heat },
+    { key: "rating",     label: "Rating",      type: "enum",   options: RATING_OPTIONS,                                get: (l: Lead) => l.rating },
     { key: "score",      label: "Score",       type: "number", get: (l: Lead) => l.score },
     { key: "nbaLabel",   label: "Next action", type: "text",   get: (l: Lead) => l.nbaLabel },
+    { key: "nextFollowupAt", label: "Next follow-up", type: "date", get: (l: Lead) => l.nextFollowupAt },
+    { key: "demoAttendedAt", label: "Demo attended",  type: "date", get: (l: Lead) => l.demoAttendedAt },
   ];
 }
 
@@ -77,20 +87,62 @@ function fmtINR(n: number): string {
 type ViewMode = "list" | "kanban" | "chart";
 
 export function PipelineBoard({ columns }: { columns: PipelineColumn[] }) {
-  const allLeads: Lead[] = useMemo(() => columns.flatMap((c) => c.leads as Lead[]), [columns]);
-  const fields = useMemo(() => buildFields(allLeads), [allLeads]);
-  const [filtered, state, setState] = useFilter(allLeads, fields);
-  const [view, setView] = useState<ViewMode>("kanban");
+  const router = useRouter();
+  const [, startTransition] = useTransition();
+  // Local copy of all leads for optimistic drag-drop. Re-syncs from props when
+  // the server returns fresh data (router.refresh) — but only when the prop
+  // actually changes, so optimistic edits aren't reverted instantly.
+  const incomingAllLeads: Lead[] = useMemo(() => columns.flatMap((c) => c.leads as Lead[]), [columns]);
+  const [localLeads, setLocalLeads] = useState<Lead[]>(incomingAllLeads);
+  const incomingKey = useMemo(
+    () => incomingAllLeads.map((l) => `${l.id}:${l.rating}`).join("|"),
+    [incomingAllLeads],
+  );
+  // Re-sync local state when the server data changes.
+  useMemo(() => { setLocalLeads(incomingAllLeads); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [incomingKey]);
 
-  const filteredByStage = useMemo(() => {
-    const m = new Map<Stage, Lead[]>();
+  const fields = useMemo(() => buildFields(localLeads), [localLeads]);
+  const [filtered, state, setState] = useFilter(localLeads, fields);
+  const [view, setView] = useState<ViewMode>("kanban");
+  const [dragError, setDragError] = useState<string | null>(null);
+
+  const filteredByRating = useMemo(() => {
+    const m = new Map<LeadRating, Lead[]>();
     for (const l of filtered) {
-      const arr = m.get(l.stage) ?? [];
+      const arr = m.get(l.rating) ?? [];
       arr.push(l);
-      m.set(l.stage, arr);
+      m.set(l.rating, arr);
     }
     return m;
   }, [filtered]);
+
+  // Optimistic drag-drop: change local state immediately, fire PATCH, roll
+  // back on error. router.refresh keeps the per-column sums + AI strip
+  // notes accurate after a successful drop.
+  async function onDrop(leadId: string, fromRating: LeadRating, toRating: LeadRating) {
+    if (fromRating === toRating) return;
+    const before = localLeads;
+    setLocalLeads((prev) => prev.map((l) => (l.id === leadId ? { ...l, rating: toRating } : l)));
+    try {
+      const target = before.find((l) => l.id === leadId);
+      if (!target) throw new Error("Lead not found in local state");
+      await updateLead(target.number, { rating: toRating });
+      startTransition(() => router.refresh());
+    } catch (err) {
+      setLocalLeads(before);
+      setDragError(`Couldn't update rating: ${(err as Error).message}`);
+      setTimeout(() => setDragError(null), 4000);
+    }
+  }
+
+  // Recompute counts and sums from local state so columns stay in sync after
+  // an optimistic drop without waiting for router.refresh to complete.
+  const liveColumns = useMemo(() => {
+    return columns.map((col) => {
+      const inCol = localLeads.filter((l) => l.rating === col.key);
+      return { ...col, count: inCol.length, leads: inCol };
+    });
+  }, [columns, localLeads]);
 
   return (
     <>
@@ -102,15 +154,21 @@ export function PipelineBoard({ columns }: { columns: PipelineColumn[] }) {
             state={state}
             onChange={setState}
             placeholder="Filter pipeline by field…"
-            totalRows={allLeads.length}
+            totalRows={localLeads.length}
             filteredRows={filtered.length}
           />
         </div>
       </div>
 
-      {view === "kanban" && <KanbanView columns={columns} byStage={filteredByStage} state={state} />}
-      {view === "list"   && <ListView   columns={columns} byStage={filteredByStage} />}
-      {view === "chart"  && <ChartView  columns={columns} byStage={filteredByStage} />}
+      {dragError && (
+        <div className="mb-3 rounded-md border border-state-warn/30 bg-state-warn/10 px-3 py-2 text-[12.5px] text-state-warn">
+          {dragError}
+        </div>
+      )}
+
+      {view === "kanban" && <KanbanView columns={liveColumns} byRating={filteredByRating} state={state} onDrop={onDrop} />}
+      {view === "list"   && <ListView   columns={liveColumns} byRating={filteredByRating} />}
+      {view === "chart"  && <ChartView  columns={liveColumns} byRating={filteredByRating} />}
     </>
   );
 }
@@ -145,23 +203,71 @@ function ViewSwitcher({ value, onChange }: { value: ViewMode; onChange: (v: View
 // ─── Kanban ───────────────────────────────────────────────────────────────
 
 function KanbanView({
-  columns, byStage, state,
+  columns, byRating, state, onDrop,
 }: {
   columns: PipelineColumn[];
-  byStage: Map<Stage, Lead[]>;
+  byRating: Map<LeadRating, Lead[]>;
   state: FilterState;
+  onDrop: (leadId: string, fromRating: LeadRating, toRating: LeadRating) => void;
 }) {
+  // Track which column is being hovered with a dragged card so we can
+  // highlight it as a valid drop target.
+  const [hoverRating, setHoverRating] = useState<LeadRating | null>(null);
+  const [draggingId, setDraggingId] = useState<string | null>(null);
+
+  // Safety net: when the optimistic drop reorders the lead into another
+  // column, React unmounts the source <Link> before the browser delivers the
+  // synthetic `dragend`, so its onDragEnd handler never fires and the card
+  // stays stuck at opacity-40. A window-level listener doesn't depend on any
+  // particular DOM node and always cleans up.
+  useEffect(() => {
+    function clear() { setDraggingId(null); setHoverRating(null); }
+    window.addEventListener("dragend", clear);
+    return () => window.removeEventListener("dragend", clear);
+  }, []);
+
   return (
     <div
       className="grid items-start gap-3.5 overflow-x-auto pb-2"
-      style={{ gridTemplateColumns: "repeat(5, minmax(248px, 1fr))" }}
+      style={{ gridTemplateColumns: `repeat(${columns.length}, minmax(248px, 1fr))` }}
     >
       {columns.map((col) => {
-        const colLeads = byStage.get(col.key) ?? [];
+        const colLeads = byRating.get(col.key) ?? [];
+        const isHover = hoverRating === col.key;
         return (
           <div
             key={col.key}
-            className="flex flex-col rounded-2xl border border-rule bg-warm"
+            onDragOver={(e) => {
+              // Allow drops only when carrying our own MIME type.
+              if (e.dataTransfer.types.includes(DRAG_MIME)) {
+                e.preventDefault();
+                e.dataTransfer.dropEffect = "move";
+                if (hoverRating !== col.key) setHoverRating(col.key);
+              }
+            }}
+            onDragLeave={(e) => {
+              // Only clear when actually leaving the column container.
+              if (!e.currentTarget.contains(e.relatedTarget as Node)) {
+                setHoverRating((curr) => (curr === col.key ? null : curr));
+              }
+            }}
+            onDrop={(e) => {
+              e.preventDefault();
+              // Clear drag state up-front so the source card doesn't stay
+              // dimmed across the optimistic re-mount in the new column.
+              setDraggingId(null);
+              setHoverRating(null);
+              const raw = e.dataTransfer.getData(DRAG_MIME);
+              if (!raw) return;
+              try {
+                const { id, fromRating } = JSON.parse(raw) as { id: string; fromRating: LeadRating };
+                onDrop(id, fromRating, col.key);
+              } catch { /* ignore malformed payload */ }
+            }}
+            className={cn(
+              "flex flex-col rounded-2xl border bg-warm transition",
+              isHover ? "border-brand-violet ring-2 ring-brand-violet/30 bg-warm2" : "border-rule",
+            )}
             style={{ maxHeight: "calc(100vh - 250px)" }}
           >
             <div className="flex items-center gap-[9px] p-[14px_16px_12px]">
@@ -190,14 +296,34 @@ function KanbanView({
 
             <div className="flex flex-col gap-2.5 overflow-y-auto px-3 pb-3">
               {colLeads.map((l) => {
-                const ai = l.score >= 85 && (l.stage === "qual" || l.stage === "demo");
+                const ai = l.score >= 85 && (l.rating === "hot" || l.rating === "superhot");
+                const isDragging = draggingId === l.id;
                 return (
                   <Link
                     key={l.id}
                     href={`/records/${l.number}`}
+                    draggable
+                    onDragStart={(e) => {
+                      e.dataTransfer.effectAllowed = "move";
+                      e.dataTransfer.setData(
+                        DRAG_MIME,
+                        JSON.stringify({ id: l.id, fromRating: l.rating }),
+                      );
+                      setDraggingId(l.id);
+                    }}
+                    onDragEnd={() => {
+                      setDraggingId(null);
+                      setHoverRating(null);
+                    }}
+                    onClick={(e) => {
+                      // Suppress the navigate when a drag has just finished.
+                      if (draggingId) e.preventDefault();
+                    }}
                     className={cn(
                       "group block rounded-[13px] border bg-paper p-3.5 transition hover:-translate-y-0.5 hover:border-rule2 hover:shadow-card",
+                      "cursor-grab active:cursor-grabbing",
                       ai ? "border-[rgba(199,25,122,.28)] shadow-glowSoft" : "border-rule",
+                      isDragging && "opacity-40 ring-2 ring-brand-violet/40",
                     )}
                   >
                     <div className="mb-2.5 flex items-center gap-2.5">
@@ -226,7 +352,12 @@ function KanbanView({
                   </Link>
                 );
               })}
-              {state.rules.length === 0 && <NewLeadButton variant="ghost" defaultStage={col.key} />}
+              {state.rules.length === 0 && <NewLeadButton variant="ghost" defaultRating={col.key} />}
+              {colLeads.length === 0 && (
+                <div className="rounded-[11px] border border-dashed border-rule2 p-4 text-center text-[11.5px] text-mute">
+                  Drop a lead here to mark as <b className="font-semibold text-ink">{col.label}</b>.
+                </div>
+              )}
             </div>
           </div>
         );
@@ -238,12 +369,12 @@ function KanbanView({
 // ─── List (flat table grouped by stage) ───────────────────────────────────
 
 function ListView({
-  columns, byStage,
+  columns, byRating,
 }: {
   columns: PipelineColumn[];
-  byStage: Map<Stage, Lead[]>;
+  byRating: Map<LeadRating, Lead[]>;
 }) {
-  const visibleColumns = columns.filter((c) => (byStage.get(c.key) ?? []).length > 0);
+  const visibleColumns = columns.filter((c) => (byRating.get(c.key) ?? []).length > 0);
 
   if (visibleColumns.length === 0) {
     return (
@@ -265,8 +396,8 @@ function ListView({
       </Row>
 
       {visibleColumns.map((col) => {
-        const colLeads = byStage.get(col.key) ?? [];
-        const sc = stageStyles[col.key];
+        const colLeads = byRating.get(col.key) ?? [];
+        const sc = ratingStyles[col.key];
         return (
           <div key={col.key}>
             {/* Section header */}
@@ -345,17 +476,17 @@ function Row({ hdr = false, hover = false, children }: { hdr?: boolean; hover?: 
 // ─── Chart (funnel + bar, SVG) ────────────────────────────────────────────
 
 function ChartView({
-  columns, byStage,
+  columns, byRating,
 }: {
   columns: PipelineColumn[];
-  byStage: Map<Stage, Lead[]>;
+  byRating: Map<LeadRating, Lead[]>;
 }) {
-  // Per stage: count + ₹ sum (computed from filtered leads; falls back to col.sum text)
+  // Per rating: count + ₹ sum (computed from filtered leads; falls back to col.sum text)
   const data = columns.map((col) => {
-    const leads = byStage.get(col.key) ?? [];
+    const leads = byRating.get(col.key) ?? [];
     const sumNum = leads.reduce((s, l) => s + parseINR(l.value), 0);
     return {
-      stage: col.key,
+      rating: col.key,
       label: col.label,
       count: leads.length,
       sum: sumNum,
@@ -384,14 +515,14 @@ function ChartView({
             const widthPct = (d.count / maxCount) * 100;
             const sharePct = totalCount > 0 ? Math.round((d.count / totalCount) * 100) : 0;
             return (
-              <div key={d.stage} className="flex items-center gap-3">
+              <div key={d.rating} className="flex items-center gap-3">
                 <div className="w-[110px] flex-shrink-0 text-[12.5px] font-medium text-ink2">{d.label}</div>
                 <div className="relative flex-1 overflow-hidden rounded-md bg-warm2/60">
                   <div
                     className="h-7 rounded-md transition-all"
                     style={{
                       width: `${Math.max(2, widthPct)}%`,
-                      background: colHex[d.stage as Stage],
+                      background: colHex[d.rating],
                       opacity: d.count === 0 ? 0.18 : 0.9,
                     }}
                   />
@@ -422,13 +553,13 @@ function ChartView({
           {data.map((d) => {
             const h = d.sum === 0 ? 4 : Math.max(8, (d.sum / maxSum) * 220);
             return (
-              <div key={d.stage} className="flex flex-1 flex-col items-center gap-2">
+              <div key={d.rating} className="flex flex-1 flex-col items-center gap-2">
                 <div className="font-mono text-[10px] text-mute">{fmtINR(d.sum)}</div>
                 <div
                   className="w-full rounded-t-md transition-all"
                   style={{
                     height: `${h}px`,
-                    background: `linear-gradient(180deg, ${colHex[d.stage as Stage]}, ${colHex[d.stage as Stage]}cc)`,
+                    background: `linear-gradient(180deg, ${colHex[d.rating]}, ${colHex[d.rating]}cc)`,
                     opacity: d.sum === 0 ? 0.25 : 1,
                   }}
                   title={`${d.label}: ${fmtINR(d.sum)}`}
@@ -439,7 +570,7 @@ function ChartView({
         </div>
         <div className="mt-2 flex gap-3">
           {data.map((d) => (
-            <div key={d.stage} className="flex flex-1 flex-col items-center text-center">
+            <div key={d.rating} className="flex flex-1 flex-col items-center text-center">
               <div className="text-[11px] font-semibold text-ink2 truncate w-full">{d.label}</div>
               <div className="mono-cap text-[9px] tracking-[.06em] text-mute">{d.count} lead{d.count === 1 ? "" : "s"}</div>
             </div>

@@ -289,22 +289,31 @@ function ValueEditor({
   }
   if (op.valueArity === 2) {
     const arr = Array.isArray(value) ? (value as [unknown, unknown]) : [null, null];
+    // Pick the input type per field type so date "between" gets two date
+    // pickers instead of falling back to free-text min/max.
+    const inputType =
+      field.type === "number" ? "number" :
+      field.type === "date"   ? "date"   :
+      "text";
+    const cast = (s: string): unknown =>
+      field.type === "number" ? toNum(s) : (s === "" ? null : s);
+    const widthCls = field.type === "date" ? "w-[130px]" : "w-[60px]";
     return (
       <div className="flex items-center gap-1 border-l border-rule px-2 py-[3px]">
         <input
-          type={field.type === "number" ? "number" : "text"}
+          type={inputType}
           value={(arr[0] ?? "") as string | number}
-          onChange={(e) => onChange([field.type === "number" ? toNum(e.target.value) : e.target.value, arr[1]])}
-          className="w-[60px] bg-transparent text-[12.5px] text-ink outline-none placeholder:text-hint"
-          placeholder="min"
+          onChange={(e) => onChange([cast(e.target.value), arr[1]])}
+          className={cn(widthCls, "bg-transparent text-[12.5px] text-ink outline-none placeholder:text-hint")}
+          placeholder={field.type === "date" ? "from" : "min"}
         />
         <span className="text-mute">–</span>
         <input
-          type={field.type === "number" ? "number" : "text"}
+          type={inputType}
           value={(arr[1] ?? "") as string | number}
-          onChange={(e) => onChange([arr[0], field.type === "number" ? toNum(e.target.value) : e.target.value])}
-          className="w-[60px] bg-transparent text-[12.5px] text-ink outline-none placeholder:text-hint"
-          placeholder="max"
+          onChange={(e) => onChange([arr[0], cast(e.target.value)])}
+          className={cn(widthCls, "bg-transparent text-[12.5px] text-ink outline-none placeholder:text-hint")}
+          placeholder={field.type === "date" ? "to" : "max"}
         />
       </div>
     );

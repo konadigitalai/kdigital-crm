@@ -16,6 +16,7 @@ import {
   numeric,
   pgTable,
   text,
+  time,
   timestamp,
   uniqueIndex,
   uuid,
@@ -58,12 +59,71 @@ export const appUser = pgTable(
     name: text("name"),
     role: text("role").notNull().default("advisor"),
     active: boolean("active").notNull().default(true),
+    passwordHash: text("password_hash"), // bcryptjs hash; NULL = no password set yet
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => ({
     roleCheck: check("app_user_role_check", sql`${t.role} IN ('admin','advisor','service_rep','readonly')`),
     auth0SubKey: uniqueIndex("app_user_auth0_sub_key").on(t.auth0Sub).where(sql`${t.auth0Sub} IS NOT NULL`),
     tenantEmailKey: uniqueIndex("app_user_tenant_email_key").on(t.tenantId, t.email),
+  }),
+);
+
+// ─── Auth: sessions + groups ──────────────────────────────────────────────
+
+export const appSession = pgTable(
+  "app_session",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    tenantId: uuid("tenant_id").notNull().references(() => tenant.id),
+    userId: uuid("user_id").notNull().references(() => appUser.id, { onDelete: "cascade" }),
+    tokenHash: text("token_hash").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    revokedAt: timestamp("revoked_at", { withTimezone: true }),
+  },
+  (t) => ({
+    tokenHashKey: uniqueIndex("app_session_token_hash_key").on(t.tokenHash),
+    userIdx: index("app_session_user_idx").on(t.tenantId, t.userId),
+  }),
+);
+
+export const userGroup = pgTable(
+  "user_group",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    tenantId: uuid("tenant_id").notNull().references(() => tenant.id),
+    name: text("name").notNull(),
+    description: text("description"),
+    isSystem: boolean("is_system").notNull().default(false),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    tenantNameKey: uniqueIndex("user_group_tenant_name_key").on(t.tenantId, t.name),
+  }),
+);
+
+export const userGroupPermission = pgTable(
+  "user_group_permission",
+  {
+    groupId: uuid("group_id").notNull().references(() => userGroup.id, { onDelete: "cascade" }),
+    permission: text("permission").notNull(),
+  },
+  (t) => ({
+    pk: uniqueIndex("user_group_permission_pk").on(t.groupId, t.permission),
+  }),
+);
+
+export const userGroupMember = pgTable(
+  "user_group_member",
+  {
+    userId: uuid("user_id").notNull().references(() => appUser.id, { onDelete: "cascade" }),
+    groupId: uuid("group_id").notNull().references(() => userGroup.id, { onDelete: "cascade" }),
+    addedAt: timestamp("added_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    pk: uniqueIndex("user_group_member_pk").on(t.userId, t.groupId),
+    groupIdx: index("user_group_member_group_idx").on(t.groupId),
   }),
 );
 
@@ -77,7 +137,8 @@ export const party = pgTable(
     kind: text("kind").notNull().default("person"),
     name: text("name").notNull(),
     email: text("email"),                    // first-class for queries + indexing
-    phone: text("phone"),
+    phone: text("phone"),                    // local subscriber number (no country code)
+    phoneCountryCode: text("phone_country_code"),  // e.g. "+91", "+1" — separate so we can normalise / dial
     city: text("city"),
     identifiers: jsonb("identifiers").notNull().default(sql`'{}'::jsonb`),
     attributes: jsonb("attributes").notNull().default(sql`'{}'::jsonb`),
@@ -157,9 +218,17 @@ export const cohort = pgTable(
     seats: integer("seats"),
     status: text("status").notNull().default("upcoming"),  // upcoming | running | completed | cancelled
     enabled: boolean("enabled").notNull().default(true),
+    // Phase H — structured trainer assignment + cadence (powers the calendar).
+    trainerId:    uuid("trainer_id").references(() => appUser.id, { onDelete: "set null" }),
+    coTrainerId:  uuid("co_trainer_id").references(() => appUser.id, { onDelete: "set null" }),
+    daysOfWeek:   text("days_of_week").array(),  // 'mon'|'tue'|'wed'|'thu'|'fri'|'sat'|'sun'
+    startTime:    time("start_time"),            // 24h, IST
+    endTime:      time("end_time"),
   },
   (t) => ({
     courseIdx: index("cohort_course_idx").on(t.tenantId, t.courseId),
+    trainerIdx:   index("cohort_trainer_idx").on(t.tenantId, t.trainerId),
+    coTrainerIdx: index("cohort_co_trainer_idx").on(t.tenantId, t.coTrainerId),
     statusCheck: check("cohort_status_check", sql`${t.status} IN ('upcoming','running','completed','cancelled')`),
     slotCheck:   check("cohort_slot_check",   sql`${t.slot} IS NULL OR ${t.slot} IN ('morning','afternoon','evening')`),
   }),
@@ -184,7 +253,7 @@ export const workItem = pgTable(
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => ({
-    typeCheck: check("work_item_type_check", sql`${t.type} IN ('lead','deal','service_case','onboarding_task','agent_run')`),
+    typeCheck: check("work_item_type_check", sql`${t.type} IN ('lead','deal','service_case','onboarding_task','agent_run','ticket')`),
     tenantNumberKey: uniqueIndex("work_item_tenant_number_key").on(t.tenantId, t.number),
     tenantTypeStateIdx: index("wi_tenant_type_state_idx").on(t.tenantId, t.type, t.state),
     assigneeIdx: index("wi_assignee_idx").on(t.tenantId, t.assigneeId),
@@ -207,7 +276,8 @@ export const lead = pgTable("lead", {
   scoreReason: text("score_reason"),
   scoreLabel: text("score_label"),              // 'Hot lead' / 'Warm lead' / 'Cold lead'
   scoreDesc: text("score_desc"),                // sentence describing what to do
-  heat: text("heat"),                           // hot | warm | cold
+  heat: text("heat"),                           // legacy; auto-derived from rating via trigger
+  rating: text("rating").notNull().default("inbound"),  // inbound|cold|warm|hot|superhot|enrolled — human-set
   city: text("city"),
   program: text("program"),                     // denormalized program name; programId is the canonical FK
   programId: uuid("program_id").references(() => program.id),
@@ -224,6 +294,14 @@ export const lead = pgTable("lead", {
   dueDate:           date("due_date"),
   registeredDate:    date("registered_date"),
   paymentProofUrl:   text("payment_proof_url"),
+  // Phase H+: pipeline cadence dates the advisor sets manually.
+  nextFollowupAt:    date("next_followup_at"),
+  demoAttendedAt:    date("demo_attended_at"),
+  // Display tz on the record header. IANA name; "Asia/Kolkata" by convention
+  // for legacy rows that have no value.
+  timeZone:          text("time_zone"),
+  // How the lead wants the program delivered: 'online' | 'offline' | 'hybrid'.
+  deliveryMode:      text("delivery_mode"),
   // Next-best-action card
   nbaIcon: text("nba_icon"),
   nbaLabel: text("nba_label"),
@@ -292,6 +370,78 @@ export const serviceCase = pgTable("service_case", {
 }, (t) => ({
   csatCheck: check("service_case_csat_check", sql`${t.csat} BETWEEN 1 AND 5`),
 }));
+
+// ─── Ticket (ServiceNow-style support cases) ──────────────────────────────
+// 1:1 with work_item.type = 'ticket'. The "stakeholder" of a ticket is a
+// person — they may be an existing lead/learner (linked via party_id) or
+// fully external (no party row). Either way, name + email + phone are
+// captured on the ticket itself so external requesters can be tracked.
+export const ticket = pgTable(
+  "ticket",
+  {
+    workItemId: uuid("work_item_id")
+      .primaryKey()
+      .references(() => workItem.id, { onDelete: "cascade" }),
+    tenantId: uuid("tenant_id").notNull().references(() => tenant.id),
+
+    // Stakeholder identity — REQUIRED, even when partyId is set (snapshot at create time)
+    requesterName:  text("requester_name").notNull(),
+    requesterEmail: text("requester_email").notNull(),
+    requesterPhone: text("requester_phone").notNull(),
+    requesterKind:  text("requester_kind").notNull(), // 'lead' | 'learner' | 'external'
+    partyId:        uuid("party_id").references(() => party.id), // nullable; set when stakeholder is in CRM
+
+    // Body
+    subject:     text("subject").notNull(),
+    description: text("description"),
+    category:    text("category").notNull().default("other"),
+    priority:    integer("priority").notNull().default(3),     // 1=urgent, 2=high, 3=medium, 4=low
+    status:      text("status").notNull().default("open"),     // open|in_progress|pending|resolved|closed|cancelled
+
+    // SLA / reminders
+    dueAt:    timestamp("due_at",    { withTimezone: true }),
+    remindAt: timestamp("remind_at", { withTimezone: true }),
+
+    // Resolution — `resolution` becomes mandatory at close (enforced both
+    // by the route and by the closedRequiresResolution check below).
+    resolvedAt:     timestamp("resolved_at", { withTimezone: true }),
+    closedAt:       timestamp("closed_at",   { withTimezone: true }),
+    resolution:     text("resolution"),
+    resolutionCode: text("resolution_code"), // 'fixed' | 'duplicate' | 'wont_fix' | 'no_action'
+
+    createdById: uuid("created_by_id").references(() => appUser.id),
+    createdAt:   timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt:   timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    requesterKindCheck: check(
+      "ticket_requester_kind_check",
+      sql`${t.requesterKind} IN ('lead','learner','external')`,
+    ),
+    statusCheck: check(
+      "ticket_status_check",
+      sql`${t.status} IN ('open','in_progress','pending','resolved','closed','cancelled')`,
+    ),
+    categoryCheck: check(
+      "ticket_category_check",
+      sql`${t.category} IN ('billing','technical','content_lms','onboarding','cohort_batch','refund','certificate','other')`,
+    ),
+    priorityCheck: check("ticket_priority_check", sql`${t.priority} BETWEEN 1 AND 4`),
+    resolutionCodeCheck: check(
+      "ticket_resolution_code_check",
+      sql`${t.resolutionCode} IS NULL OR ${t.resolutionCode} IN ('fixed','duplicate','wont_fix','no_action')`,
+    ),
+    closedRequiresResolution: check(
+      "ticket_closed_has_resolution",
+      sql`${t.status} <> 'closed' OR (${t.resolution} IS NOT NULL AND length(trim(${t.resolution})) > 0)`,
+    ),
+    partyIdx:    index("ticket_party_idx").on(t.tenantId, t.partyId),
+    statusIdx:   index("ticket_status_idx").on(t.tenantId, t.status),
+    assigneeIdx: index("ticket_assignee_via_wi_idx").on(t.tenantId, t.workItemId),
+    dueIdx:      index("ticket_due_idx").on(t.tenantId, t.dueAt),
+    remindIdx:   index("ticket_remind_idx").on(t.tenantId, t.remindAt),
+  }),
+);
 
 // Program-level enrolment (the umbrella). One row per learner per program.
 // cohort_id stays for back-compat during migration; new code uses program_id.
@@ -508,6 +658,194 @@ export const approvalPolicy = pgTable("approval_policy", {
   pk: uniqueIndex("approval_policy_pk").on(t.tenantId, t.actionType),
 }));
 
+// ─── Forecast snapshots (Phase E1 — Forecast Agent) ──────────────────────
+
+export const forecastSnapshot = pgTable(
+  "forecast_snapshot",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    tenantId: uuid("tenant_id").notNull().references(() => tenant.id),
+    generatedAt: timestamp("generated_at", { withTimezone: true }).notNull().defaultNow(),
+    numbers: jsonb("numbers").notNull(),
+    narrative: jsonb("narrative").notNull(),
+    model: text("model"),
+    tokensIn: integer("tokens_in"),
+    tokensOut: integer("tokens_out"),
+    generatedBy: uuid("generated_by").references(() => appUser.id),
+  },
+  (t) => ({
+    tenantIdx: index("forecast_snapshot_tenant_idx").on(t.tenantId, t.generatedAt),
+  }),
+);
+
+// ─── Edify chat sessions + messages (Phase F.1) ───────────────────────────
+
+export const edifyChatSession = pgTable(
+  "edify_chat_session",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    tenantId: uuid("tenant_id").notNull().references(() => tenant.id),
+    userId: uuid("user_id").notNull().references(() => appUser.id, { onDelete: "cascade" }),
+    title: text("title"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    lastAt: timestamp("last_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    userTimeIdx: index("edify_session_user_time_idx").on(t.tenantId, t.userId, t.lastAt),
+  }),
+);
+
+export const edifyChatMessage = pgTable(
+  "edify_chat_message",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    tenantId: uuid("tenant_id").notNull().references(() => tenant.id),
+    userId: uuid("user_id").notNull().references(() => appUser.id, { onDelete: "cascade" }),
+    sessionId: uuid("session_id").notNull().references(() => edifyChatSession.id, { onDelete: "cascade" }),
+    askedAt: timestamp("asked_at", { withTimezone: true }).notNull().defaultNow(),
+    question: text("question").notNull(),
+    answer: text("answer").notNull(),
+    citations: jsonb("citations"),
+    suggested: jsonb("suggested"),
+    model: text("model"),
+    tokensIn: integer("tokens_in"),
+    tokensOut: integer("tokens_out"),
+  },
+  (t) => ({
+    userTimeIdx: index("edify_chat_user_time_idx").on(t.tenantId, t.userId, t.askedAt),
+    sessionIdx: index("edify_message_session_idx").on(t.sessionId, t.askedAt),
+  }),
+);
+
+// ─── Phase G — Time tracking, leaves, clients, calendar ──────────────────
+
+export const client = pgTable(
+  "client",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    tenantId: uuid("tenant_id").notNull().references(() => tenant.id),
+    name: text("name").notNull(),
+    code: text("code"),
+    description: text("description"),
+    active: boolean("active").notNull().default(true),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    tenantNameKey: uniqueIndex("client_tenant_name_key").on(t.tenantId, sql`lower(${t.name})`),
+  }),
+);
+
+export const clientAssignment = pgTable(
+  "client_assignment",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    tenantId: uuid("tenant_id").notNull().references(() => tenant.id),
+    clientId: uuid("client_id").notNull().references(() => client.id, { onDelete: "cascade" }),
+    userId: uuid("user_id").notNull().references(() => appUser.id, { onDelete: "cascade" }),
+    addedAt: timestamp("added_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    pk: uniqueIndex("client_assignment_pk").on(t.clientId, t.userId),
+    userIdx: index("client_assignment_user_idx").on(t.tenantId, t.userId),
+  }),
+);
+
+export const workSession = pgTable(
+  "work_session",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    tenantId: uuid("tenant_id").notNull().references(() => tenant.id),
+    userId: uuid("user_id").notNull().references(() => appUser.id, { onDelete: "cascade" }),
+    date: date("date").notNull(),
+    clockIn: timestamp("clock_in", { withTimezone: true }).notNull(),
+    clockOut: timestamp("clock_out", { withTimezone: true }),
+    notes: text("notes"),
+  },
+  (t) => ({
+    userDateIdx: index("work_session_user_date_idx").on(t.tenantId, t.userId, t.date),
+    openOnePerUser: uniqueIndex("work_session_open_one_per_user")
+      .on(t.userId).where(sql`clock_out IS NULL`),
+  }),
+);
+
+export const timeBlock = pgTable(
+  "time_block",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    tenantId: uuid("tenant_id").notNull().references(() => tenant.id),
+    userId: uuid("user_id").notNull().references(() => appUser.id, { onDelete: "cascade" }),
+    sessionId: uuid("session_id").references(() => workSession.id, { onDelete: "cascade" }),
+    date: date("date").notNull(),
+    startAt: timestamp("start_at", { withTimezone: true }).notNull(),
+    endAt: timestamp("end_at", { withTimezone: true }).notNull(),
+    clientId: uuid("client_id").references(() => client.id),
+    note: text("note"),
+    billable: boolean("billable").notNull().default(true),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    userDateIdx: index("time_block_user_date_idx").on(t.tenantId, t.userId, t.date),
+    clientIdx: index("time_block_client_idx").on(t.tenantId, t.clientId, t.date),
+    endGtStart: check("time_block_endgtstart", sql`${t.endAt} > ${t.startAt}`),
+  }),
+);
+
+export const leaveDay = pgTable(
+  "leave_day",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    tenantId: uuid("tenant_id").notNull().references(() => tenant.id),
+    userId: uuid("user_id").notNull().references(() => appUser.id, { onDelete: "cascade" }),
+    date: date("date").notNull(),
+    kind: text("kind").notNull(),
+    halfDay: text("half_day").default("full"),
+    note: text("note"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    userDateKey: uniqueIndex("leave_day_user_date_key").on(t.userId, t.date),
+    tenantDateIdx: index("leave_day_tenant_date_idx").on(t.tenantId, t.date),
+    kindCheck: check("leave_day_kind_check", sql`${t.kind} IN ('sick','personal','vacation','wfh','holiday')`),
+    halfDayCheck: check("leave_day_halfday_check", sql`${t.halfDay} IS NULL OR ${t.halfDay} IN ('full','am','pm')`),
+  }),
+);
+
+export const calendarEvent = pgTable(
+  "calendar_event",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    tenantId: uuid("tenant_id").notNull().references(() => tenant.id),
+    organizerId: uuid("organizer_id").notNull().references(() => appUser.id, { onDelete: "cascade" }),
+    title: text("title").notNull(),
+    description: text("description"),
+    location: text("location"),
+    startAt: timestamp("start_at", { withTimezone: true }).notNull(),
+    endAt: timestamp("end_at", { withTimezone: true }).notNull(),
+    allDay: boolean("all_day").notNull().default(false),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    orgTimeIdx: index("calendar_event_org_time_idx").on(t.tenantId, t.organizerId, t.startAt),
+    endGtStart: check("calendar_event_endgtstart", sql`${t.endAt} > ${t.startAt}`),
+  }),
+);
+
+export const calendarInvitee = pgTable(
+  "calendar_invitee",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    eventId: uuid("event_id").notNull().references(() => calendarEvent.id, { onDelete: "cascade" }),
+    userId: uuid("user_id").notNull().references(() => appUser.id, { onDelete: "cascade" }),
+    rsvp: text("rsvp").notNull().default("pending"),
+    respondedAt: timestamp("responded_at", { withTimezone: true }),
+  },
+  (t) => ({
+    pk: uniqueIndex("calendar_invitee_pk").on(t.eventId, t.userId),
+    userIdx: index("calendar_invitee_user_idx").on(t.userId, t.rsvp),
+    rsvpCheck: check("calendar_invitee_rsvp_check", sql`${t.rsvp} IN ('pending','accepted','declined','tentative')`),
+  }),
+);
+
 // ─── Audit log (insert-only — enforced via GRANTs in raw SQL) ─────────────
 
 export const auditLog = pgTable(
@@ -574,3 +912,4 @@ export type Lead = typeof lead.$inferSelect;
 export type WorkItem = typeof workItem.$inferSelect;
 export type Activity = typeof activity.$inferSelect;
 export type AgentRun = typeof agentRun.$inferSelect;
+export type Ticket = typeof ticket.$inferSelect;

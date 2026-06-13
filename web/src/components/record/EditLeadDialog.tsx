@@ -5,16 +5,9 @@ import { useRouter } from "next/navigation";
 import { Icon } from "@/components/ui/Icon";
 import { cn } from "@/lib/cn";
 import { getCatalog, updateLead } from "@/lib/api";
-import type { CatalogResponse, Heat, Stage } from "@/lib/types";
-
-const STAGES: { key: Stage; label: string }[] = [
-  { key: "new", label: "New inbound" },
-  { key: "qual", label: "Qualified" },
-  { key: "demo", label: "Demo / Trial" },
-  { key: "neg", label: "Negotiation" },
-  { key: "won", label: "Enrolled" },
-];
-const HEATS: Heat[] = ["hot", "warm", "cold"];
+import type { CatalogResponse, Heat, LeadRating } from "@/lib/types";
+import { LEAD_RATINGS } from "@/lib/types";
+import { ratingStyles } from "@/lib/ui";
 
 export function EditLeadButton({ leadNumber, lead }: { leadNumber: string; lead: LeadEditable }) {
   const [open, setOpen] = useState(false);
@@ -35,6 +28,9 @@ export interface LeadEditable {
   name: string;
   email: string | null;
   phone: string | null;
+  phoneCountryCode: string | null;
+  timeZone: string | null;
+  deliveryMode: "online" | "offline" | "hybrid" | null;
   city: string | null;
   programId: string | null;
   programName: string | null;
@@ -48,10 +44,12 @@ export interface LeadEditable {
   feeDue: string | null;
   dueDate: string | null;
   registeredDate: string | null;
+  nextFollowupAt: string | null;
+  demoAttendedAt: string | null;
   paymentProofUrl: string | null;
   score: number;
   heat: Heat;
-  stage: Stage;
+  rating: LeadRating;
   nbaLabel: string;
 }
 
@@ -65,6 +63,9 @@ function Dialog({ leadNumber, lead, onClose }: { leadNumber: string; lead: LeadE
   const [name, setName]               = useState(lead.name);
   const [email, setEmail]             = useState(lead.email ?? "");
   const [phone, setPhone]             = useState(lead.phone ?? "");
+  const [phoneCountryCode, setPhoneCountryCode] = useState(lead.phoneCountryCode ?? "+91");
+  const [timeZone, setTimeZone]       = useState(lead.timeZone ?? "Asia/Kolkata");
+  const [deliveryMode, setDeliveryMode] = useState<string>(lead.deliveryMode ?? "");
   const [city, setCity]               = useState(lead.city ?? "");
   const [programId, setProgramId]     = useState(lead.programId ?? "");
   const [advisorId, setAdvisorId]     = useState(lead.advisorId ?? "");
@@ -75,10 +76,11 @@ function Dialog({ leadNumber, lead, onClose }: { leadNumber: string; lead: LeadE
   const [feeDue, setFeeDue]           = useState(lead.feeDue ?? "");
   const [dueDate, setDueDate]         = useState(lead.dueDate?.slice(0, 10) ?? "");
   const [registeredDate, setRegisteredDate] = useState(lead.registeredDate?.slice(0, 10) ?? "");
+  const [nextFollowupAt, setNextFollowupAt] = useState(lead.nextFollowupAt?.slice(0, 10) ?? "");
+  const [demoAttendedAt, setDemoAttendedAt] = useState(lead.demoAttendedAt?.slice(0, 10) ?? "");
   const [paymentProofUrl, setPaymentProofUrl] = useState(lead.paymentProofUrl ?? "");
-  const [stage, setStage]             = useState<Stage>(lead.stage);
   const [score, setScore]             = useState<number>(lead.score);
-  const [heat, setHeat]               = useState<Heat>(lead.heat);
+  const [rating, setRating]           = useState<LeadRating>(lead.rating);
   const [nbaLabel, setNbaLabel]       = useState(lead.nbaLabel);
 
   useEffect(() => {
@@ -93,7 +95,6 @@ function Dialog({ leadNumber, lead, onClose }: { leadNumber: string; lead: LeadE
 
   function onScoreChange(s: number) {
     setScore(s);
-    setHeat(s >= 75 ? "hot" : s >= 45 ? "warm" : "cold");
   }
 
   async function submit(e: React.FormEvent) {
@@ -105,7 +106,10 @@ function Dialog({ leadNumber, lead, onClose }: { leadNumber: string; lead: LeadE
       await updateLead(leadNumber, {
         name: name.trim(),
         email: email.trim() || null,
-        phone: phone.trim() || null,
+        phone: phone.replace(/[^\d]/g, "") || null,
+        phoneCountryCode: phoneCountryCode.trim() || null,
+        timeZone: timeZone || null,
+        deliveryMode: (deliveryMode || null) as "online" | "offline" | "hybrid" | null,
         city: city.trim() || null,
         programId: programId || null,
         advisorId: advisorId || null,
@@ -117,10 +121,11 @@ function Dialog({ leadNumber, lead, onClose }: { leadNumber: string; lead: LeadE
         feeDue: feeDue.trim() || null,
         dueDate: dueDate || null,
         registeredDate: registeredDate || null,
+        nextFollowupAt: nextFollowupAt || null,
+        demoAttendedAt: demoAttendedAt || null,
         paymentProofUrl: paymentProofUrl.trim() || null,
-        stage,
         score,
-        heat,
+        rating,
         nbaLabel: nbaLabel.trim() || undefined,
       });
       router.refresh();
@@ -155,12 +160,56 @@ function Dialog({ leadNumber, lead, onClose }: { leadNumber: string; lead: LeadE
                 <input className={inputCls} type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="aarav@gmail.com" />
               </Field>
               <Field label="Phone">
-                <input className={inputCls} value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="+91 98••• ••••" />
+                <div className="flex gap-2">
+                  <select
+                    className={cn(inputCls, "w-[120px] flex-shrink-0 font-mono")}
+                    value={phoneCountryCode}
+                    onChange={(e) => setPhoneCountryCode(e.target.value)}
+                    aria-label="Country code"
+                  >
+                    <option value="+91">+91 IN</option>
+                    <option value="+1">+1 US/CA</option>
+                    <option value="+44">+44 UK</option>
+                    <option value="+971">+971 AE</option>
+                    <option value="+65">+65 SG</option>
+                    <option value="+61">+61 AU</option>
+                    <option value="+49">+49 DE</option>
+                    <option value="+966">+966 SA</option>
+                  </select>
+                  <input
+                    className={cn(inputCls, "flex-1 font-mono")}
+                    inputMode="numeric"
+                    value={phone}
+                    onChange={(e) => setPhone(e.target.value.replace(/[^\d]/g, "").slice(0, 15))}
+                    placeholder="98••• •••••"
+                    aria-label="Phone number"
+                  />
+                </div>
               </Field>
             </div>
-            <Field label="City">
-              <input className={inputCls} value={city} onChange={(e) => setCity(e.target.value)} placeholder="Bengaluru" />
-            </Field>
+            <div className="grid grid-cols-3 gap-4">
+              <Field label="City">
+                <input className={inputCls} value={city} onChange={(e) => setCity(e.target.value)} placeholder="Bengaluru" />
+              </Field>
+              <Field label="Time zone">
+                <select className={inputCls} value={timeZone} onChange={(e) => setTimeZone(e.target.value)}>
+                  <option value="Asia/Kolkata">IST · India</option>
+                  <option value="America/New_York">ET · US Eastern</option>
+                  <option value="America/Chicago">CT · US Central</option>
+                  <option value="America/Denver">MT · US Mountain</option>
+                  <option value="America/Los_Angeles">PT · US Pacific</option>
+                  <option value="Europe/London">UK · London</option>
+                </select>
+              </Field>
+              <Field label="Mode">
+                <select className={inputCls} value={deliveryMode} onChange={(e) => setDeliveryMode(e.target.value)}>
+                  <option value="">— pick mode —</option>
+                  <option value="online">Online</option>
+                  <option value="offline">Offline</option>
+                  <option value="hybrid">Hybrid</option>
+                </select>
+              </Field>
+            </div>
           </Section>
 
           <Section title="Sales">
@@ -184,8 +233,17 @@ function Dialog({ leadNumber, lead, onClose }: { leadNumber: string; lead: LeadE
                   {catalog?.advisors.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
                 </select>
               </Field>
-              <Field label="Value (free-form)">
-                <input className={inputCls} value={value} onChange={(e) => setValue(e.target.value)} placeholder="₹1.49L · verbal yes · …" />
+              <Field label="Price quoted (₹)">
+                <input
+                  className={cn(inputCls, "font-mono")}
+                  inputMode="decimal"
+                  value={value}
+                  onChange={(e) => {
+                    const cleaned = e.target.value.replace(/[^\d.]/g, "").replace(/(\..*)\./g, "$1");
+                    setValue(cleaned);
+                  }}
+                  placeholder="149000"
+                />
               </Field>
             </div>
             <Field label="Description / context">
@@ -196,6 +254,17 @@ function Dialog({ leadNumber, lead, onClose }: { leadNumber: string; lead: LeadE
                 placeholder="Where does this lead stand? What did they say in the last call?"
               />
             </Field>
+          </Section>
+
+          <Section title="Cadence">
+            <div className="grid grid-cols-2 gap-4">
+              <Field label="Next follow-up date">
+                <input className={inputCls} type="date" value={nextFollowupAt} onChange={(e) => setNextFollowupAt(e.target.value)} />
+              </Field>
+              <Field label="Demo attended date">
+                <input className={inputCls} type="date" value={demoAttendedAt} onChange={(e) => setDemoAttendedAt(e.target.value)} />
+              </Field>
+            </div>
           </Section>
 
           <Section title="Payment trail">
@@ -223,47 +292,44 @@ function Dialog({ leadNumber, lead, onClose }: { leadNumber: string; lead: LeadE
             </Field>
           </Section>
 
-          <Section title="Scoring & stage">
-            <Field label="Stage">
-              <div className="flex flex-wrap gap-2">
-                {STAGES.map((s) => (
-                  <button
-                    type="button" key={s.key}
-                    onClick={() => setStage(s.key)}
-                    className={cn(
-                      "rounded-full px-3 py-1.5 text-[12px] font-semibold transition",
-                      stage === s.key ? "border border-transparent bg-ink text-white" : "border border-rule bg-paper text-ink2 hover:border-rule2",
-                    )}
-                  >{s.label}</button>
-                ))}
-              </div>
-              {stage === "won" && (
-                <div className="mt-2 rounded-md border border-state-amber/30 bg-state-amber/10 p-2.5 text-[11.5px] text-state-amber">
-                  Tip: 'Enrolled' usually means the lead converted. Use the <b>Convert to learner</b> button (top right) instead — that creates a real enrolment.
-                </div>
-              )}
+          <Section title="Scoring & rating">
+
+            <Field label={`Score · ${score}`}>
+              <input
+                type="range" min={0} max={100} value={score}
+                onChange={(e) => onScoreChange(Number(e.target.value))}
+                className="w-full accent-brand-violet"
+              />
+              <span className="mt-1 block text-[11px] text-mute">
+                Set by the Lead Scoring Agent. Drag to override manually.
+              </span>
             </Field>
 
-            <Field label={`Score · ${score} (${heat})`}>
-              <div className="flex items-center gap-3">
-                <input type="range" min={0} max={100} value={score} onChange={(e) => onScoreChange(Number(e.target.value))} className="flex-1 accent-brand-violet" />
-                <div className="flex gap-1">
-                  {HEATS.map((h) => (
+            <Field label="Rating">
+              <div className="flex flex-wrap gap-2">
+                {LEAD_RATINGS.map((r) => {
+                  const s = ratingStyles[r];
+                  const on = rating === r;
+                  return (
                     <button
-                      type="button" key={h}
-                      onClick={() => setHeat(h)}
+                      type="button" key={r}
+                      onClick={() => setRating(r)}
                       className={cn(
-                        "rounded-full px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wider transition",
-                        heat === h
-                          ? h === "hot" ? "bg-brand-magenta text-white"
-                          : h === "warm" ? "bg-state-amber text-white"
-                          : "bg-mute text-white"
-                          : "border border-rule text-mute hover:border-rule2",
+                        "inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-[12px] font-semibold transition",
+                        on
+                          ? cn(s.bg, s.text, "ring-2 ring-offset-1 ring-offset-paper", s.text.replace("text-", "ring-"))
+                          : "border border-rule bg-paper text-mute hover:border-rule2",
                       )}
-                    >{h}</button>
-                  ))}
-                </div>
+                    >
+                      <span className={cn("h-1.5 w-1.5 rounded-full", on ? s.dot : "bg-rule2")} />
+                      {s.label}
+                    </button>
+                  );
+                })}
               </div>
+              <span className="mt-1 block text-[11px] text-mute">
+                Human-set. The Scoring Agent reads this as a strong prior but never changes it.
+              </span>
             </Field>
 
             <Field label="Next-best-action label">

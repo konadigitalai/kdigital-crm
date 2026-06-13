@@ -11,8 +11,11 @@ function humanFieldLabel(field: string): string {
     name: "Name",
     email: "Email",
     phone: "Phone",
+    phoneCountryCode: "Phone country code",
     city: "City",
-    value: "Deal value",
+    timeZone: "Time zone",
+    deliveryMode: "Delivery mode",
+    value: "Price quoted",
     description: "Description",
     paymentProofUrl: "Payment proof",
     nbaLabel: "Next-best action",
@@ -23,6 +26,8 @@ function humanFieldLabel(field: string): string {
     feeDue: "Fee due",
     dueDate: "Due date",
     registeredDate: "Registered date",
+    nextFollowupAt: "Next follow-up date",
+    demoAttendedAt: "Demo attended date",
     heat: "Heat",
     stage: "Stage",
     program: "Program",
@@ -158,6 +163,10 @@ leadsRouter.post("/", async (req, res, next) => {
     if (Number.isNaN(score) || score < 0 || score > 100) errors.push("score must be 0..100");
     const heat: Heat = (b.heat as Heat) ?? deriveHeat(score);
     if (!["hot","warm","cold"].includes(heat)) errors.push("heat invalid");
+    const rating = b.rating ? String(b.rating) : "new lead";
+    if (!["new lead","attempted","cold","warm","hot","superhot","enrolled"].includes(rating)) {
+      errors.push("rating invalid");
+    }
     const nbaLabel = b.nbaLabel ? String(b.nbaLabel).trim() : "Reach out today";
     const nbaIcon  = b.nbaIcon  ? String(b.nbaIcon).trim()  : "send";
     const advisorId = b.advisorId ? String(b.advisorId).trim() : null;
@@ -223,14 +232,14 @@ leadsRouter.post("/", async (req, res, next) => {
       await db.execute(sql`
         INSERT INTO lead (
           work_item_id, tenant_id,
-          source, source_label, score, score_label, score_desc, heat,
+          source, source_label, score, score_label, score_desc, heat, rating,
           city, program, program_id, value, stage, stage_label,
           advisor_id, avatar, initials,
           nba_icon, nba_label, nba_ghost,
           nba_confidence, nba_headline, nba_why
         ) VALUES (
           ${wiId}, current_tenant(),
-          ${source}, ${sourceLabel}, ${score}, ${HEAT_LABEL[heat]}, ${HEAT_DESC[heat]}, ${heat},
+          ${source}, ${sourceLabel}, ${score}, ${HEAT_LABEL[heat]}, ${HEAT_DESC[heat]}, ${heat}, ${rating},
           ${city}, ${programName}, ${resolvedProgramId}, ${value}, ${stage}, ${STAGE_LABEL[stage]},
           ${resolvedAdvisorId}, ${pickAvatar(name)}, ${initialsOf(name)},
           ${nbaIcon}, ${nbaLabel}, false,
@@ -337,6 +346,7 @@ leadsRouter.get("/", async (req, res, next) => {
           l.stage_label      AS "stageLabel",
           l.score            AS score,
           l.heat             AS heat,
+          l.rating           AS rating,
           l.avatar           AS avatar,
           l.nba_icon         AS "nbaIcon",
           l.nba_label        AS "nbaLabel",
@@ -344,7 +354,9 @@ leadsRouter.get("/", async (req, res, next) => {
           l.fee_paid         AS "feePaid",
           l.fee_due          AS "feeDue",
           l.due_date         AS "dueDate",
-          l.registered_date  AS "registeredDate"
+          l.registered_date  AS "registeredDate",
+          l.next_followup_at AS "nextFollowupAt",
+          l.demo_attended_at AS "demoAttendedAt"
         FROM lead l
         JOIN work_item wi ON wi.id = l.work_item_id
         JOIN party p      ON p.id  = wi.party_id
@@ -377,6 +389,9 @@ leadsRouter.patch("/:idOrNumber", async (req, res, next) => {
     if (b.heat !== undefined && !["hot","warm","cold"].includes(String(b.heat))) {
       return res.status(400).json({ error: "heat invalid" });
     }
+    if (b.rating !== undefined && !["new lead","attempted","cold","warm","hot","superhot","enrolled"].includes(String(b.rating))) {
+      return res.status(400).json({ error: "rating invalid" });
+    }
 
     const updated = await withTenant(req.tenantId!, async (db) => {
       // Resolve work_item by id or number AND fetch current values so we can
@@ -385,10 +400,14 @@ leadsRouter.patch("/:idOrNumber", async (req, res, next) => {
         isUuid
           ? sql`
               SELECT wi.id, wi.party_id AS "partyId",
-                     p.name, p.email, p.phone, p.city,
+                     p.name, p.email, p.phone, p.phone_country_code AS "phoneCountryCode", p.city,
                      l.value, l.source, l.source_label AS "sourceLabel", l.description,
                      l.fee_paid AS "feePaid", l.fee_due AS "feeDue",
                      l.due_date AS "dueDate", l.registered_date AS "registeredDate",
+                     l.next_followup_at AS "nextFollowupAt",
+                     l.demo_attended_at AS "demoAttendedAt",
+                     l.time_zone AS "timeZone",
+                     l.delivery_mode AS "deliveryMode",
                      l.payment_proof_url AS "paymentProofUrl",
                      l.score, l.heat, l.stage, l.stage_label AS "stageLabel",
                      l.nba_label AS "nbaLabel", l.nba_icon AS "nbaIcon",
@@ -401,10 +420,14 @@ leadsRouter.patch("/:idOrNumber", async (req, res, next) => {
             `
           : sql`
               SELECT wi.id, wi.party_id AS "partyId",
-                     p.name, p.email, p.phone, p.city,
+                     p.name, p.email, p.phone, p.phone_country_code AS "phoneCountryCode", p.city,
                      l.value, l.source, l.source_label AS "sourceLabel", l.description,
                      l.fee_paid AS "feePaid", l.fee_due AS "feeDue",
                      l.due_date AS "dueDate", l.registered_date AS "registeredDate",
+                     l.next_followup_at AS "nextFollowupAt",
+                     l.demo_attended_at AS "demoAttendedAt",
+                     l.time_zone AS "timeZone",
+                     l.delivery_mode AS "deliveryMode",
                      l.payment_proof_url AS "paymentProofUrl",
                      l.score, l.heat, l.stage, l.stage_label AS "stageLabel",
                      l.nba_label AS "nbaLabel", l.nba_icon AS "nbaIcon",
@@ -432,6 +455,16 @@ leadsRouter.patch("/:idOrNumber", async (req, res, next) => {
       if (b.phone !== undefined) {
         await db.execute(sql`UPDATE party SET phone = ${norm(b.phone)} WHERE id = ${partyId}`);
       }
+      if (b.phoneCountryCode !== undefined) {
+        // Normalize: keep only "+digits" (e.g. "+91"). Empty/invalid → null.
+        const cc = b.phoneCountryCode == null || b.phoneCountryCode === ""
+          ? null
+          : (() => {
+              const m = String(b.phoneCountryCode).trim().match(/^\+?(\d{1,4})$/);
+              return m ? `+${m[1]}` : null;
+            })();
+        await db.execute(sql`UPDATE party SET phone_country_code = ${cc} WHERE id = ${partyId}`);
+      }
       if (b.city !== undefined) {
         await db.execute(sql`UPDATE party SET city = ${norm(b.city)} WHERE id = ${partyId}`);
         // Also update lead.city (denormalized)
@@ -441,6 +474,14 @@ leadsRouter.patch("/:idOrNumber", async (req, res, next) => {
       // Build lead update (dynamic SET)
       const leadSets: ReturnType<typeof sql>[] = [];
       if (b.value !== undefined)  leadSets.push(sql`value = ${b.value ? String(b.value).trim() : null}`);
+      if (b.timeZone !== undefined) leadSets.push(sql`time_zone = ${b.timeZone ? String(b.timeZone).trim() : null}`);
+      if (b.deliveryMode !== undefined) {
+        const m = b.deliveryMode == null || b.deliveryMode === "" ? null : String(b.deliveryMode).trim().toLowerCase();
+        if (m !== null && !["online", "offline", "hybrid"].includes(m)) {
+          return { kind: "bad-delivery-mode" as const };
+        }
+        leadSets.push(sql`delivery_mode = ${m}`);
+      }
       if (b.source !== undefined) leadSets.push(sql`source = ${b.source ? String(b.source).trim() : null}`);
       if (b.sourceLabel !== undefined) leadSets.push(sql`source_label = ${b.sourceLabel ? String(b.sourceLabel).trim() : null}`);
       if (b.score !== undefined) {
@@ -454,6 +495,7 @@ leadsRouter.patch("/:idOrNumber", async (req, res, next) => {
         }
       }
       if (b.heat !== undefined) leadSets.push(sql`heat = ${String(b.heat)}`);
+      if (b.rating !== undefined) leadSets.push(sql`rating = ${String(b.rating)}`);
       if (b.stage !== undefined) {
         const STAGE_LABEL: Record<string, string> = {
           new: "New inbound", qual: "Qualified", demo: "Demo / Trial",
@@ -475,6 +517,10 @@ leadsRouter.patch("/:idOrNumber", async (req, res, next) => {
         leadSets.push(sql`due_date = ${b.dueDate || null}`);
       if (b.registeredDate !== undefined)
         leadSets.push(sql`registered_date = ${b.registeredDate || null}`);
+      if (b.nextFollowupAt !== undefined)
+        leadSets.push(sql`next_followup_at = ${b.nextFollowupAt || null}`);
+      if (b.demoAttendedAt !== undefined)
+        leadSets.push(sql`demo_attended_at = ${b.demoAttendedAt || null}`);
       if (b.paymentProofUrl !== undefined)
         leadSets.push(sql`payment_proof_url = ${b.paymentProofUrl ? String(b.paymentProofUrl).trim() : null}`);
       let newProgramName: string | null = null;
@@ -517,10 +563,14 @@ leadsRouter.patch("/:idOrNumber", async (req, res, next) => {
 
       // Simple text/number fields
       const textFields: Array<[string, string]> = [
-        ["name", "name"], ["email", "email"], ["phone", "phone"], ["city", "city"],
+        ["name", "name"], ["email", "email"], ["phone", "phone"],
+        ["phoneCountryCode", "phoneCountryCode"],
+        ["city", "city"],
         ["value", "value"], ["description", "description"],
         ["paymentProofUrl", "paymentProofUrl"],
         ["nbaLabel", "nbaLabel"], ["nbaIcon", "nbaIcon"],
+        ["timeZone", "timeZone"],
+        ["deliveryMode", "deliveryMode"],
       ];
       for (const [in_, prev] of textFields) {
         if (b[in_] === undefined) continue;
@@ -547,7 +597,12 @@ leadsRouter.patch("/:idOrNumber", async (req, res, next) => {
 
       // Dates (compare as YYYY-MM-DD)
       const dayOf = (v: unknown) => v ? String(v).slice(0, 10) : "";
-      for (const [in_, prev] of [["dueDate", "dueDate"], ["registeredDate", "registeredDate"]] as const) {
+      for (const [in_, prev] of [
+        ["dueDate", "dueDate"],
+        ["registeredDate", "registeredDate"],
+        ["nextFollowupAt", "nextFollowupAt"],
+        ["demoAttendedAt", "demoAttendedAt"],
+      ] as const) {
         if (b[in_] === undefined) continue;
         if (dayOf(before[prev]) !== dayOf(b[in_])) {
           changes.push({ field: in_, from: before[prev], to: b[in_] });
@@ -590,11 +645,21 @@ leadsRouter.patch("/:idOrNumber", async (req, res, next) => {
         };
         const moneyFields = new Set(["feePaid", "feeDue"]);
         const renderMoney = (v: unknown): string => v == null || v === "" ? "—" : `₹${Number(v).toLocaleString("en-IN")}`;
+        // value/price quoted is also money when it's purely numeric.
+        const renderPrice = (v: unknown): string => {
+          if (v == null || v === "") return "—";
+          const s = String(v).trim();
+          if (/^\d+(\.\d+)?$/.test(s)) return `₹${Number(s).toLocaleString("en-IN")}`;
+          return `"${s}"`;
+        };
 
         const lines = changes.map((c) => {
           const label = humanFieldLabel(c.field);
           if (moneyFields.has(c.field)) {
             return `${label}: ${renderMoney(c.from)} → ${renderMoney(c.to)}`;
+          }
+          if (c.field === "value") {
+            return `${label}: ${renderPrice(c.from)} → ${renderPrice(c.to)}`;
           }
           if (c.field === "score") {
             return `${label}: ${c.from ?? "—"} → ${c.to}`;
@@ -602,7 +667,8 @@ leadsRouter.patch("/:idOrNumber", async (req, res, next) => {
           if (c.field === "stage" || c.field === "heat") {
             return `${label}: ${c.from ?? "—"} → ${c.to}`;
           }
-          if (c.field === "dueDate" || c.field === "registeredDate") {
+          if (c.field === "dueDate" || c.field === "registeredDate"
+              || c.field === "nextFollowupAt" || c.field === "demoAttendedAt") {
             const d = (v: unknown) => v ? new Date(String(v)).toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" }) : "—";
             return `${label}: ${d(c.from)} → ${d(c.to)}`;
           }
@@ -639,6 +705,7 @@ leadsRouter.patch("/:idOrNumber", async (req, res, next) => {
 
     if (updated === null) return res.status(404).json({ error: "Lead not found" });
     if (updated.kind === "bad-score") return res.status(400).json({ error: "score must be 0..100" });
+    if (updated.kind === "bad-delivery-mode") return res.status(400).json({ error: "deliveryMode must be online | offline | hybrid" });
     res.json({ ok: true, lead: updated.lead });
   } catch (err) {
     next(err);

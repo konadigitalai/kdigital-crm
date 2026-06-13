@@ -32,7 +32,15 @@ summaryRouter.get("/", async (req, res, next) => {
         GROUP BY l.stage
       `);
 
-      return { overall: overall.rows[0], byStage: byStage.rows };
+      // Ticket counts for the sidebar badge + dashboard hero.
+      const tickets = await db.execute(sql`
+        SELECT
+          COUNT(*) FILTER (WHERE status NOT IN ('closed','resolved','cancelled'))::int AS "open",
+          COUNT(*) FILTER (WHERE due_at < NOW() AND status NOT IN ('closed','resolved','cancelled'))::int AS "overdue"
+        FROM ticket
+      `);
+
+      return { overall: overall.rows[0], byStage: byStage.rows, tickets: tickets.rows[0] };
     });
     res.json(data);
   } catch (err) {

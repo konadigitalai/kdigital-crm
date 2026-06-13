@@ -22,6 +22,7 @@ recordsRouter.get("/:idOrNumber", async (req, res, next) => {
                 p.name             AS name,
                 p.email            AS "partyEmail",
                 p.phone            AS "partyPhone",
+                p.phone_country_code AS "partyPhoneCountryCode",
                 p.city             AS "partyCity",
                 l.initials, l.city, l.program, l.program_id AS "programId", l.value,
                 l.description     AS "description",
@@ -29,11 +30,15 @@ recordsRouter.get("/:idOrNumber", async (req, res, next) => {
                 l.fee_due         AS "feeDue",
                 l.due_date        AS "dueDate",
                 l.registered_date AS "registeredDate",
+                l.next_followup_at AS "nextFollowupAt",
+                l.demo_attended_at AS "demoAttendedAt",
+                l.time_zone        AS "timeZone",
+                l.delivery_mode    AS "deliveryMode",
                 l.payment_proof_url AS "paymentProofUrl",
                 l.stage, l.stage_label AS "stageLabel",
                 l.source           AS "leadSource",
                 l.source_label     AS "sourceLabel",
-                l.score, l.heat, l.avatar,
+                l.score, l.heat, l.rating, l.avatar,
                 l.nba_icon         AS "nbaIcon",
                 l.nba_label        AS "nbaLabel",
                 l.nba_ghost        AS "nbaGhost",
@@ -61,6 +66,7 @@ recordsRouter.get("/:idOrNumber", async (req, res, next) => {
                 p.name             AS name,
                 p.email            AS "partyEmail",
                 p.phone            AS "partyPhone",
+                p.phone_country_code AS "partyPhoneCountryCode",
                 p.city             AS "partyCity",
                 l.initials, l.city, l.program, l.program_id AS "programId", l.value,
                 l.description     AS "description",
@@ -68,11 +74,15 @@ recordsRouter.get("/:idOrNumber", async (req, res, next) => {
                 l.fee_due         AS "feeDue",
                 l.due_date        AS "dueDate",
                 l.registered_date AS "registeredDate",
+                l.next_followup_at AS "nextFollowupAt",
+                l.demo_attended_at AS "demoAttendedAt",
+                l.time_zone        AS "timeZone",
+                l.delivery_mode    AS "deliveryMode",
                 l.payment_proof_url AS "paymentProofUrl",
                 l.stage, l.stage_label AS "stageLabel",
                 l.source           AS "leadSource",
                 l.source_label     AS "sourceLabel",
-                l.score, l.heat, l.avatar,
+                l.score, l.heat, l.rating, l.avatar,
                 l.nba_icon         AS "nbaIcon",
                 l.nba_label        AS "nbaLabel",
                 l.nba_ghost        AS "nbaGhost",
@@ -119,7 +129,10 @@ recordsRouter.get("/:idOrNumber", async (req, res, next) => {
         ORDER BY aa.rank
       `);
 
-      // Timeline — only ai/you rows; auto/sent/need are home-page feed entries
+      // Timeline — only ai/you rows; auto/sent/need are home-page feed entries.
+      // Includes activity attached either directly to this lead's work_item
+      // OR to any work_item that shares this party (so tickets opened against
+      // the same person appear in their unified history).
       const timeline = await db.execute(sql`
         SELECT
           a.id         AS "id",
@@ -129,9 +142,12 @@ recordsRouter.get("/:idOrNumber", async (req, res, next) => {
           a.detail     AS "detail",
           a.tag        AS "tag",
           a.payload    AS "payload",
-          a.ts         AS "ts"
+          a.ts         AS "ts",
+          wi.number    AS "originNumber",
+          wi.type      AS "originType"
         FROM activity a
-        WHERE a.work_item_id = ${wiId}
+        LEFT JOIN work_item wi ON wi.id = a.work_item_id
+        WHERE (a.work_item_id = ${wiId} OR a.party_id = ${row.partyId as string})
           AND a.tag IN ('ai','you')
         ORDER BY a.ts DESC
       `);
@@ -171,7 +187,10 @@ recordsRouter.get("/:idOrNumber", async (req, res, next) => {
           stageLabel: row.stageLabel,
           email:   row.partyEmail,
           phone:   row.partyPhone,
+          phoneCountryCode: row.partyPhoneCountryCode ?? null,
           city:    row.partyCity,
+          timeZone: row.timeZone ?? null,
+          deliveryMode: row.deliveryMode ?? null,
           source:  row.sourceLabel,
           advisor: row.advisorName ?? null,
           scoreLabel: row.scoreLabel,
@@ -182,6 +201,8 @@ recordsRouter.get("/:idOrNumber", async (req, res, next) => {
           feeDue:          row.feeDue,
           dueDate:         row.dueDate,
           registeredDate:  row.registeredDate,
+          nextFollowupAt:  row.nextFollowupAt,
+          demoAttendedAt:  row.demoAttendedAt,
           paymentProofUrl: row.paymentProofUrl,
           signals: signals.rows,
           nbaCard: row.nbaHeadline

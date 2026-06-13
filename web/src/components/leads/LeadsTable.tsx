@@ -6,23 +6,12 @@ import { ScoreRing } from "@/components/ui/ScoreRing";
 import { FilterBar } from "@/components/filter/FilterBar";
 import { useFilter } from "@/components/filter/useFilter";
 import type { FilterField } from "@/components/filter/types";
-import { avatarGradClass, stageStyles } from "@/lib/ui";
+import { avatarGradClass, ratingStyles } from "@/lib/ui";
 import { cn } from "@/lib/cn";
 import type { Lead } from "@/lib/types";
+import { LEAD_RATINGS } from "@/lib/types";
 
-const STAGE_OPTIONS = [
-  { value: "new",  label: "New inbound", cls: "bg-[rgba(31,63,207,.08)] text-brand-blue" },
-  { value: "qual", label: "Qualified",   cls: "bg-[rgba(107,31,184,.08)] text-brand-violet" },
-  { value: "demo", label: "Demo / Trial",cls: "bg-[rgba(224,138,30,.12)] text-state-amber" },
-  { value: "neg",  label: "Negotiation", cls: "bg-[rgba(199,25,122,.08)] text-brand-magenta" },
-  { value: "won",  label: "Enrolled",    cls: "bg-[rgba(46,158,106,.10)] text-state-ok" },
-];
-
-const HEAT_OPTIONS = [
-  { value: "hot",  label: "🔥 Hot",  cls: "bg-[rgba(199,25,122,.10)] text-brand-magenta" },
-  { value: "warm", label: "Warm",     cls: "bg-[rgba(224,138,30,.12)] text-state-amber" },
-  { value: "cold", label: "Cold",     cls: "bg-warm2 text-mute" },
-];
+const RATING_OPTIONS = LEAD_RATINGS.map((r) => ({ value: r, label: ratingStyles[r].label }));
 
 // Build the field schema from the actual rows so program/source dropdowns
 // only list values that exist in the dataset.
@@ -34,10 +23,11 @@ function buildFields(leads: Lead[]): FilterField[] {
     { key: "number",     label: "Lead #",     type: "text",   get: (l: Lead) => l.number },
     { key: "city",       label: "City",       type: "enum",   options: cities.map((c) => ({ value: c, label: c })),  get: (l: Lead) => l.city },
     { key: "program",    label: "Program",    type: "enum",   options: programs.map((p) => ({ value: p, label: p })), get: (l: Lead) => l.program },
-    { key: "stage",      label: "Stage",      type: "enum",   options: STAGE_OPTIONS, get: (l: Lead) => l.stage },
-    { key: "heat",       label: "Heat",       type: "enum",   options: HEAT_OPTIONS,  get: (l: Lead) => l.heat },
+    { key: "rating",     label: "Rating",     type: "enum",   options: RATING_OPTIONS, get: (l: Lead) => l.rating },
     { key: "score",      label: "Score",      type: "number", get: (l: Lead) => l.score },
     { key: "nbaLabel",   label: "Next action",type: "text",   get: (l: Lead) => l.nbaLabel },
+    { key: "nextFollowupAt", label: "Next follow-up", type: "date", get: (l: Lead) => l.nextFollowupAt },
+    { key: "demoAttendedAt", label: "Demo attended",  type: "date", get: (l: Lead) => l.demoAttendedAt },
   ];
 }
 
@@ -65,7 +55,7 @@ export function LeadsTable({ leads }: { leads: Lead[] }) {
           <div />
           <div>Lead</div>
           <div>Interest</div>
-          <div>Stage</div>
+          <div>Rating</div>
           <div>AI score</div>
           <div>Next best action</div>
           <div />
@@ -77,7 +67,7 @@ export function LeadsTable({ leads }: { leads: Lead[] }) {
           </div>
         ) : (
           filtered.map((l) => {
-            const sc = stageStyles[l.stage];
+            const sc = ratingStyles[l.rating];
             return (
               <Row key={l.id} href={`/records/${l.number}`}>
                 <div className="h-4 w-4 rounded-md border-[1.5px] border-rule2 bg-white" />
@@ -97,7 +87,7 @@ export function LeadsTable({ leads }: { leads: Lead[] }) {
                 <div className="text-[13px]">
                   <span className={cn("inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11.5px] font-semibold", sc.bg, sc.text)}>
                     <span className={cn("h-1.5 w-1.5 rounded-full", sc.dot)} />
-                    {l.stageLabel}
+                    {sc.label}
                   </span>
                 </div>
                 <div>

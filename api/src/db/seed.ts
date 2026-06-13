@@ -21,8 +21,14 @@ import {
   partyRole,
   program,
   tenant,
+  ticket,
+  userGroup,
+  userGroupMember,
+  userGroupPermission,
   workItem,
 } from "./schema.js";
+import { hashPassword } from "../lib/passwords.js";
+import { SYSTEM_GROUPS } from "../lib/permissions.js";
 
 const TENANT_NAME = "Digital Edify";
 
@@ -120,12 +126,13 @@ const SEED_LEADS: SeedLead[] = [
 ];
 
 const AGENT_CATALOG = [
-  { key: "outreach",   name: "Outreach Agent",     domain: "sales", operatesOn: "lead" },
-  { key: "scoring",    name: "Lead Scoring Agent", domain: "sales", operatesOn: "lead" },
-  { key: "scheduler",  name: "Scheduler Agent",    domain: "sales", operatesOn: "lead" },
-  { key: "forecast",   name: "Forecast Agent",     domain: "sales", operatesOn: "deal" },
-  { key: "triage",     name: "Service Triage",     domain: "service", operatesOn: "service_case" },
-  { key: "onboarding", name: "Onboarding Agent",   domain: "service", operatesOn: "onboarding_task" },
+  { key: "outreach",   name: "Outreach Agent",       domain: "sales", operatesOn: "lead" },
+  { key: "scoring",    name: "Lead Scoring Agent",   domain: "sales", operatesOn: "lead" },
+  { key: "nba",        name: "Next-Best-Action Agent", domain: "sales", operatesOn: "lead" },
+  { key: "scheduler",  name: "Scheduler Agent",      domain: "sales", operatesOn: "lead" },
+  { key: "forecast",   name: "Forecast Agent",       domain: "sales", operatesOn: "deal" },
+  { key: "triage",     name: "Service Triage",       domain: "service", operatesOn: "service_case" },
+  { key: "onboarding", name: "Onboarding Agent",     domain: "service", operatesOn: "onboarding_task" },
 ];
 
 const AGENT_RUN_CARDS = [
@@ -154,9 +161,12 @@ async function main() {
     "agent_assignment", "lead_score_signal",
     "approval", "approval_policy", "activity", "relationship",
     "attachment", "embedding", "agent_run", "agent",
+    "ticket",
     "onboarding_task", "service_case", "deal", "lead",
     "batch_assignment", "enrolment",
     "work_item", "cohort", "course", "program",
+    "user_group_member", "user_group_permission", "user_group",
+    "app_session",
     "party_role", "party", "app_user", "tenant",
   ]) {
     await pool.query(`DELETE FROM ${t}`);
@@ -178,6 +188,65 @@ async function main() {
     tenantId, email: "rahul@edify.io", name: "Rahul", role: "advisor",
   }).returning();
   void advisorRahul;
+
+  // Service-rep employees who own tickets. Manikanta is already the admin
+  // above and is also the first ticket-handling employee.
+  const ticketAgentSpecs = [
+    { name: "Anirudh", email: "anirudh@edify.io", role: "service_rep" as const },
+    { name: "Sheshi",  email: "sheshi@edify.io",  role: "service_rep" as const },
+    { name: "Venki",   email: "venki@edify.io",   role: "service_rep" as const },
+    { name: "Akhil",   email: "akhil@edify.io",   role: "service_rep" as const },
+    { name: "Roshni",  email: "roshni@edify.io",  role: "service_rep" as const },
+  ];
+  const ticketAgents: Record<string, string> = { Manikanta: admin!.id };
+  for (const e of ticketAgentSpecs) {
+    const [u] = await db.insert(appUser).values({ tenantId, ...e }).returning();
+    ticketAgents[e.name] = u!.id;
+  }
+
+  // ── Super-user (crmadmin) + system groups + memberships
+  console.log("→ creating super-user crmadmin@gmail.com…");
+  const crmAdminHash = await hashPassword("NewMani!23");
+  const [crmAdmin] = await db.insert(appUser).values({
+    tenantId,
+    email: "crmadmin@gmail.com",
+    name: "CRM Admin",
+    role: "admin",
+    passwordHash: crmAdminHash,
+  }).returning();
+
+  console.log("→ seeding system groups + memberships…");
+  const groupIdByName: Record<string, string> = {};
+  for (const spec of SYSTEM_GROUPS) {
+    const [g] = await db.insert(userGroup).values({
+      tenantId,
+      name: spec.name,
+      description: spec.description,
+      isSystem: true,
+    }).returning();
+    groupIdByName[spec.name] = g!.id;
+    if (spec.permissions.length) {
+      await db.insert(userGroupPermission).values(
+        spec.permissions.map((permission) => ({ groupId: g!.id, permission })),
+      );
+    }
+  }
+
+  const adminsId = groupIdByName["Administrators"]!;
+  const advisorsId = groupIdByName["Advisors"]!;
+
+  // crmadmin + Manikanta → Administrators
+  // Priya, Rahul, all service_reps → Advisors
+  const adminMembers = [crmAdmin!.id, admin!.id];
+  const advisorMembers = [
+    advisorPriya!.id,
+    advisorRahul!.id,
+    ...Object.values(ticketAgents).filter((id) => id !== admin!.id),
+  ];
+  await db.insert(userGroupMember).values([
+    ...adminMembers.map((userId) => ({ userId, groupId: adminsId })),
+    ...advisorMembers.map((userId) => ({ userId, groupId: advisorsId })),
+  ]);
 
   // ── Programs (with price) + courses + batches per course
   console.log("→ catalog (programs + courses + batches)…");
@@ -563,16 +632,26 @@ async function main() {
   // ── Approval (the live "needs approval" one for Aarav)
   console.log("→ approvals…");
   const aaravWi = leadByNumber["LEAD-9842"]!.workItemId;
-  await db.insert(approval).values({
+  const [seededApproval] = await db.insert(approval).values({
     tenantId, workItemId: aaravWi,
-    actionType: "send_whatsapp", mode: "supervised", status: "pending",
+    actionType: "send_email", mode: "supervised", status: "pending",
     proposed: sql`${JSON.stringify({
       channel: "email",
       subject: "About your agentic capstone walkthrough",
       body: "Hi Aarav — you asked about the multi-agent capstone before the demo. I recorded a 4-min walkthrough of exactly that build. Want me to hold your seat for Cohort 026?",
     })}::jsonb`,
     requestedBy: "outreach",
-  });
+  }).returning();
+
+  // Link the "needs approval" feed item for Aarav to this approval id so the
+  // home-page Approve / Reject buttons render. The first FEED entry is the
+  // outreach draft for Aarav (tag: 'need').
+  if (seededApproval) {
+    await pool.query(`
+      UPDATE activity SET payload = payload || $1::jsonb
+      WHERE work_item_id = $2 AND tag = 'need' AND actor_name = 'Outreach Agent'
+    `, [JSON.stringify({ approvalId: seededApproval.id }), aaravWi]);
+  }
 
   // ── Convert "won" leads to learners (so /learners page has real rows)
   console.log("→ converting 'won' leads to learners…");
@@ -613,6 +692,222 @@ async function main() {
     }).returning();
   }
   console.log(`  ${wonLeads.rows.length} learners enrolled (no courses/batches yet — assign on the learner page)`);
+
+  // ── Tickets — sample data for the dashboard
+  console.log("→ tickets…");
+  // Pick a couple of seeded leads + a converted learner so the cross-link demo works.
+  const aaravWiId   = leadByNumber["LEAD-9842"]!.workItemId; void aaravWiId;
+  const aaravParty  = leadByNumber["LEAD-9842"]!.partyId;
+  const sneha       = leadByNumber["LEAD-9810"]!;
+  const meghaParty  = leadByNumber["LEAD-9655"]!.partyId; // converted to learner above
+
+  // Pull party email/phone/name for each linked party so we can snapshot them.
+  async function partySnapshot(pid: string): Promise<{ name: string; email: string; phone: string }> {
+    const r = await pool.query<{ name: string; email: string | null; phone: string | null }>(
+      `SELECT name, email, phone FROM party WHERE id = $1`, [pid],
+    );
+    const row = r.rows[0]!;
+    return {
+      name: row.name,
+      email: row.email ?? `${row.name.toLowerCase().replace(/\s+/g, ".")}@example.com`,
+      phone: row.phone ?? "+91 90000 00000",
+    };
+  }
+
+  const aaravSnap = await partySnapshot(aaravParty);
+  const snehaSnap = await partySnapshot(sneha.partyId);
+  const meghaSnap = await partySnapshot(meghaParty);
+
+  type SeedTicket = {
+    subject: string;
+    description: string;
+    requesterName: string;
+    requesterEmail: string;
+    requesterPhone: string;
+    requesterKind: "lead" | "learner" | "external";
+    partyId: string | null;
+    category: string;
+    priority: number;
+    status: "open" | "in_progress" | "pending" | "resolved" | "closed";
+    assigneeName: string;
+    dueOffsetHours: number;       // hours from "now"; negative = overdue
+    remindOffsetHours: number | null;
+    resolution?: string;
+    resolutionCode?: string;
+  };
+
+  const NOW = Date.now();
+  const tickets: SeedTicket[] = [
+    {
+      subject: "Cohort 026 onboarding link not working",
+      description: "Aarav says he is unable to access the onboarding portal — the link in the welcome email returns 404.",
+      requesterName: aaravSnap.name, requesterEmail: aaravSnap.email, requesterPhone: aaravSnap.phone,
+      requesterKind: "lead", partyId: aaravParty,
+      category: "onboarding", priority: 1, status: "in_progress",
+      assigneeName: "Anirudh", dueOffsetHours: 6, remindOffsetHours: 2,
+    },
+    {
+      subject: "Refund requested — Salesforce program",
+      description: "Sneha wants to switch from the Salesforce track to AI Engineer · GenAI before the cohort starts. Asking about refund + transfer.",
+      requesterName: snehaSnap.name, requesterEmail: snehaSnap.email, requesterPhone: snehaSnap.phone,
+      requesterKind: "lead", partyId: sneha.partyId,
+      category: "refund", priority: 2, status: "open",
+      assigneeName: "Sheshi", dueOffsetHours: 24, remindOffsetHours: 8,
+    },
+    {
+      subject: "Payment receipt not received",
+      description: "Megha completed payment last week but has not received the official receipt. Needs it for company reimbursement.",
+      requesterName: meghaSnap.name, requesterEmail: meghaSnap.email, requesterPhone: meghaSnap.phone,
+      requesterKind: "learner", partyId: meghaParty,
+      category: "billing", priority: 3, status: "pending",
+      assigneeName: "Venki", dueOffsetHours: 48, remindOffsetHours: 24,
+    },
+    {
+      subject: "Demo session crashed midway — need recording",
+      description: "External prospect attended yesterday's demo. Zoom dropped at 27 min. Asking for the recording so they can finish watching.",
+      requesterName: "Karan Joshi", requesterEmail: "karan.j@hotmail.com", requesterPhone: "+91 99876 11234",
+      requesterKind: "external", partyId: null,
+      category: "technical", priority: 2, status: "open",
+      assigneeName: "Akhil", dueOffsetHours: -3, remindOffsetHours: null,   // OVERDUE
+    },
+    {
+      subject: "Course material — Power BI module 4 missing",
+      description: "Learner reports module 4 of the Power BI course shows '0 lessons'. Likely an LMS publish error.",
+      requesterName: "Sanjay Pillai", requesterEmail: "sanjay.pillai@gmail.com", requesterPhone: "+91 98421 55432",
+      requesterKind: "external", partyId: null,
+      category: "content_lms", priority: 3, status: "in_progress",
+      assigneeName: "Roshni", dueOffsetHours: 72, remindOffsetHours: 48,
+    },
+    {
+      subject: "Certificate name spelling correction",
+      description: "Name printed as 'Vikram G' instead of 'Vikram Gowda' on the completion certificate.",
+      requesterName: "Vikram Gowda", requesterEmail: "vikram.gowda@gmail.com", requesterPhone: "+91 90123 44556",
+      requesterKind: "external", partyId: null,
+      category: "certificate", priority: 4, status: "closed",
+      assigneeName: "Manikanta", dueOffsetHours: -120, remindOffsetHours: null,
+      resolution: "Reissued certificate with correct full name. Emailed PDF + LinkedIn share link to Vikram. Confirmed receipt.",
+      resolutionCode: "fixed",
+    },
+    {
+      subject: "Request to defer cohort by one month",
+      description: "Hospital admission in family — needs to push cohort start by 4 weeks.",
+      requesterName: "Anita Rao", requesterEmail: "anita.rao@gmail.com", requesterPhone: "+91 98765 22110",
+      requesterKind: "external", partyId: null,
+      category: "cohort_batch", priority: 3, status: "resolved",
+      assigneeName: "Sheshi", dueOffsetHours: -36, remindOffsetHours: null,
+      resolution: "Moved Anita to Cohort 027 (next month evening batch). Updated her welcome pack and notified the academic team.",
+      resolutionCode: "fixed",
+    },
+  ];
+
+  for (let i = 0; i < tickets.length; i++) {
+    const T = tickets[i]!;
+    const numR = await pool.query<{ n: string }>(`SELECT nextval('seq_ticket')::text AS n`);
+    const number = `TKT-${numR.rows[0]!.n}`;
+
+    const dueAt    = new Date(NOW + T.dueOffsetHours * 3600_000);
+    const remindAt = T.remindOffsetHours == null ? null : new Date(NOW + T.remindOffsetHours * 3600_000);
+    const wiState  = T.status === "closed" || T.status === "resolved"
+      ? "closed_won"
+      : T.status === "in_progress"
+        ? "in_progress"
+        : "open";
+
+    const assigneeId = ticketAgents[T.assigneeName] ?? admin!.id;
+
+    const [wi] = await db.insert(workItem).values({
+      tenantId,
+      number,
+      type: "ticket",
+      partyId: T.partyId ?? undefined,
+      assigneeId,
+      state: wiState,
+    }).returning();
+
+    const isClosed = T.status === "closed";
+    const isResolved = T.status === "resolved" || T.status === "closed";
+
+    await db.insert(ticket).values({
+      workItemId: wi!.id,
+      tenantId,
+      requesterName: T.requesterName,
+      requesterEmail: T.requesterEmail,
+      requesterPhone: T.requesterPhone,
+      requesterKind: T.requesterKind,
+      partyId: T.partyId ?? undefined,
+      subject: T.subject,
+      description: T.description,
+      category: T.category,
+      priority: T.priority,
+      status: T.status,
+      dueAt,
+      remindAt: remindAt ?? undefined,
+      resolution: T.resolution ?? undefined,
+      resolutionCode: T.resolutionCode ?? undefined,
+      resolvedAt: isResolved ? new Date(NOW + T.dueOffsetHours * 3600_000 - 1800_000) : undefined,
+      closedAt:   isClosed   ? new Date(NOW + T.dueOffsetHours * 3600_000 - 1500_000) : undefined,
+      createdById: admin!.id,
+    });
+
+    // Activity row — ticket created
+    await db.insert(activity).values({
+      tenantId,
+      workItemId: wi!.id,
+      partyId: T.partyId ?? undefined,
+      actorType: "user",
+      actorName: "Manikanta",
+      verb: "Ticket created",
+      detail: T.subject,
+      tag: "you",
+      payload: sql`${JSON.stringify({ when: "Earlier today", kind: "create" })}::jsonb`,
+      ts: new Date(NOW - (i + 1) * 3600_000),
+    });
+
+    // Activity row — assigned
+    await db.insert(activity).values({
+      tenantId,
+      workItemId: wi!.id,
+      partyId: T.partyId ?? undefined,
+      actorType: "user",
+      actorName: "Manikanta",
+      verb: "Assigned",
+      detail: `Assignee: unassigned → ${T.assigneeName}`,
+      tag: "you",
+      payload: sql`${JSON.stringify({ when: "Earlier today", kind: "assign" })}::jsonb`,
+      ts: new Date(NOW - (i + 1) * 3600_000 + 60_000),
+    });
+
+    if (T.status === "in_progress") {
+      await db.insert(activity).values({
+        tenantId,
+        workItemId: wi!.id,
+        partyId: T.partyId ?? undefined,
+        actorType: "user",
+        actorName: T.assigneeName,
+        verb: "Status",
+        detail: "Status: open → in_progress",
+        tag: "you",
+        payload: sql`${JSON.stringify({ when: "Just now", kind: "status" })}::jsonb`,
+        ts: new Date(NOW - (i + 1) * 3600_000 + 600_000),
+      });
+    }
+
+    if (isResolved) {
+      await db.insert(activity).values({
+        tenantId,
+        workItemId: wi!.id,
+        partyId: T.partyId ?? undefined,
+        actorType: "user",
+        actorName: T.assigneeName,
+        verb: isClosed ? "Closed" : "Resolved",
+        detail: T.resolution ?? "",
+        tag: "you",
+        payload: sql`${JSON.stringify({ when: "Earlier", kind: isClosed ? "close" : "resolve", resolutionCode: T.resolutionCode })}::jsonb`,
+        ts: new Date(NOW + T.dueOffsetHours * 3600_000 - 1500_000),
+      });
+    }
+  }
+  console.log(`  ${tickets.length} tickets seeded across ${Object.keys(ticketAgents).length} employees`);
 
   console.log("✓ seed complete");
   await pool.end();

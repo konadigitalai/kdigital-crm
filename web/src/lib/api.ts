@@ -4,9 +4,14 @@
 // All routes are tenant-scoped on the server side via `tenantMiddleware`.
 
 import type {
-  AgentCard, Batch, BatchInput, CatalogResponse, Course, CourseInput, CreateLeadInput, CurrentUser,
-  EnrolmentStatus, FeedItem, Lead, LearnerRecord, LearnerSummary, PipelineColumn, Program,
-  RecentRun, RecordResponse, SummaryResponse,
+  AdminUser, AgentCard, AgentCatalogEntry, AgentMode, AgentRunRecord, Batch, BatchInput, BatchSession,
+  CalendarEventDetail, CalendarEventSummary, CatalogResponse,
+  Client, ClientMember, Course, CourseInput, CreateLeadInput, CurrentUser,
+  CreateTicketInput, EdifyAnswer, EdifySessionSummary, EnrolmentStatus, EventRsvp, FeedItem,
+  ForecastSnapshot, GroupsResponse, Lead, LeaveDay, LeaveHalfDay, LeaveKind, LearnerRecord, LearnerSummary,
+  PipelineColumn, Program, RecentRun, RecordResponse, SummaryResponse,
+  Ticket, TicketDashboard, TicketDetail, TicketResolutionCode,
+  TimeBlock, TimesheetReportRow, WorkSession,
 } from "./types";
 
 // On the server: prefer API_URL, fall back to NEXT_PUBLIC_API_URL.
@@ -24,22 +29,86 @@ if (!API_URL) {
   );
 }
 
+// On the server, forward the browser's session cookie to the API so it
+// authenticates as the same user. In the browser, fetch's `credentials: 'include'`
+// will attach the cookie automatically (we still need a CORS allow-credentials
+// response header — set in api/src/index.ts).
+async function authHeaders(): Promise<Record<string, string>> {
+  if (!isServer) return {};
+  const { cookies } = await import("next/headers");
+  const store = await cookies();
+  const all = store.getAll();
+  if (!all.length) return {};
+  const cookieHeader = all.map((c: { name: string; value: string }) => `${c.name}=${c.value}`).join("; ");
+  return { Cookie: cookieHeader };
+}
+
+// Structured error surface: callers that need the body / status can do
+// `if (err instanceof ApiError) …`. Existing toString() form is preserved
+// for code that just renders `err.message`.
+export class ApiError extends Error {
+  status: number;
+  body: unknown;
+  constructor(status: number, body: unknown, message: string) {
+    super(message);
+    this.name = "ApiError";
+    this.status = status;
+    this.body = body;
+  }
+}
+
+async function failResponse(method: string, path: string, r: Response): Promise<never> {
+  const text = await r.text();
+  let body: unknown = text;
+  let serverMsg = text;
+  try {
+    body = JSON.parse(text);
+    if (body && typeof body === "object" && "error" in (body as Record<string, unknown>)) {
+      serverMsg = String((body as { error: unknown }).error);
+    }
+  } catch { /* leave as text */ }
+  throw new ApiError(r.status, body, `${method} ${path} → ${r.status}: ${serverMsg}`);
+}
+
 async function get<T>(path: string): Promise<T> {
-  // Disable Next's fetch cache so editing rows in Drizzle Studio shows up on refresh.
-  const r = await fetch(`${API_URL}${path}`, { cache: "no-store" });
-  if (!r.ok) throw new Error(`${path} → ${r.status}: ${await r.text()}`);
+  const headers = await authHeaders();
+  const r = await fetch(`${API_URL}${path}`, {
+    cache: "no-store",
+    credentials: "include",
+    headers,
+  });
+  if (!r.ok) await failResponse("GET", path, r);
   return r.json() as Promise<T>;
 }
 
-async function post<T>(path: string, body: unknown): Promise<T> {
+async function post<T>(path: string, body: unknown, signal?: AbortSignal): Promise<T> {
+  const headers = { "Content-Type": "application/json", ...(await authHeaders()) };
   const r = await fetch(`${API_URL}${path}`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers,
     cache: "no-store",
+    credentials: "include",
     body: JSON.stringify(body),
+    signal,
   });
-  if (!r.ok) throw new Error(`${path} → ${r.status}: ${await r.text()}`);
+  if (!r.ok) await failResponse("POST", path, r);
   return r.json() as Promise<T>;
+}
+
+// Generic "send method M with optional body" used for PATCH/PUT/DELETE.
+async function send<T>(method: string, path: string, body?: unknown): Promise<T> {
+  const headers = { "Content-Type": "application/json", ...(await authHeaders()) };
+  const r = await fetch(`${API_URL}${path}`, {
+    method,
+    headers,
+    cache: "no-store",
+    credentials: "include",
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  if (!r.ok) await failResponse(method, path, r);
+  // Some endpoints return 204; guard JSON parse.
+  const text = await r.text();
+  return (text ? JSON.parse(text) : ({} as T)) as T;
 }
 
 export async function getLeads(): Promise<Lead[]> {
@@ -53,27 +122,61 @@ export async function getPipeline(): Promise<PipelineColumn[]> {
 }
 
 export async function getAgentRuns(): Promise<AgentCard[]> {
-  const { runs } = await get<{ runs: AgentCard[] }>("/agents/runs");
-  return runs;
+  try {
+    const { runs } = await get<{ runs: AgentCard[] }>("/agents/runs");
+    return runs;
+  } catch (err) {
+    if ((err as Error).message.includes("→ 401")) return [];
+    throw err;
+  }
 }
 
 export async function getRecentRuns(): Promise<RecentRun[]> {
-  const { recent } = await get<{ recent: RecentRun[] }>("/agents/recent");
-  return recent;
+  try {
+    const { recent } = await get<{ recent: RecentRun[] }>("/agents/recent");
+    return recent;
+  } catch (err) {
+    if ((err as Error).message.includes("→ 401")) return [];
+    throw err;
+  }
 }
 
 export async function getActivityFeed(limit = 10): Promise<FeedItem[]> {
-  const { feed } = await get<{ feed: FeedItem[] }>(`/activity?limit=${limit}`);
-  return feed;
+  try {
+    const { feed } = await get<{ feed: FeedItem[] }>(`/activity?limit=${limit}`);
+    return feed;
+  } catch (err) {
+    if ((err as Error).message.includes("→ 401")) return [];
+    throw err;
+  }
 }
 
 export async function getCurrentUser(): Promise<CurrentUser | null> {
-  const { me } = await get<{ me: CurrentUser | null }>("/me");
-  return me;
+  try {
+    const { me } = await get<{ me: CurrentUser | null }>("/me");
+    return me;
+  } catch (err) {
+    // 401 here means the cookie was missing/expired between the Next middleware
+    // pass and this server fetch. Render with a null user; the next request will
+    // be redirected by middleware.
+    if ((err as Error).message.includes("→ 401")) return null;
+    throw err;
+  }
 }
 
 export async function getSummary(): Promise<SummaryResponse> {
-  return await get<SummaryResponse>("/summary");
+  try {
+    return await get<SummaryResponse>("/summary");
+  } catch (err) {
+    if ((err as Error).message.includes("→ 401")) {
+      return {
+        overall: { total: 0, hot: 0, warm: 0, cold: 0, hotOvernight: 0, pendingApprovals: 0, liveAgents: 0 },
+        byStage: [],
+        tickets: { open: 0, overdue: 0 },
+      };
+    }
+    throw err;
+  }
 }
 
 export async function getCatalog(): Promise<CatalogResponse> {
@@ -96,14 +199,7 @@ export async function updateProgram(
   id: string,
   patch: { name?: string; track?: string | null; price?: string | null; enabled?: boolean },
 ): Promise<Program> {
-  const r = await fetch(`${API_URL}/programs/${id}`, {
-    method: "PATCH",
-    headers: { "Content-Type": "application/json" },
-    cache: "no-store",
-    body: JSON.stringify(patch),
-  });
-  if (!r.ok) throw new Error(`PATCH /programs/${id} → ${r.status}: ${await r.text()}`);
-  const { program } = (await r.json()) as { program: Program };
+  const { program } = await send<{ program: Program }>("PATCH", `/programs/${id}`, patch);
   return program;
 }
 
@@ -111,8 +207,11 @@ export async function updateProgram(
 
 export async function updateLead(idOrNumber: string, patch: Partial<{
   name: string; email: string | null; phone: string | null; city: string | null;
+  phoneCountryCode: string | null;
+  timeZone: string | null;
+  deliveryMode: "online" | "offline" | "hybrid" | null;
   value: string | null; source: string; sourceLabel: string;
-  stage: string; score: number; heat: string;
+  stage: string; score: number; heat: string; rating: string;
   nbaLabel: string; nbaIcon: string;
   programId: string | null; advisorId: string | null;
   description: string | null;
@@ -120,26 +219,15 @@ export async function updateLead(idOrNumber: string, patch: Partial<{
   feeDue: string | null;
   dueDate: string | null;
   registeredDate: string | null;
+  nextFollowupAt: string | null;
+  demoAttendedAt: string | null;
   paymentProofUrl: string | null;
 }>): Promise<void> {
-  const r = await fetch(`${API_URL}/leads/${encodeURIComponent(idOrNumber)}`, {
-    method: "PATCH",
-    headers: { "Content-Type": "application/json" },
-    cache: "no-store",
-    body: JSON.stringify(patch),
-  });
-  if (!r.ok) throw new Error(`PATCH /leads/${idOrNumber} → ${r.status}: ${await r.text()}`);
+  await send<void>("PATCH", `/leads/${encodeURIComponent(idOrNumber)}`, patch);
 }
 
 export async function addLeadNote(idOrNumber: string, text: string): Promise<{ id: string }> {
-  const r = await fetch(`${API_URL}/leads/${encodeURIComponent(idOrNumber)}/notes`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    cache: "no-store",
-    body: JSON.stringify({ text }),
-  });
-  if (!r.ok) throw new Error(`POST /notes → ${r.status}: ${await r.text()}`);
-  return (await r.json()) as { id: string };
+  return await post<{ id: string }>(`/leads/${encodeURIComponent(idOrNumber)}/notes`, { text });
 }
 
 export async function updateLeadNote(
@@ -147,29 +235,18 @@ export async function updateLeadNote(
   activityId: string,
   text: string,
 ): Promise<void> {
-  const r = await fetch(
-    `${API_URL}/leads/${encodeURIComponent(idOrNumber)}/notes/${encodeURIComponent(activityId)}`,
-    {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      cache: "no-store",
-      body: JSON.stringify({ text }),
-    },
+  await send<void>(
+    "PATCH",
+    `/leads/${encodeURIComponent(idOrNumber)}/notes/${encodeURIComponent(activityId)}`,
+    { text },
   );
-  if (!r.ok) throw new Error(`PATCH /notes → ${r.status}: ${await r.text()}`);
 }
 
 export async function logLeadComm(
   idOrNumber: string,
   body: { kind: "email" | "schedule"; subject?: string; body?: string; when?: string },
 ): Promise<void> {
-  const r = await fetch(`${API_URL}/leads/${encodeURIComponent(idOrNumber)}/comms`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    cache: "no-store",
-    body: JSON.stringify(body),
-  });
-  if (!r.ok) throw new Error(`POST /comms → ${r.status}: ${await r.text()}`);
+  await post<void>(`/leads/${encodeURIComponent(idOrNumber)}/comms`, body);
 }
 
 export async function decideApproval(
@@ -177,30 +254,20 @@ export async function decideApproval(
   decision: "approve" | "reject",
   proposed?: Record<string, unknown>,
 ): Promise<void> {
-  const r = await fetch(`${API_URL}/approvals/${encodeURIComponent(approvalId)}/decide`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    cache: "no-store",
-    body: JSON.stringify({ decision, ...(proposed ? { proposed } : {}) }),
-  });
-  if (!r.ok) throw new Error(`POST /approvals/decide → ${r.status}: ${await r.text()}`);
+  await post<void>(
+    `/approvals/${encodeURIComponent(approvalId)}/decide`,
+    { decision, ...(proposed ? { proposed } : {}) },
+  );
 }
 
 export async function convertLead(
   idOrNumber: string,
   body: { programId?: string; pricePaid?: string } = {},
 ): Promise<{ partyId: string; enrolmentId: string }> {
-  const r = await fetch(`${API_URL}/leads/${encodeURIComponent(idOrNumber)}/convert`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    cache: "no-store",
-    body: JSON.stringify(body),
-  });
-  if (!r.ok) {
-    const text = await r.text();
-    throw new Error(`POST /leads/${idOrNumber}/convert → ${r.status}: ${text}`);
-  }
-  return (await r.json()) as { partyId: string; enrolmentId: string };
+  return await post<{ partyId: string; enrolmentId: string }>(
+    `/leads/${encodeURIComponent(idOrNumber)}/convert`,
+    body,
+  );
 }
 
 // ── Courses ───────────────────────────────────────────────────────────────
@@ -216,14 +283,7 @@ export async function createCourse(input: CourseInput): Promise<Course> {
 }
 
 export async function updateCourse(id: string, patch: Partial<CourseInput>): Promise<Course> {
-  const r = await fetch(`${API_URL}/courses/${id}`, {
-    method: "PATCH",
-    headers: { "Content-Type": "application/json" },
-    cache: "no-store",
-    body: JSON.stringify(patch),
-  });
-  if (!r.ok) throw new Error(`PATCH /courses/${id} → ${r.status}: ${await r.text()}`);
-  const { course } = (await r.json()) as { course: Course };
+  const { course } = await send<{ course: Course }>("PATCH", `/courses/${id}`, patch);
   return course;
 }
 
@@ -240,14 +300,7 @@ export async function createBatch(input: BatchInput): Promise<Batch> {
 }
 
 export async function updateBatch(id: string, patch: Partial<BatchInput>): Promise<Batch> {
-  const r = await fetch(`${API_URL}/cohorts/${id}`, {
-    method: "PATCH",
-    headers: { "Content-Type": "application/json" },
-    cache: "no-store",
-    body: JSON.stringify(patch),
-  });
-  if (!r.ok) throw new Error(`PATCH /cohorts/${id} → ${r.status}: ${await r.text()}`);
-  const { cohort } = (await r.json()) as { cohort: Batch };
+  const { cohort } = await send<{ cohort: Batch }>("PATCH", `/cohorts/${id}`, patch);
   return cohort;
 }
 
@@ -268,14 +321,10 @@ export async function getLearner(partyId: string): Promise<LearnerRecord | null>
 }
 
 export async function assignLearnerToBatch(partyId: string, cohortId: string): Promise<{ enrolmentId: string }> {
-  const r = await fetch(`${API_URL}/learners/${encodeURIComponent(partyId)}/batches`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    cache: "no-store",
-    body: JSON.stringify({ cohortId }),
-  });
-  if (!r.ok) throw new Error(`POST /learners/${partyId}/batches → ${r.status}: ${await r.text()}`);
-  return (await r.json()) as { enrolmentId: string };
+  return await post<{ enrolmentId: string }>(
+    `/learners/${encodeURIComponent(partyId)}/batches`,
+    { cohortId },
+  );
 }
 
 export interface AssignCoursesResult {
@@ -292,14 +341,16 @@ export async function assignLearnerCourses(
   partyId: string,
   courseIds: string[],
 ): Promise<AssignCoursesResult> {
-  const r = await fetch(`${API_URL}/learners/${encodeURIComponent(partyId)}/courses`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    cache: "no-store",
-    body: JSON.stringify({ courseIds }),
-  });
   // The API returns 201 (some added) or 409 (none added) — both contain a
   // useful body. Only treat genuine network/non-JSON errors as exceptions.
+  const headers = { "Content-Type": "application/json", ...(await authHeaders()) };
+  const r = await fetch(`${API_URL}/learners/${encodeURIComponent(partyId)}/courses`, {
+    method: "POST",
+    headers,
+    cache: "no-store",
+    credentials: "include",
+    body: JSON.stringify({ courseIds }),
+  });
   if (!r.ok && r.status !== 409) {
     throw new Error(`POST /learners/${partyId}/courses → ${r.status}: ${await r.text()}`);
   }
@@ -311,16 +362,11 @@ export async function updateCourseAssignmentStatus(
   courseAssignmentId: string,
   status: EnrolmentStatus,
 ): Promise<void> {
-  const r = await fetch(
-    `${API_URL}/learners/${encodeURIComponent(partyId)}/courses/${encodeURIComponent(courseAssignmentId)}`,
-    {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      cache: "no-store",
-      body: JSON.stringify({ status }),
-    },
+  await send<void>(
+    "PATCH",
+    `/learners/${encodeURIComponent(partyId)}/courses/${encodeURIComponent(courseAssignmentId)}`,
+    { status },
   );
-  if (!r.ok) throw new Error(`PATCH course-assignment → ${r.status}: ${await r.text()}`);
 }
 
 export async function updateEnrolmentStatus(
@@ -328,13 +374,11 @@ export async function updateEnrolmentStatus(
   enrolmentId: string,
   status: EnrolmentStatus,
 ): Promise<void> {
-  const r = await fetch(`${API_URL}/learners/${encodeURIComponent(partyId)}/batches/${encodeURIComponent(enrolmentId)}`, {
-    method: "PATCH",
-    headers: { "Content-Type": "application/json" },
-    cache: "no-store",
-    body: JSON.stringify({ status }),
-  });
-  if (!r.ok) throw new Error(`PATCH enrolment → ${r.status}: ${await r.text()}`);
+  await send<void>(
+    "PATCH",
+    `/learners/${encodeURIComponent(partyId)}/batches/${encodeURIComponent(enrolmentId)}`,
+    { status },
+  );
 }
 
 export async function createLead(input: CreateLeadInput): Promise<{ id: string; number: string }> {
@@ -349,4 +393,458 @@ export async function getRecord(idOrNumber: string): Promise<RecordResponse | nu
     if ((err as Error).message.includes("404")) return null;
     throw err;
   }
+}
+
+// ── Tickets ────────────────────────────────────────────────────────────────
+
+export interface TicketFilter {
+  status?: string;
+  assigneeId?: string;
+  category?: string;
+  priority?: number;
+  requesterKind?: string;
+  q?: string;
+}
+
+export async function getTickets(filter: TicketFilter = {}): Promise<Ticket[]> {
+  const qs = new URLSearchParams();
+  for (const [k, v] of Object.entries(filter)) {
+    if (v !== undefined && v !== null && v !== "") qs.set(k, String(v));
+  }
+  const path = qs.toString() ? `/tickets?${qs}` : "/tickets";
+  const { tickets } = await get<{ tickets: Ticket[] }>(path);
+  return tickets;
+}
+
+export async function getTicketDashboard(): Promise<TicketDashboard> {
+  return await get<TicketDashboard>("/tickets/dashboard");
+}
+
+export async function getTicket(idOrNumber: string): Promise<TicketDetail | null> {
+  try {
+    return await get<TicketDetail>(`/tickets/${encodeURIComponent(idOrNumber)}`);
+  } catch (err) {
+    if ((err as Error).message.includes("404")) return null;
+    throw err;
+  }
+}
+
+export async function createTicket(input: CreateTicketInput): Promise<{ id: string; number: string }> {
+  const { ticket } = await post<{ ticket: { id: string; number: string } }>("/tickets", input);
+  return ticket;
+}
+
+export async function updateTicket(
+  idOrNumber: string,
+  patch: Partial<{
+    subject: string;
+    description: string | null;
+    category: string;
+    priority: number;
+    status: string;
+    assigneeId: string | null;
+    dueAt: string | null;
+    remindAt: string | null;
+  }>,
+): Promise<void> {
+  await send<void>("PATCH", `/tickets/${encodeURIComponent(idOrNumber)}`, patch);
+}
+
+export async function addTicketComment(idOrNumber: string, text: string): Promise<{ id: string }> {
+  return await post<{ id: string }>(`/tickets/${encodeURIComponent(idOrNumber)}/comments`, { text });
+}
+
+export async function closeTicket(
+  idOrNumber: string,
+  body: { resolution: string; resolutionCode?: TicketResolutionCode },
+): Promise<void> {
+  await post<void>(`/tickets/${encodeURIComponent(idOrNumber)}/close`, body);
+}
+
+export async function reopenTicket(idOrNumber: string): Promise<void> {
+  await post<void>(`/tickets/${encodeURIComponent(idOrNumber)}/reopen`, {});
+}
+
+// ── Auth / users / groups ──────────────────────────────────────────────────
+
+export async function logout(): Promise<void> {
+  await post<void>("/auth/logout", {});
+}
+
+export async function getUsers(): Promise<AdminUser[]> {
+  const { users } = await get<{ users: AdminUser[] }>("/users");
+  return users;
+}
+
+export async function createUser(input: {
+  email: string;
+  name?: string;
+  role: string;
+  password?: string;
+  groupIds: string[];
+  clientIds?: string[];
+}): Promise<{ user: AdminUser }> {
+  return await post<{ user: AdminUser }>("/users", input);
+}
+
+export async function updateUser(
+  id: string,
+  patch: { name?: string; role?: string; active?: boolean; groupIds?: string[]; clientIds?: string[] },
+): Promise<{ user: AdminUser }> {
+  return await send<{ user: AdminUser }>("PATCH", `/users/${id}`, patch);
+}
+
+export async function resetUserPassword(id: string, password: string): Promise<void> {
+  await post<void>(`/users/${id}/reset-password`, { password });
+}
+
+export async function activateUser(id: string): Promise<void> {
+  await post<void>(`/users/${id}/activate`, {});
+}
+
+export async function deactivateUser(id: string): Promise<void> {
+  await post<void>(`/users/${id}/deactivate`, {});
+}
+
+export async function getGroups(): Promise<GroupsResponse> {
+  return await get<GroupsResponse>("/groups");
+}
+
+export async function createGroup(input: {
+  name: string;
+  description?: string | null;
+  permissions: string[];
+}): Promise<void> {
+  await post<void>("/groups", input);
+}
+
+export async function updateGroup(
+  id: string,
+  patch: { name?: string; description?: string | null },
+): Promise<void> {
+  await send<void>("PATCH", `/groups/${id}`, patch);
+}
+
+export async function setGroupPermissions(id: string, permissions: string[]): Promise<void> {
+  await send<void>("PUT", `/groups/${id}/permissions`, { permissions });
+}
+
+export async function deleteGroup(id: string): Promise<void> {
+  await send<void>("DELETE", `/groups/${id}`);
+}
+
+// ── Agents ─────────────────────────────────────────────────────────────────
+
+export async function getAgentCatalog(): Promise<AgentCatalogEntry[]> {
+  try {
+    const { agents } = await get<{ agents: AgentCatalogEntry[] }>("/agents/catalog");
+    return agents;
+  } catch (err) {
+    if ((err as Error).message.includes("→ 401")) return [];
+    throw err;
+  }
+}
+
+export async function getAgentRunHistory(key: string, limit = 10): Promise<AgentRunRecord[]> {
+  try {
+    const { runs } = await get<{ runs: AgentRunRecord[] }>(`/agents/${encodeURIComponent(key)}/runs?limit=${limit}`);
+    return runs;
+  } catch (err) {
+    if ((err as Error).message.includes("→ 401")) return [];
+    throw err;
+  }
+}
+
+export async function runOutreachDraft(
+  idOrNumber: string,
+): Promise<{ approvalId: string; draft: { subject: string; body: string }; runWorkItemId: string }> {
+  return await post(`/agents/outreach/draft/${encodeURIComponent(idOrNumber)}`, {});
+}
+
+export async function rescoreLead(idOrNumber: string): Promise<void> {
+  await post(`/agents/scoring/score/${encodeURIComponent(idOrNumber)}`, {});
+}
+
+export async function rescoreAllLeads(): Promise<{ scored: number; failed: number }> {
+  return await post("/agents/scoring/score-all", {});
+}
+
+export async function refreshNba(idOrNumber: string): Promise<{
+  nba: { nbaLabel: string; nbaIcon: string; nbaHeadline: string; nbaWhy: string; nbaConfidence: number };
+  runWorkItemId: string;
+}> {
+  return await post(`/agents/nba/suggest/${encodeURIComponent(idOrNumber)}`, {});
+}
+
+export async function runForecast(): Promise<ForecastSnapshot> {
+  return await post<ForecastSnapshot>("/agents/forecast/run", {});
+}
+
+export async function getForecastLatest(): Promise<ForecastSnapshot | null> {
+  try {
+    const res = await get<ForecastSnapshot | null>("/agents/forecast/latest");
+    return res;
+  } catch (err) {
+    if ((err as Error).message.includes("→ 401")) return null;
+    throw err;
+  }
+}
+
+export async function askEdify(
+  question: string,
+  sessionId: string | null,
+  signal?: AbortSignal,
+): Promise<EdifyAnswer> {
+  return await post<EdifyAnswer>("/agents/edify/ask", { question, sessionId }, signal);
+}
+
+export async function getEdifySessions(limit = 50): Promise<EdifySessionSummary[]> {
+  try {
+    const { sessions } = await get<{ sessions: EdifySessionSummary[] }>(`/agents/edify/sessions?limit=${limit}`);
+    return sessions;
+  } catch (err) {
+    if ((err as Error).message.includes("→ 401")) return [];
+    throw err;
+  }
+}
+
+export async function getEdifySession(
+  sessionId: string,
+): Promise<{ session: EdifySessionSummary; messages: EdifyAnswer[] } | null> {
+  try {
+    return await get<{ session: EdifySessionSummary; messages: EdifyAnswer[] }>(
+      `/agents/edify/sessions/${encodeURIComponent(sessionId)}`,
+    );
+  } catch (err) {
+    if ((err as Error).message.includes("→ 404")) return null;
+    if ((err as Error).message.includes("→ 401")) return null;
+    throw err;
+  }
+}
+
+export async function renameEdifySession(sessionId: string, title: string): Promise<void> {
+  await send<void>("PATCH", `/agents/edify/sessions/${encodeURIComponent(sessionId)}`, { title });
+}
+
+export async function deleteEdifySession(sessionId: string): Promise<void> {
+  await send<void>("DELETE", `/agents/edify/sessions/${encodeURIComponent(sessionId)}`);
+}
+
+// ── Clients ────────────────────────────────────────────────────────────────
+
+export async function getClients(): Promise<Client[]> {
+  try {
+    const { clients } = await get<{ clients: Client[] }>("/clients");
+    return clients;
+  } catch (err) {
+    if ((err as Error).message.includes("→ 401")) return [];
+    throw err;
+  }
+}
+
+export async function getMyClients(): Promise<Client[]> {
+  try {
+    const { clients } = await get<{ clients: Client[] }>("/me/clients");
+    return clients;
+  } catch (err) {
+    if ((err as Error).message.includes("→ 401")) return [];
+    throw err;
+  }
+}
+
+export async function createClient(input: { name: string; code?: string | null; description?: string | null }): Promise<Client> {
+  const { client } = await post<{ client: Client }>("/clients", input);
+  return client;
+}
+
+export async function updateClient(id: string, patch: { name?: string; code?: string | null; description?: string | null }): Promise<Client> {
+  const { client } = await send<{ client: Client }>("PATCH", `/clients/${id}`, patch);
+  return client;
+}
+
+export async function activateClient(id: string): Promise<void> {
+  await post<void>(`/clients/${id}/activate`, {});
+}
+
+export async function deactivateClient(id: string): Promise<void> {
+  await post<void>(`/clients/${id}/deactivate`, {});
+}
+
+export async function getClientAssignments(id: string): Promise<ClientMember[]> {
+  const { users } = await get<{ users: ClientMember[] }>(`/clients/${id}/assignments`);
+  return users;
+}
+
+export async function setClientAssignments(id: string, userIds: string[]): Promise<void> {
+  await post<void>(`/clients/${id}/assignments`, { userIds });
+}
+
+// ── Timesheets ─────────────────────────────────────────────────────────────
+
+export async function clockIn(): Promise<{ session: WorkSession }> {
+  return await post<{ session: WorkSession }>("/timesheets/clock-in", {});
+}
+
+export async function clockOut(notes?: string): Promise<{ ok: boolean; sessionId: string; blocks: TimeBlock[] }> {
+  return await post("/timesheets/clock-out", { notes: notes ?? null });
+}
+
+export async function getTodayTimesheet(): Promise<{ session: WorkSession | null; blocks: TimeBlock[] }> {
+  try {
+    return await get("/timesheets/today");
+  } catch (err) {
+    if ((err as Error).message.includes("→ 401")) return { session: null, blocks: [] };
+    throw err;
+  }
+}
+
+export async function getTimesheetRange(
+  from: string,
+  to: string,
+  userId?: string,
+): Promise<{ sessions: WorkSession[]; blocks: TimeBlock[]; leaves: LeaveDay[] }> {
+  const qs = new URLSearchParams({ from, to });
+  if (userId) qs.set("userId", userId);
+  try {
+    return await get(`/timesheets/range?${qs}`);
+  } catch (err) {
+    if ((err as Error).message.includes("→ 401")) return { sessions: [], blocks: [], leaves: [] };
+    throw err;
+  }
+}
+
+export async function patchTimeBlock(id: string, patch: { clientId?: string | null; note?: string | null; billable?: boolean; startAt?: string; endAt?: string }): Promise<{ block: TimeBlock }> {
+  return await send<{ block: TimeBlock }>("PATCH", `/timesheets/blocks/${id}`, patch);
+}
+
+export async function splitTimeBlock(id: string, atISO: string): Promise<void> {
+  await post<void>(`/timesheets/blocks/${id}/split`, { atISO });
+}
+
+export async function mergeTimeBlocks(ids: string[]): Promise<void> {
+  await post<void>(`/timesheets/blocks/merge`, { ids });
+}
+
+export async function addTimeBlock(input: { startAt: string; endAt: string; clientId?: string | null; note?: string | null }): Promise<{ block: TimeBlock }> {
+  return await post<{ block: TimeBlock }>(`/timesheets/blocks`, input);
+}
+
+export async function deleteTimeBlock(id: string): Promise<void> {
+  await send<void>("DELETE", `/timesheets/blocks/${id}`);
+}
+
+export async function getTimesheetReport(
+  from: string,
+  to: string,
+  opts: { userIds?: string[]; clientIds?: string[] } = {},
+): Promise<TimesheetReportRow[]> {
+  const qs = new URLSearchParams({ from, to });
+  if (opts.userIds?.length)   qs.set("userIds", opts.userIds.join(","));
+  if (opts.clientIds?.length) qs.set("clientIds", opts.clientIds.join(","));
+  try {
+    const { rows } = await get<{ rows: TimesheetReportRow[] }>(`/timesheets/report?${qs}`);
+    return rows;
+  } catch (err) {
+    if ((err as Error).message.includes("→ 401")) return [];
+    if ((err as Error).message.includes("→ 403")) return [];
+    throw err;
+  }
+}
+
+// ── Leaves ─────────────────────────────────────────────────────────────────
+
+export async function getLeaves(opts: { userId?: string; from?: string; to?: string } = {}): Promise<LeaveDay[]> {
+  const qs = new URLSearchParams();
+  if (opts.userId) qs.set("userId", opts.userId);
+  if (opts.from)   qs.set("from", opts.from);
+  if (opts.to)     qs.set("to", opts.to);
+  try {
+    const path = qs.toString() ? `/leaves?${qs}` : "/leaves";
+    const { leaves } = await get<{ leaves: LeaveDay[] }>(path);
+    return leaves;
+  } catch (err) {
+    if ((err as Error).message.includes("→ 401")) return [];
+    throw err;
+  }
+}
+
+export async function addLeave(input: { date: string; kind: LeaveKind; halfDay?: LeaveHalfDay; note?: string | null }): Promise<{ leave: LeaveDay }> {
+  return await post<{ leave: LeaveDay }>("/leaves", input);
+}
+
+export async function updateLeave(id: string, patch: { kind?: LeaveKind; halfDay?: LeaveHalfDay; note?: string | null }): Promise<{ leave: LeaveDay }> {
+  return await send<{ leave: LeaveDay }>("PATCH", `/leaves/${id}`, patch);
+}
+
+export async function deleteLeave(id: string): Promise<void> {
+  await send<void>("DELETE", `/leaves/${id}`);
+}
+
+// ── Calendar events ────────────────────────────────────────────────────────
+
+export async function getEvents(from?: string, to?: string): Promise<CalendarEventSummary[]> {
+  const qs = new URLSearchParams();
+  if (from) qs.set("from", from);
+  if (to)   qs.set("to", to);
+  try {
+    const path = qs.toString() ? `/events?${qs}` : "/events";
+    const { events } = await get<{ events: CalendarEventSummary[] }>(path);
+    return events;
+  } catch (err) {
+    if ((err as Error).message.includes("→ 401")) return [];
+    throw err;
+  }
+}
+
+export async function getEvent(id: string): Promise<CalendarEventDetail | null> {
+  try {
+    return await get<CalendarEventDetail>(`/events/${id}`);
+  } catch (err) {
+    if ((err as Error).message.includes("→ 404")) return null;
+    if ((err as Error).message.includes("→ 401")) return null;
+    throw err;
+  }
+}
+
+export async function createEvent(input: { title: string; description?: string | null; location?: string | null; startAt: string; endAt: string; allDay?: boolean; inviteeIds: string[] }): Promise<{ id: string }> {
+  return await post<{ id: string }>("/events", input);
+}
+
+export async function updateEvent(id: string, patch: { title?: string; description?: string | null; location?: string | null; startAt?: string; endAt?: string; allDay?: boolean }): Promise<void> {
+  await send<void>("PATCH", `/events/${id}`, patch);
+}
+
+export async function deleteEvent(id: string): Promise<void> {
+  await send<void>("DELETE", `/events/${id}`);
+}
+
+export async function setEventInvitees(id: string, userIds: string[]): Promise<void> {
+  await post<void>(`/events/${id}/invitees`, { userIds });
+}
+
+export async function respondToEvent(id: string, rsvp: EventRsvp): Promise<void> {
+  await post<void>(`/events/${id}/respond`, { rsvp });
+}
+
+// ── Batch sessions (calendar) ─────────────────────────────────────────────
+
+export async function getBatchSessions(from: string, to: string): Promise<BatchSession[]> {
+  try {
+    const { sessions } = await get<{ sessions: BatchSession[] }>(
+      `/batches/sessions?from=${from}&to=${to}`,
+    );
+    return sessions;
+  } catch (err) {
+    if ((err as Error).message.includes("→ 401")) return [];
+    if ((err as Error).message.includes("→ 403")) return [];
+    throw err;
+  }
+}
+
+export async function setAgentEnabled(key: string, enabled: boolean): Promise<void> {
+  await send<void>("PATCH", `/agents/${encodeURIComponent(key)}`, { enabled });
+}
+
+export async function setAgentMode(key: string, mode: AgentMode): Promise<void> {
+  await send<void>("PATCH", `/agents/${encodeURIComponent(key)}`, { mode });
 }

@@ -5,24 +5,17 @@ import { useRouter } from "next/navigation";
 import { Icon } from "@/components/ui/Icon";
 import { cn } from "@/lib/cn";
 import { createLead, getCatalog } from "@/lib/api";
-import type { CatalogResponse, Heat, Stage } from "@/lib/types";
-
-const HEATS: Heat[] = ["hot", "warm", "cold"];
-const STAGES: { key: Stage; label: string }[] = [
-  { key: "new", label: "New inbound" },
-  { key: "qual", label: "Qualified" },
-  { key: "demo", label: "Demo / Trial" },
-  { key: "neg", label: "Negotiation" },
-  { key: "won", label: "Enrolled" },
-];
+import type { CatalogResponse, LeadRating } from "@/lib/types";
+import { LEAD_RATINGS } from "@/lib/types";
+import { ratingStyles } from "@/lib/ui";
 
 export function NewLeadButton({
-  defaultStage,
+  defaultRating,
   variant = "primary",
   label,
   className,
 }: {
-  defaultStage?: Stage;
+  defaultRating?: LeadRating;
   variant?: "primary" | "ghost";
   label?: string;
   className?: string;
@@ -42,12 +35,12 @@ export function NewLeadButton({
         {variant === "primary" && <Icon name="plus" size={14} strokeWidth={2.2} />}
         {label ?? (variant === "primary" ? "New lead" : "+ Add lead")}
       </button>
-      {open && <Dialog defaultStage={defaultStage} onClose={() => setOpen(false)} />}
+      {open && <Dialog defaultRating={defaultRating} onClose={() => setOpen(false)} />}
     </>
   );
 }
 
-function Dialog({ defaultStage, onClose }: { defaultStage?: Stage; onClose: () => void }) {
+function Dialog({ defaultRating, onClose }: { defaultRating?: LeadRating; onClose: () => void }) {
   const router = useRouter();
   const dialogRef = useRef<HTMLDivElement>(null);
   const [catalog, setCatalog] = useState<CatalogResponse | null>(null);
@@ -62,13 +55,11 @@ function Dialog({ defaultStage, onClose }: { defaultStage?: Stage; onClose: () =
   const [program, setProgram] = useState("");
   const [value, setValue] = useState("");
   const [source, setSource] = useState("web");
-  const [stage, setStage] = useState<Stage>(defaultStage ?? "new");
+  const [rating, setRating] = useState<LeadRating>(defaultRating ?? "new lead");
   const [score, setScore] = useState(50);
-  const [heat, setHeat] = useState<Heat>("warm");
   const [advisorId, setAdvisorId] = useState<string>("");
-  const [nbaLabel, setNbaLabel] = useState("Reach out today");
+  const [nbaLabel, setNbaLabel] = useState("");
 
-  // Load dropdown data
   useEffect(() => {
     getCatalog()
       .then((c) => {
@@ -78,14 +69,6 @@ function Dialog({ defaultStage, onClose }: { defaultStage?: Stage; onClose: () =
       .catch((e) => setError((e as Error).message));
   }, []);
 
-
-  // Auto-derive heat from score when user moves the slider
-  function onScoreChange(s: number) {
-    setScore(s);
-    setHeat(s >= 75 ? "hot" : s >= 45 ? "warm" : "cold");
-  }
-
-  // ESC closes
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
     window.addEventListener("keydown", onKey);
@@ -108,9 +91,11 @@ function Dialog({ defaultStage, onClose }: { defaultStage?: Stage; onClose: () =
         value: value.trim() || undefined,
         source,
         sourceLabel: sourceObj?.label,
-        stage,
+        // legacy stage column still required by the create endpoint until
+        // it is migrated; default to 'new' for any new lead.
+        stage: "new",
         score,
-        heat,
+        rating,
         advisorId: advisorId || undefined,
         nbaLabel: nbaLabel.trim() || undefined,
       });
@@ -196,57 +181,48 @@ function Dialog({ defaultStage, onClose }: { defaultStage?: Stage; onClose: () =
             </select>
           </Field>
 
-          <Field label="Stage">
+          <Field label="Rating">
             <div className="flex flex-wrap gap-2">
-              {STAGES.map((s) => (
-                <button
-                  type="button"
-                  key={s.key}
-                  onClick={() => setStage(s.key)}
-                  className={cn(
-                    "rounded-full px-3 py-1.5 text-[12px] font-semibold transition",
-                    stage === s.key
-                      ? "border border-transparent bg-ink text-white"
-                      : "border border-rule bg-paper text-ink2 hover:border-rule2",
-                  )}
-                >
-                  {s.label}
-                </button>
-              ))}
-            </div>
-          </Field>
-
-          <Field label={`Score · ${score} (${heat})`}>
-            <div className="flex items-center gap-3">
-              <input
-                type="range" min={0} max={100} value={score}
-                onChange={(e) => onScoreChange(Number(e.target.value))}
-                className="flex-1 accent-brand-violet"
-              />
-              <div className="flex gap-1">
-                {HEATS.map((h) => (
+              {LEAD_RATINGS.map((r) => {
+                const s = ratingStyles[r];
+                const on = rating === r;
+                return (
                   <button
-                    type="button"
-                    key={h}
-                    onClick={() => setHeat(h)}
+                    type="button" key={r}
+                    onClick={() => setRating(r)}
                     className={cn(
-                      "rounded-full px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wider transition",
-                      heat === h
-                        ? h === "hot" ? "bg-brand-magenta text-white"
-                        : h === "warm" ? "bg-state-amber text-white"
-                        : "bg-mute text-white"
-                        : "border border-rule text-mute hover:border-rule2",
+                      "inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-[12px] font-semibold transition",
+                      on
+                        ? cn(s.bg, s.text, "ring-2 ring-offset-1 ring-offset-paper", s.text.replace("text-", "ring-"))
+                        : "border border-rule bg-paper text-mute hover:border-rule2",
                     )}
                   >
-                    {h}
+                    <span className={cn("h-1.5 w-1.5 rounded-full", on ? s.dot : "bg-rule2")} />
+                    {s.label}
                   </button>
-                ))}
-              </div>
+                );
+              })}
             </div>
           </Field>
 
-          <Field label="Next best action (label)">
-            <input className={inputCls} value={nbaLabel} onChange={(e) => setNbaLabel(e.target.value)} placeholder="Send re-engagement email" />
+          <Field label={`Initial score · ${score}`}>
+            <input
+              type="range" min={0} max={100} value={score}
+              onChange={(e) => setScore(Number(e.target.value))}
+              className="w-full accent-brand-violet"
+            />
+            <span className="mt-1 block text-[11px] text-mute">
+              The Lead Scoring Agent will refine this once the lead has activity.
+            </span>
+          </Field>
+
+          <Field label="Next-best-action label (optional)">
+            <input
+              className={inputCls}
+              value={nbaLabel}
+              onChange={(e) => setNbaLabel(e.target.value)}
+              placeholder="Leave blank — the NBA agent will fill this in"
+            />
           </Field>
 
           {error && (

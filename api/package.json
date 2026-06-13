@@ -18,6 +18,8 @@
     "drizzle:generate": "drizzle-kit generate"
   },
   "dependencies": {
+    "bcryptjs": "^2.4.3",
+    "cookie-parser": "^1.4.7",
     "dotenv": "^16.4.5",
     "drizzle-orm": "^0.36.4",
     "express": "^4.21.1",
@@ -25,6 +27,8 @@
     "tsx": "^4.19.2"
   },
   "devDependencies": {
+    "@types/bcryptjs": "^2.4.6",
+    "@types/cookie-parser": "^1.4.7",
     "@types/express": "^5.0.0",
     "@types/node": "^22.9.0",
     "@types/pg": "^8.11.10",

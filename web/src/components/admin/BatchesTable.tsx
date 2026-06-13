@@ -5,10 +5,22 @@ import { useRouter } from "next/navigation";
 import { Icon } from "@/components/ui/Icon";
 import { cn } from "@/lib/cn";
 import { createBatch, updateBatch } from "@/lib/api";
-import type { Batch, BatchSlot, BatchStatus, Course } from "@/lib/types";
+import type { Batch, BatchSlot, BatchStatus, Course, WeekDay } from "@/lib/types";
 import { FilterBar } from "@/components/filter/FilterBar";
 import { useFilter } from "@/components/filter/useFilter";
 import type { FilterField } from "@/components/filter/types";
+import { TrainerPicker } from "@/components/admin/TrainerPicker";
+
+interface StaffMember { id: string; name: string; email: string; role: string }
+const WEEKDAYS: { code: WeekDay; label: string }[] = [
+  { code: "mon", label: "Mon" },
+  { code: "tue", label: "Tue" },
+  { code: "wed", label: "Wed" },
+  { code: "thu", label: "Thu" },
+  { code: "fri", label: "Fri" },
+  { code: "sat", label: "Sat" },
+  { code: "sun", label: "Sun" },
+];
 
 const STATUSES: BatchStatus[] = ["upcoming", "running", "completed", "cancelled"];
 const STATUS_CLS: Record<BatchStatus, string> = {
@@ -47,7 +59,7 @@ type Mode =
   | { kind: "creating" }
   | { kind: "editing"; batch: Batch };
 
-export function BatchesTable({ initial, courses }: { initial: Batch[]; courses: Course[] }) {
+export function BatchesTable({ initial, courses, staff }: { initial: Batch[]; courses: Course[]; staff: StaffMember[] }) {
   const router = useRouter();
   const [batches, setBatches] = useState<Batch[]>(initial);
   const [mode, setMode] = useState<Mode>({ kind: "idle" });
@@ -172,6 +184,12 @@ export function BatchesTable({ initial, courses }: { initial: Batch[]; courses: 
                 <div className="mono-cap mt-0.5 text-[9.5px] tracking-[.04em] text-mute">
                   {[b.code, b.timeLabel, fmtDate(b.startDate)].filter(Boolean).join(" · ") || "—"}
                 </div>
+                {b.trainerName && (
+                  <div className="mt-0.5 text-[11px] text-ink2">
+                    {b.trainerName}
+                    {b.coTrainerName && <span className="ml-1 rounded-full bg-warm2 px-1.5 py-0.5 text-[9px] font-semibold text-mute">+{b.coTrainerName}</span>}
+                  </div>
+                )}
               </div>
               <div className="min-w-0">
                 <div className="truncate text-[13px] font-medium text-ink2">{b.courseName ?? "—"}</div>
@@ -210,6 +228,7 @@ export function BatchesTable({ initial, courses }: { initial: Batch[]; courses: 
           title="New batch"
           submitLabel="Create"
           courses={courses}
+          staff={staff}
           onClose={() => setMode({ kind: "idle" })}
           onSubmit={(v) => onCreate(v)}
           busy={busy === "create"}
@@ -220,6 +239,7 @@ export function BatchesTable({ initial, courses }: { initial: Batch[]; courses: 
           title="Edit batch"
           submitLabel="Save"
           courses={courses}
+          staff={staff}
           initial={mode.batch}
           onClose={() => setMode({ kind: "idle" })}
           onSubmit={(v) => onUpdate(mode.batch, v)}
@@ -283,19 +303,23 @@ interface BatchFormValues {
   name: string;
   code: string | null;
   slot: BatchSlot | null;
-  timeLabel: string | null;
-  schedule: string | null;
   startDate: string | null;
   endDate: string | null;
   seats: number | null;
   status: BatchStatus;
+  trainerId: string | null;
+  coTrainerId: string | null;
+  daysOfWeek: WeekDay[];
+  startTime: string | null;
+  endTime: string | null;
 }
 
 function BatchFormDialog({
-  title, submitLabel, courses, initial, onClose, onSubmit, busy,
+  title, submitLabel, courses, staff, initial, onClose, onSubmit, busy,
 }: {
   title: string; submitLabel: string;
   courses: Course[];
+  staff: StaffMember[];
   initial?: Batch;
   onClose: () => void;
   onSubmit: (v: BatchFormValues) => void;
@@ -305,12 +329,20 @@ function BatchFormDialog({
   const [name,      setName]      = useState(initial?.name ?? "");
   const [code,      setCode]      = useState(initial?.code ?? "");
   const [slot,      setSlot]      = useState<BatchSlot | "">(initial?.slot ?? "");
-  const [timeLabel, setTimeLabel] = useState(initial?.timeLabel ?? "");
-  const [schedule,  setSchedule]  = useState(initial?.schedule ?? "");
   const [startDate, setStart]     = useState(initial?.startDate?.slice(0, 10) ?? "");
   const [endDate,   setEnd]       = useState(initial?.endDate?.slice(0, 10) ?? "");
   const [seats,     setSeats]     = useState(initial?.seats != null ? String(initial.seats) : "");
   const [status,    setStatus]    = useState<BatchStatus>(initial?.status ?? "upcoming");
+  const [trainerId,    setTrainerId]    = useState<string | null>(initial?.trainerId    ?? null);
+  const [coTrainerId,  setCoTrainerId]  = useState<string | null>(initial?.coTrainerId  ?? null);
+  const [daysOfWeek,   setDaysOfWeek]   = useState<WeekDay[]>(initial?.daysOfWeek ?? []);
+  const [startTime,    setStartTime]    = useState(initial?.startTime ?? "");
+  const [endTime,      setEndTime]      = useState(initial?.endTime ?? "");
+  const [formError,    setFormError]    = useState<string | null>(null);
+
+  function toggleDay(d: WeekDay) {
+    setDaysOfWeek((cur) => cur.includes(d) ? cur.filter((x) => x !== d) : [...cur, d]);
+  }
 
   return (
     <div
@@ -324,7 +356,7 @@ function BatchFormDialog({
         <div className="mb-6 flex items-start justify-between gap-4">
           <div>
             <h2 className="font-serif text-[26px] font-normal leading-tight tracking-[-.01em]">{title}</h2>
-            <p className="mt-1 text-[13px] text-mute">A batch is a time-fenced run of one course.</p>
+            <p className="mt-1 text-[13px] text-mute">A batch is a time-fenced run of one course. Active batches with a trainer + days + time auto-populate the trainer's calendar.</p>
           </div>
           <button onClick={onClose} className="text-mute hover:text-ink"><Icon name="plus" size={18} strokeWidth={2} className="rotate-45" /></button>
         </div>
@@ -332,18 +364,35 @@ function BatchFormDialog({
         <form
           onSubmit={(e) => {
             e.preventDefault();
+            setFormError(null);
             if (!name.trim() || !courseId) return;
+            // Mirror the API's cross-field validation so the user gets feedback fast.
+            if (trainerId && coTrainerId && trainerId === coTrainerId) {
+              setFormError("Trainer and co-trainer must be different people.");
+              return;
+            }
+            if (daysOfWeek.length > 0 && (!startTime || !endTime)) {
+              setFormError("Pick start time and end time when days are selected.");
+              return;
+            }
+            if (startTime && endTime && endTime <= startTime) {
+              setFormError("End time must be after start time.");
+              return;
+            }
             onSubmit({
               courseId,
               name: name.trim(),
               code: code.trim() || null,
               slot: (slot || null) as BatchSlot | null,
-              timeLabel: timeLabel.trim() || null,
-              schedule: schedule.trim() || null,
               startDate: startDate || null,
               endDate: endDate || null,
               seats: seats !== "" ? Number(seats) : null,
               status,
+              trainerId,
+              coTrainerId,
+              daysOfWeek,
+              startTime: startTime || null,
+              endTime:   endTime   || null,
             });
           }}
           className="space-y-4"
@@ -369,19 +418,66 @@ function BatchFormDialog({
               </select>
             </Field>
           </div>
+
+          {/* ── Phase H: structured trainer + cadence ─────────────────── */}
           <div className="grid grid-cols-2 gap-4">
-            <Field label="Time">
-              <input className={inputCls} value={timeLabel} onChange={(e) => setTimeLabel(e.target.value)} placeholder="9:00 AM – 11:00 AM" />
+            <Field label="Trainer">
+              <TrainerPicker
+                people={staff}
+                value={trainerId}
+                onChange={setTrainerId}
+                excludeId={coTrainerId}
+                placeholder="— pick a trainer —"
+              />
             </Field>
-            <Field label="Schedule (days)">
-              <input className={inputCls} value={schedule} onChange={(e) => setSchedule(e.target.value)} placeholder="Mon · Wed · Fri" />
+            <Field label="Co-trainer">
+              <TrainerPicker
+                people={staff}
+                value={coTrainerId}
+                onChange={setCoTrainerId}
+                excludeId={trainerId}
+                placeholder="— optional —"
+              />
             </Field>
           </div>
+
+          <Field label="Days of the week">
+            <div className="flex flex-wrap gap-1.5">
+              {WEEKDAYS.map((d) => {
+                const on = daysOfWeek.includes(d.code);
+                return (
+                  <button
+                    type="button"
+                    key={d.code}
+                    onClick={() => toggleDay(d.code)}
+                    className={cn(
+                      "rounded-full px-3 py-1.5 text-[12px] font-semibold transition",
+                      on
+                        ? "border border-transparent bg-ink text-white"
+                        : "border border-rule bg-paper text-ink2 hover:border-rule2",
+                    )}
+                  >
+                    {d.label}
+                  </button>
+                );
+              })}
+            </div>
+          </Field>
+
+          <div className="grid grid-cols-2 gap-4">
+            <Field label="Start time">
+              <input className={inputCls} type="time" value={startTime} onChange={(e) => setStartTime(e.target.value)} />
+            </Field>
+            <Field label="End time">
+              <input className={inputCls} type="time" value={endTime} onChange={(e) => setEndTime(e.target.value)} />
+            </Field>
+          </div>
+
           <div className="grid grid-cols-2 gap-4">
             <Field label="Start date">
               <input className={inputCls} type="date" value={startDate} onChange={(e) => setStart(e.target.value)} />
             </Field>
-            <Field label="End date">
+            <Field label="Tentative end date">
               <input className={inputCls} type="date" value={endDate} onChange={(e) => setEnd(e.target.value)} />
             </Field>
           </div>
@@ -404,6 +500,10 @@ function BatchFormDialog({
               ))}
             </div>
           </Field>
+
+          {formError && (
+            <div className="rounded-md border border-state-warn/30 bg-state-warn/10 px-3 py-2 text-[12px] text-state-warn">{formError}</div>
+          )}
 
           <div className="flex items-center justify-end gap-3 pt-2">
             <button type="button" onClick={onClose} className="btn">Cancel</button>
