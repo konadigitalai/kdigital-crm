@@ -14,18 +14,36 @@ import type {
   TimeBlock, TimesheetReportRow, WorkSession,
 } from "./types";
 
-// On the server: prefer API_URL, fall back to NEXT_PUBLIC_API_URL.
-// In the browser: NEXT_PUBLIC_API_URL only (must be exposed at build time).
-// In dev (NODE_ENV !== production), default to localhost so things "just work".
+// URL resolution differs between server- and client-side fetches.
+//
+// Server Components run on Vercel and call the API directly via API_URL.
+// The cookie-forwarding helper below copies the browser's session cookie
+// onto the outbound request, so RLS + auth work as expected.
+//
+// Client-side, the browser fetches a *relative* /api/... URL on the same
+// vercel.app origin. Next.js's `rewrites` (see next.config.mjs) forwards
+// those to Render. This sidesteps third-party-cookie blocks: from the
+// browser's POV every API call is first-party to the Vercel domain.
+//
+// In local dev (NODE_ENV !== production), the browser falls back to a
+// direct localhost:4000 URL since there's no Vercel proxy in front.
 const isServer = typeof window === "undefined";
-const API_URL =
-  (isServer ? (process.env.API_URL ?? process.env.NEXT_PUBLIC_API_URL) : process.env.NEXT_PUBLIC_API_URL)
-  ?? (process.env.NODE_ENV === "production" ? undefined : "http://localhost:4000");
+const API_URL = (() => {
+  if (isServer) {
+    return process.env.API_URL
+      ?? process.env.NEXT_PUBLIC_API_URL
+      ?? (process.env.NODE_ENV === "production" ? undefined : "http://localhost:4000");
+  }
+  // Browser: prefer the same-origin proxy in production, dev hits localhost.
+  return process.env.NODE_ENV === "production"
+    ? "/api"
+    : (process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4000");
+})();
 
 if (!API_URL) {
-  // In production, surface a clear error instead of failing with ECONNREFUSED.
+  // Surface a clear error instead of failing with ECONNREFUSED.
   throw new Error(
-    "API URL is not configured. Set NEXT_PUBLIC_API_URL (and optionally API_URL on the server) in your environment.",
+    "API URL is not configured. Set API_URL (and NEXT_PUBLIC_API_URL) in your environment.",
   );
 }
 

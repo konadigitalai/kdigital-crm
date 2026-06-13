@@ -4,14 +4,21 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { Icon } from "@/components/ui/Icon";
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4000";
+// Browser-side: hit the same-origin /api proxy in prod, direct localhost in dev.
+// (Matches the resolution rule in lib/api.ts.) Routing through /api eliminates
+// the cross-origin / third-party-cookie problem since vercel.app stays the
+// effective request origin for both web and API.
+const API_URL =
+  process.env.NODE_ENV === "production"
+    ? "/api"
+    : (process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4000");
 
 const inputCls =
   "w-full rounded-[10px] border border-rule bg-paper px-3.5 py-3 text-[14px] text-ink placeholder:text-hint focus:border-brand-violet focus:outline-none focus:ring-2 focus:ring-brand-violet/20";
 
 function explainError(raw: string): string {
   if (raw.includes("Failed to fetch") || raw.includes("NetworkError")) {
-    return "Can't reach the API. Make sure the API is running on port 4000.";
+    return "Can't reach the API right now. The service may be waking up — try again in a few seconds.";
   }
   if (raw.includes("429") || raw.toLowerCase().includes("too many")) {
     return "Too many attempts. Wait a few minutes and try again.";
