@@ -7,10 +7,15 @@ import type {
   AdminUser, AgentCard, AgentCatalogEntry, AgentMode, AgentRunRecord, Batch, BatchInput, BatchSession,
   CalendarEventDetail, CalendarEventSummary, CatalogResponse,
   Client, ClientMember, Course, CourseInput, CreateLeadInput, CurrentUser,
-  CreateTicketInput, EdifyAnswer, EdifySessionSummary, EnrolmentStatus, EventRsvp, FeedItem,
+  Case, CaseDashboard, CaseDetail, CaseResolutionCode,
+  CreateCaseInput, DeletedLead, EdifyAnswer, EdifySessionSummary, EnrolmentStatus, EventRsvp, FeedItem,
   ForecastSnapshot, GroupsResponse, Lead, LeaveDay, LeaveHalfDay, LeaveKind, LearnerRecord, LearnerSummary,
-  PipelineColumn, Program, RecentRun, RecordResponse, SummaryResponse,
-  Ticket, TicketDashboard, TicketDetail, TicketResolutionCode,
+  PipelineColumn, Program, RecentRun, RecordResponse,
+  SavedView, SavedViewInput, SavedViewScope,
+  ShareSurface,
+  SlackDelivery, SlackRule, SlackRuleInput,
+  SlackSharePreview, SlackShareTarget, SlackShareTargetInput, SlackShareTargetsResponse,
+  SummaryResponse,
   TimeBlock, TimesheetReportRow, WorkSession,
 } from "./types";
 
@@ -190,7 +195,7 @@ export async function getSummary(): Promise<SummaryResponse> {
       return {
         overall: { total: 0, hot: 0, warm: 0, cold: 0, hotOvernight: 0, pendingApprovals: 0, liveAgents: 0 },
         byStage: [],
-        tickets: { open: 0, overdue: 0 },
+        cases: { open: 0, overdue: 0 },
       };
     }
     throw err;
@@ -242,6 +247,68 @@ export async function updateLead(idOrNumber: string, patch: Partial<{
   paymentProofUrl: string | null;
 }>): Promise<void> {
   await send<void>("PATCH", `/leads/${encodeURIComponent(idOrNumber)}`, patch);
+}
+
+// Apply the same patch to many leads in one round-trip. Limited to the
+// fields where bulk-edit makes sense (rating, program, advisor, source,
+// delivery mode, time zone, follow-up dates).
+export interface BulkLeadPatch {
+  rating?:         string;
+  programId?:      string | null;
+  advisorId?:      string | null;
+  source?:         string | null;
+  deliveryMode?:   "online" | "offline" | "hybrid" | null;
+  timeZone?:       string | null;
+  nextFollowupAt?: string | null;   // YYYY-MM-DD
+  demoAttendedAt?: string | null;   // YYYY-MM-DD
+}
+
+export async function bulkUpdateLeads(
+  ids: string[],
+  patch: BulkLeadPatch,
+): Promise<{ updated: number; failed: { id: string; error: string }[] }> {
+  return await post<{ updated: number; failed: { id: string; error: string }[] }>(
+    "/leads/bulk",
+    { ids, patch },
+  );
+}
+
+// Soft-delete a single lead. The work_item + activity history are preserved;
+// the party's `lead` role is end-dated so the lead disappears from list/board/search.
+export async function deleteLead(idOrNumber: string): Promise<void> {
+  await send<void>("DELETE", `/leads/${encodeURIComponent(idOrNumber)}`);
+}
+
+// Admin "Trash" — list every soft-deleted lead in the tenant.
+export async function getDeletedLeads(): Promise<DeletedLead[]> {
+  try {
+    const { leads } = await get<{ leads: DeletedLead[] }>("/leads/deleted");
+    return leads;
+  } catch (err) {
+    if ((err as Error).message.includes("→ 401")) return [];
+    if ((err as Error).message.includes("→ 403")) return [];
+    throw err;
+  }
+}
+
+// Reverse a soft-delete: re-opens the lead's role.
+export async function restoreLead(idOrNumber: string): Promise<void> {
+  await post<void>(`/leads/${encodeURIComponent(idOrNumber)}/restore`, {});
+}
+
+// Permanent erase. Requires the leads.purge permission. Cannot be undone.
+export async function purgeLead(idOrNumber: string): Promise<void> {
+  await send<void>("DELETE", `/leads/${encodeURIComponent(idOrNumber)}/purge`);
+}
+
+// Soft-delete many leads in one round-trip. Mirrors bulkUpdateLeads.
+export async function bulkDeleteLeads(
+  ids: string[],
+): Promise<{ deleted: number; failed: { id: string; error: string }[] }> {
+  return await post<{ deleted: number; failed: { id: string; error: string }[] }>(
+    "/leads/bulk-delete",
+    { ids },
+  );
 }
 
 export async function addLeadNote(idOrNumber: string, text: string): Promise<{ id: string }> {
@@ -413,9 +480,9 @@ export async function getRecord(idOrNumber: string): Promise<RecordResponse | nu
   }
 }
 
-// ── Tickets ────────────────────────────────────────────────────────────────
+// ── Cases ─────────────────────────────────────────────────────────────────
 
-export interface TicketFilter {
+export interface CaseFilter {
   status?: string;
   assigneeId?: string;
   category?: string;
@@ -424,35 +491,35 @@ export interface TicketFilter {
   q?: string;
 }
 
-export async function getTickets(filter: TicketFilter = {}): Promise<Ticket[]> {
+export async function getCases(filter: CaseFilter = {}): Promise<Case[]> {
   const qs = new URLSearchParams();
   for (const [k, v] of Object.entries(filter)) {
     if (v !== undefined && v !== null && v !== "") qs.set(k, String(v));
   }
-  const path = qs.toString() ? `/tickets?${qs}` : "/tickets";
-  const { tickets } = await get<{ tickets: Ticket[] }>(path);
-  return tickets;
+  const path = qs.toString() ? `/cases?${qs}` : "/cases";
+  const { cases } = await get<{ cases: Case[] }>(path);
+  return cases;
 }
 
-export async function getTicketDashboard(): Promise<TicketDashboard> {
-  return await get<TicketDashboard>("/tickets/dashboard");
+export async function getCaseDashboard(): Promise<CaseDashboard> {
+  return await get<CaseDashboard>("/cases/dashboard");
 }
 
-export async function getTicket(idOrNumber: string): Promise<TicketDetail | null> {
+export async function getCase(idOrNumber: string): Promise<CaseDetail | null> {
   try {
-    return await get<TicketDetail>(`/tickets/${encodeURIComponent(idOrNumber)}`);
+    return await get<CaseDetail>(`/cases/${encodeURIComponent(idOrNumber)}`);
   } catch (err) {
     if ((err as Error).message.includes("404")) return null;
     throw err;
   }
 }
 
-export async function createTicket(input: CreateTicketInput): Promise<{ id: string; number: string }> {
-  const { ticket } = await post<{ ticket: { id: string; number: string } }>("/tickets", input);
-  return ticket;
+export async function createCase(input: CreateCaseInput): Promise<{ id: string; number: string }> {
+  const { case: c } = await post<{ case: { id: string; number: string } }>("/cases", input);
+  return c;
 }
 
-export async function updateTicket(
+export async function updateCase(
   idOrNumber: string,
   patch: Partial<{
     subject: string;
@@ -465,22 +532,22 @@ export async function updateTicket(
     remindAt: string | null;
   }>,
 ): Promise<void> {
-  await send<void>("PATCH", `/tickets/${encodeURIComponent(idOrNumber)}`, patch);
+  await send<void>("PATCH", `/cases/${encodeURIComponent(idOrNumber)}`, patch);
 }
 
-export async function addTicketComment(idOrNumber: string, text: string): Promise<{ id: string }> {
-  return await post<{ id: string }>(`/tickets/${encodeURIComponent(idOrNumber)}/comments`, { text });
+export async function addCaseComment(idOrNumber: string, text: string): Promise<{ id: string }> {
+  return await post<{ id: string }>(`/cases/${encodeURIComponent(idOrNumber)}/comments`, { text });
 }
 
-export async function closeTicket(
+export async function closeCase(
   idOrNumber: string,
-  body: { resolution: string; resolutionCode?: TicketResolutionCode },
+  body: { resolution: string; resolutionCode?: CaseResolutionCode },
 ): Promise<void> {
-  await post<void>(`/tickets/${encodeURIComponent(idOrNumber)}/close`, body);
+  await post<void>(`/cases/${encodeURIComponent(idOrNumber)}/close`, body);
 }
 
-export async function reopenTicket(idOrNumber: string): Promise<void> {
-  await post<void>(`/tickets/${encodeURIComponent(idOrNumber)}/reopen`, {});
+export async function reopenCase(idOrNumber: string): Promise<void> {
+  await post<void>(`/cases/${encodeURIComponent(idOrNumber)}/reopen`, {});
 }
 
 // ── Auth / users / groups ──────────────────────────────────────────────────
@@ -549,6 +616,125 @@ export async function setGroupPermissions(id: string, permissions: string[]): Pr
 
 export async function deleteGroup(id: string): Promise<void> {
   await send<void>("DELETE", `/groups/${id}`);
+}
+
+// Compute the union permission set for a list of group ids — used by the
+// user-edit dialog's "Effective access" summary.
+export async function getEffectivePermissions(groupIds: string[]): Promise<string[]> {
+  const { permissions } = await post<{ permissions: string[] }>("/groups/effective", { groupIds });
+  return permissions;
+}
+
+// ── Saved views ────────────────────────────────────────────────────────────
+
+export async function getSavedViews(scope: SavedViewScope): Promise<SavedView[]> {
+  try {
+    const { views } = await get<{ views: SavedView[] }>(`/views?scope=${encodeURIComponent(scope)}`);
+    return views;
+  } catch (err) {
+    if ((err as Error).message.includes("→ 401")) return [];
+    throw err;
+  }
+}
+
+export async function createSavedView(scope: SavedViewScope, input: SavedViewInput): Promise<SavedView> {
+  const { view } = await post<{ view: SavedView }>("/views", { scope, ...input });
+  return view;
+}
+
+export async function updateSavedView(id: string, patch: Partial<SavedViewInput>): Promise<SavedView> {
+  const { view } = await send<{ view: SavedView }>("PATCH", `/views/${encodeURIComponent(id)}`, patch);
+  return view;
+}
+
+export async function deleteSavedView(id: string): Promise<void> {
+  await send<void>("DELETE", `/views/${encodeURIComponent(id)}`);
+}
+
+// ── Slack integration ──────────────────────────────────────────────────────
+
+export async function getSlackRules(): Promise<SlackRule[]> {
+  try {
+    const { rules } = await get<{ rules: SlackRule[] }>("/integrations/slack/rules");
+    return rules;
+  } catch (err) {
+    if ((err as Error).message.includes("→ 401")) return [];
+    if ((err as Error).message.includes("→ 403")) return [];
+    throw err;
+  }
+}
+
+export async function createSlackRule(input: SlackRuleInput): Promise<SlackRule> {
+  const { rule } = await post<{ rule: SlackRule }>("/integrations/slack/rules", input);
+  return rule;
+}
+
+export async function updateSlackRule(id: string, patch: Partial<SlackRuleInput>): Promise<SlackRule> {
+  const { rule } = await send<{ rule: SlackRule }>("PATCH", `/integrations/slack/rules/${encodeURIComponent(id)}`, patch);
+  return rule;
+}
+
+export async function deleteSlackRule(id: string): Promise<void> {
+  await send<void>("DELETE", `/integrations/slack/rules/${encodeURIComponent(id)}`);
+}
+
+export async function testSlackRule(
+  id: string,
+): Promise<{ ok: boolean; lastDelivery: SlackDelivery | null }> {
+  return await post<{ ok: boolean; lastDelivery: SlackDelivery | null }>(
+    `/integrations/slack/rules/${encodeURIComponent(id)}/test`,
+    {},
+  );
+}
+
+// ── Share to Slack — admin config ──────────────────────────────────────────
+
+export async function getSlackShareTargets(): Promise<SlackShareTargetsResponse> {
+  return await get<SlackShareTargetsResponse>("/integrations/slack/share-targets");
+}
+
+export async function upsertSlackShareTarget(input: SlackShareTargetInput): Promise<SlackShareTarget> {
+  const { target } = await post<{ target: SlackShareTarget }>("/integrations/slack/share-targets", input);
+  return target;
+}
+
+export async function deleteSlackShareTarget(surface: ShareSurface): Promise<void> {
+  await send<void>("DELETE", `/integrations/slack/share-targets/${encodeURIComponent(surface)}`);
+}
+
+// ── Share to Slack — user-facing send (lead/learner/case record pages) ────
+
+export async function getSharePreview(
+  surface: ShareSurface,
+  recordId: string,
+): Promise<SlackSharePreview> {
+  return await get<SlackSharePreview>(
+    `/share/slack/preview/${encodeURIComponent(surface)}/${encodeURIComponent(recordId)}`,
+  );
+}
+
+export async function shareToSlack(
+  surface: ShareSurface,
+  recordId: string,
+  notes: string | null,
+): Promise<void> {
+  await post<void>(
+    `/share/slack/${encodeURIComponent(surface)}/${encodeURIComponent(recordId)}`,
+    { notes },
+  );
+}
+
+export async function getSlackDeliveries(limit = 50): Promise<SlackDelivery[]> {
+  try {
+    const { deliveries } = await get<{ deliveries: SlackDelivery[] }>(
+      `/integrations/slack/deliveries?limit=${limit}`,
+    );
+    return deliveries;
+  } catch (err) {
+    if ((err as Error).message.includes("→ 401")) return [];
+    if ((err as Error).message.includes("→ 403")) return [];
+    throw err;
+  }
 }
 
 // ── Agents ─────────────────────────────────────────────────────────────────

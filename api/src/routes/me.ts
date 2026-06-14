@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { sql } from "drizzle-orm";
 import { withTenant } from "../db/app.js";
+import { requirePermission } from "../middleware/require.js";
 
 export const meRouter = Router();
 
@@ -32,7 +33,7 @@ meRouter.get("/", async (req, res) => {
 
 // /me/clients — clients assigned to the calling user. Used by the timesheet
 // dropdown so employees only see clients they're allowed to bill against.
-meRouter.get("/clients", async (req, res, next) => {
+meRouter.get("/clients", requirePermission("timesheets.read.self"), async (req, res, next) => {
   try {
     if (!req.userId) return res.status(401).json({ error: "Not authenticated" });
     const rows = await withTenant(req.tenantId!, async (db) => {

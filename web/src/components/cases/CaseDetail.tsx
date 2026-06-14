@@ -6,20 +6,21 @@ import { useRouter } from "next/navigation";
 import { Icon } from "@/components/ui/Icon";
 import { cn } from "@/lib/cn";
 import {
-  addTicketComment, getCatalog, reopenTicket, updateTicket,
+  addCaseComment, getCatalog, reopenCase, updateCase,
 } from "@/lib/api";
 import { StatusPill, STATUS_LABEL } from "./StatusPill";
 import { PriorityChip, PRIORITY_LABEL } from "./PriorityChip";
-import { CloseTicketDialog } from "./CloseTicketDialog";
+import { CloseCaseDialog } from "./CloseCaseDialog";
+import { ShareToSlackButton } from "@/components/share/ShareToSlackButton";
 import type {
-  CatalogResponse, TicketCategory, TicketDetail as TicketDetailType,
-  TicketPriority, TicketStatus,
+  CatalogResponse, CaseCategory, CaseDetail as CaseDetailType,
+  CasePriority, CaseStatus,
 } from "@/lib/types";
 
-const STATUSES_NON_TERMINAL: TicketStatus[] = ["open", "in_progress", "pending"];
-const STATUSES_ALL: TicketStatus[] = ["open", "in_progress", "pending", "resolved"];
+const STATUSES_NON_TERMINAL: CaseStatus[] = ["open", "in_progress", "pending"];
+const STATUSES_ALL: CaseStatus[] = ["open", "in_progress", "pending", "resolved"];
 
-const CATEGORY_LABEL_MAP: Record<TicketCategory, string> = {
+const CATEGORY_LABEL_MAP: Record<CaseCategory, string> = {
   billing: "Billing",
   technical: "Technical",
   content_lms: "Content / LMS",
@@ -30,9 +31,9 @@ const CATEGORY_LABEL_MAP: Record<TicketCategory, string> = {
   other: "Other",
 };
 
-export function TicketDetailView({ data }: { data: TicketDetailType }) {
+export function CaseDetailView({ data }: { data: CaseDetailType }) {
   const router = useRouter();
-  const t = data.ticket;
+  const t = data.case;
   const isClosed = t.status === "closed";
   const isResolved = t.status === "resolved";
   const isTerminal = isClosed || isResolved || t.status === "cancelled";
@@ -44,10 +45,10 @@ export function TicketDetailView({ data }: { data: TicketDetailType }) {
 
   useEffect(() => { getCatalog().then(setCatalog).catch(() => {}); }, []);
 
-  async function patch(body: Parameters<typeof updateTicket>[1]) {
+  async function patch(body: Parameters<typeof updateCase>[1]) {
     setBusy(true); setError(null);
     try {
-      await updateTicket(t.number, body);
+      await updateCase(t.number, body);
       router.refresh();
     } catch (err) {
       setError((err as Error).message);
@@ -59,7 +60,7 @@ export function TicketDetailView({ data }: { data: TicketDetailType }) {
   async function reopen() {
     setBusy(true); setError(null);
     try {
-      await reopenTicket(t.number);
+      await reopenCase(t.number);
       router.refresh();
     } catch (err) {
       setError((err as Error).message);
@@ -157,13 +158,15 @@ export function TicketDetailView({ data }: { data: TicketDetailType }) {
             className="btn-grad w-full disabled:opacity-60"
           >
             <Icon name="check" size={14} strokeWidth={2} />
-            Close ticket
+            Close case
           </button>
         ) : (
           <button onClick={reopen} disabled={busy} className="btn w-full disabled:opacity-50">
             Reopen
           </button>
         )}
+
+        <ShareToSlackButton surface="cases" recordId={t.number} className="w-full justify-center" />
 
         {error && (
           <div className="rounded-lg border border-state-warn/30 bg-state-warn/10 px-3 py-2 text-[12px] text-state-warn">
@@ -186,7 +189,7 @@ export function TicketDetailView({ data }: { data: TicketDetailType }) {
             {t.status === "cancelled" && <option value="cancelled">{STATUS_LABEL.cancelled}</option>}
           </select>
           {!isTerminal && t.status !== "open" && (
-            <p className="mt-1 text-[10.5px] text-hint">Use "Close ticket" above to mark closed (resolution required).</p>
+            <p className="mt-1 text-[10.5px] text-hint">Use "Close case" above to mark closed (resolution required).</p>
           )}
         </RailCard>
 
@@ -205,7 +208,7 @@ export function TicketDetailView({ data }: { data: TicketDetailType }) {
                     active ? "border border-transparent bg-ink text-white" : "border border-rule bg-paper text-ink2 hover:border-rule2",
                   )}
                 >
-                  {PRIORITY_LABEL[p as TicketPriority]}
+                  {PRIORITY_LABEL[p as CasePriority]}
                 </button>
               );
             })}
@@ -235,7 +238,7 @@ export function TicketDetailView({ data }: { data: TicketDetailType }) {
             onChange={(e) => patch({ category: e.target.value })}
             className={selectCls}
           >
-            {catalog?.ticketCategories.map((c) => (
+            {catalog?.caseCategories.map((c) => (
               <option key={c.key} value={c.key}>{c.label}</option>
             )) ?? <option value={t.category}>{CATEGORY_LABEL_MAP[t.category]}</option>}
           </select>
@@ -269,7 +272,7 @@ export function TicketDetailView({ data }: { data: TicketDetailType }) {
       </aside>
 
       {closeOpen && (
-        <CloseTicketDialog
+        <CloseCaseDialog
           number={t.number}
           catalog={catalog}
           onClose={() => setCloseOpen(false)}
@@ -340,7 +343,7 @@ function CommentBox({ number }: { number: string }) {
     if (!text.trim()) return;
     setBusy(true); setError(null);
     try {
-      await addTicketComment(number, text.trim());
+      await addCaseComment(number, text.trim());
       setText("");
       router.refresh();
     } catch (err) {
@@ -373,7 +376,7 @@ function CommentBox({ number }: { number: string }) {
   );
 }
 
-function Timeline({ rows }: { rows: TicketDetailType["timeline"] }) {
+function Timeline({ rows }: { rows: CaseDetailType["timeline"] }) {
   if (!rows.length) {
     return <div className="rounded-lg border border-dashed border-rule p-6 text-center text-[12px] text-hint">No activity yet.</div>;
   }

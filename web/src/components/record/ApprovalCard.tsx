@@ -13,8 +13,10 @@ interface Proposed {
 
 export function ApprovalCard({
   approval,
+  canDecide = true,
 }: {
   approval: { id: string; actionType: string; mode: string; status: string; proposed: unknown };
+  canDecide?: boolean;
 }) {
   const router = useRouter();
   const proposed: Proposed =
@@ -110,47 +112,54 @@ export function ApprovalCard({
         </div>
       )}
 
-      <div className="mt-4 flex flex-wrap items-center gap-2">
-        <button
-          type="button"
-          onClick={() => decide("approve")}
-          disabled={busy !== null}
-          className="btn-grad disabled:opacity-60"
-        >
-          {busy === "approve" ? "Sending…" : "Approve & send"}
-        </button>
-        <button
-          type="button"
-          onClick={() => decide("reject")}
-          disabled={busy !== null}
-          className="btn disabled:opacity-50"
-        >
-          {busy === "reject" ? "Rejecting…" : "Reject"}
-        </button>
-        {!editing ? (
+      {canDecide ? (
+        <div className="mt-4 flex flex-wrap items-center gap-2">
           <button
             type="button"
-            onClick={() => setEditing(true)}
+            onClick={() => decide("approve")}
+            disabled={busy !== null}
+            className="btn-grad disabled:opacity-60"
+          >
+            {busy === "approve" ? "Sending…" : "Approve & send"}
+          </button>
+          <button
+            type="button"
+            onClick={() => decide("reject")}
             disabled={busy !== null}
             className="btn disabled:opacity-50"
           >
-            Edit draft
+            {busy === "reject" ? "Rejecting…" : "Reject"}
           </button>
-        ) : (
-          <button
-            type="button"
-            onClick={() => {
-              setEditing(false);
-              setSubject(initialSubject);
-              setBody(initialBody);
-            }}
-            disabled={busy !== null}
-            className="btn disabled:opacity-50"
-          >
-            Cancel edit
-          </button>
-        )}
-      </div>
+          {!editing ? (
+            <button
+              type="button"
+              onClick={() => setEditing(true)}
+              disabled={busy !== null}
+              className="btn disabled:opacity-50"
+            >
+              Edit draft
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={() => {
+                setEditing(false);
+                setSubject(initialSubject);
+                setBody(initialBody);
+              }}
+              disabled={busy !== null}
+              className="btn disabled:opacity-50"
+            >
+              Cancel edit
+            </button>
+          )}
+        </div>
+      ) : (
+        <div className="mono-cap mt-3 text-[10px] tracking-[.06em] text-mute">
+          You don't have permission to decide on this approval. Ask an admin
+          for the <span className="font-mono">agents.run</span> permission.
+        </div>
+      )}
     </div>
   );
 }

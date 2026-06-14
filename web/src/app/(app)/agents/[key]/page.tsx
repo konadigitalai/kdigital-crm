@@ -4,6 +4,7 @@ import { Topbar } from "@/components/shell/Topbar";
 import { Icon, type IconName } from "@/components/ui/Icon";
 import { cn } from "@/lib/cn";
 import { getAgentCatalog, getAgentRunHistory, getEdifySession, getEdifySessions, getForecastLatest, getLeads } from "@/lib/api";
+import { requirePagePermission } from "@/lib/guards";
 import { OutreachPanel } from "@/components/agents/OutreachPanel";
 import { ScoringPanel } from "@/components/agents/ScoringPanel";
 import { NbaPanel } from "@/components/agents/NbaPanel";
@@ -40,6 +41,7 @@ export default async function AgentDetailPage({
   params: Promise<{ key: string }>;
   searchParams: Promise<{ session?: string }>;
 }) {
+  await requirePagePermission("agents.read");
   const { key } = await params;
   const { session: sessionFromUrl } = await searchParams;
   const [catalog, runs, leads, forecast, edifySessions] = await Promise.all([

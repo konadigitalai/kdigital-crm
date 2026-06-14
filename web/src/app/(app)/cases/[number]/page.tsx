@@ -1,16 +1,18 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { Topbar } from "@/components/shell/Topbar";
-import { getTicket } from "@/lib/api";
-import { TicketDetailView } from "@/components/tickets/TicketDetail";
+import { getCase } from "@/lib/api";
+import { requirePagePermission } from "@/lib/guards";
+import { CaseDetailView } from "@/components/cases/CaseDetail";
 
-export default async function TicketDetailPage({
+export default async function CaseDetailPage({
   params,
 }: {
   params: Promise<{ number: string }>;
 }) {
+  await requirePagePermission("cases.read");
   const { number } = await params;
-  const data = await getTicket(number);
+  const data = await getCase(number);
   if (!data) notFound();
 
   return (
@@ -19,15 +21,15 @@ export default async function TicketDetailPage({
         crumb={
           <>
             Edify CRM <span className="text-hint">/</span>{" "}
-            <Link href="/tickets" className="hover:text-brand-violet">Tickets</Link>{" "}
+            <Link href="/cases" className="hover:text-brand-violet">Cases</Link>{" "}
             <span className="text-hint">/</span>{" "}
-            <b className="font-semibold text-ink">{data.ticket.number}</b>
+            <b className="font-semibold text-ink">{data.case.number}</b>
           </>
         }
       />
 
       <div className="px-9 pb-[60px] pt-7">
-        <TicketDetailView data={data} />
+        <CaseDetailView data={data} />
       </div>
     </>
   );

@@ -8,19 +8,46 @@ import { ScoreRing } from "@/components/ui/ScoreRing";
 import { NewLeadButton } from "@/components/leads/NewLeadDialog";
 import { FilterBar } from "@/components/filter/FilterBar";
 import { useFilter } from "@/components/filter/useFilter";
-import type { FilterField, FilterState } from "@/components/filter/types";
+import type { FilterField } from "@/components/filter/types";
 import { avatarGradClass, ratingStyles } from "@/lib/ui";
 import { cn } from "@/lib/cn";
 import { updateLead } from "@/lib/api";
-import type { Lead, LeadRating, PipelineColumn } from "@/lib/types";
+import type { CatalogResponse, CurrentUser, Lead, LeadRating, PipelineColumn, SavedView } from "@/lib/types";
 import { LEAD_RATINGS } from "@/lib/types";
+import {
+  PipelineListView,
+  PIPELINE_LIST_COLUMNS,
+  PIPELINE_LIST_DEFAULT_COLUMNS,
+} from "./PipelineListView";
+import { DEFAULT_VIEW_ID, ViewTabs } from "./ViewTabs";
 
 const DRAG_MIME = "application/x-decrm-lead";
 
+// ─── group-by ─────────────────────────────────────────────────────────────
+
+// The "Group by" axis selector is applied to Kanban + Chart only. Rating is
+// the default and the only axis where drag-drop is allowed (since dragging
+// across columns writes lead.rating). Other axes are read-only buckets.
+type GroupBy = "rating" | "program" | "advisor" | "source";
+
+const GROUP_BY_OPTIONS: { value: GroupBy; label: string }[] = [
+  { value: "rating",  label: "Rating" },
+  { value: "program", label: "Program" },
+  { value: "advisor", label: "Advisor" },
+  { value: "source",  label: "Source" },
+];
+
+function groupKey(l: Lead, by: GroupBy): string {
+  if (by === "rating")  return l.rating;
+  if (by === "program") return l.program || "—";
+  if (by === "advisor") return l.advisorName || "—";
+  if (by === "source")  return l.sourceLabel || l.source || "—";
+  return "—";
+}
+
 // ─── helpers ──────────────────────────────────────────────────────────────
 
-// Pipeline columns are keyed on lead.rating now. Visual styles come from
-// ratingStyles (lib/ui) — this map is just the dot color for the column header.
+// Rating-specific visual constants — only used when groupBy === "rating".
 const colDot: Record<LeadRating, string> = {
   "new lead": "bg-brand-blue",
   attempted:  "bg-brand-violet",
@@ -31,7 +58,6 @@ const colDot: Record<LeadRating, string> = {
   enrolled:   "bg-state-ok",
 };
 
-// Hex equivalents — used by the Chart view's SVG fills.
 const colHex: Record<LeadRating, string> = {
   "new lead": "#1F3FCF",
   attempted:  "#6B1FB8",
@@ -41,6 +67,22 @@ const colHex: Record<LeadRating, string> = {
   superhot:   "#C7197A",
   enrolled:   "#2E9E6A",
 };
+
+// Stable palette for non-rating axes — picked deterministically from the
+// bucket name so the same advisor / program always gets the same color.
+const PALETTE = [
+  { dot: "bg-brand-violet",  hex: "#6B1FB8" },
+  { dot: "bg-brand-magenta", hex: "#C7197A" },
+  { dot: "bg-brand-blue",    hex: "#1F3FCF" },
+  { dot: "bg-state-ok",      hex: "#2E9E6A" },
+  { dot: "bg-state-amber",   hex: "#E08A1E" },
+  { dot: "bg-mute",          hex: "#A89DAC" },
+];
+function paletteFor(key: string) {
+  let h = 0;
+  for (let i = 0; i < key.length; i++) h = (h * 31 + key.charCodeAt(i)) >>> 0;
+  return PALETTE[h % PALETTE.length]!;
+}
 
 const RATING_OPTIONS = LEAD_RATINGS.map((r) => ({ value: r, label: ratingStyles[r].label }));
 
@@ -82,11 +124,89 @@ function fmtINR(n: number): string {
   return `₹${Math.round(n)}`;
 }
 
+// ─── column synthesis ─────────────────────────────────────────────────────
+
+// A "synthetic" column shape that works for any groupBy axis. When groupBy
+// is "rating" we re-use the server-computed PipelineColumn[] (ordered + with
+// AI notes). When grouping by anything else we synthesise columns on the fly
+// from the filtered leads.
+interface SynthColumn {
+  key: string;
+  label: string;
+  count: number;
+  sum: string;
+  aiNote: string | null;
+  // Visual color knobs — present for rating, derived for the others.
+  dotClass: string;
+  hex: string;
+  // Whether this column accepts dropped leads (only true for rating).
+  droppable: boolean;
+}
+
+function makeColumns(
+  groupBy: GroupBy,
+  ratingColumns: PipelineColumn[],
+  filtered: Lead[],
+  filteredAll: Lead[],
+): SynthColumn[] {
+  if (groupBy === "rating") {
+    return ratingColumns.map((c) => ({
+      key: c.key,
+      label: c.label,
+      count: c.count,
+      sum: c.sum,
+      aiNote: c.aiNote,
+      dotClass: colDot[c.key],
+      hex: colHex[c.key],
+      droppable: true,
+    }));
+  }
+
+  // Build the bucket list from filteredAll so empty buckets disappear when a
+  // filter excludes them — but the column header still reflects the unfiltered
+  // membership count if the user has a filter active.
+  const seenKeys = unique(filteredAll.map((l) => groupKey(l, groupBy)));
+  return seenKeys.sort((a, b) => a.localeCompare(b)).map((k) => {
+    const inAll = filteredAll.filter((l) => groupKey(l, groupBy) === k);
+    const inFiltered = filtered.filter((l) => groupKey(l, groupBy) === k);
+    const sumNum = inFiltered.reduce((s, l) => s + parseINR(l.value), 0);
+    const palette = paletteFor(k);
+    return {
+      key: k,
+      label: k,
+      count: inAll.length,
+      sum: fmtINR(sumNum),
+      aiNote: null,
+      dotClass: palette.dot,
+      hex: palette.hex,
+      droppable: false,
+    };
+  });
+}
+
 // ─── top-level component ──────────────────────────────────────────────────
 
 type ViewMode = "list" | "kanban" | "chart";
 
-export function PipelineBoard({ columns }: { columns: PipelineColumn[] }) {
+export function PipelineBoard({
+  columns,
+  canWrite = true,
+  canCreateLeads = true,
+  canDeleteLeads = false,
+  catalog,
+  initialViews = [],
+  currentUser = null,
+}: {
+  columns: PipelineColumn[];
+  canWrite?: boolean;
+  canCreateLeads?: boolean;
+  canDeleteLeads?: boolean;
+  catalog: CatalogResponse;
+  /** Saved views for the pipeline list, prefetched server-side. */
+  initialViews?: SavedView[];
+  /** Used to decide which views are owner-editable. */
+  currentUser?: CurrentUser | null;
+}) {
   const router = useRouter();
   const [, startTransition] = useTransition();
   // Local copy of all leads for optimistic drag-drop. Re-syncs from props when
@@ -94,34 +214,88 @@ export function PipelineBoard({ columns }: { columns: PipelineColumn[] }) {
   // actually changes, so optimistic edits aren't reverted instantly.
   const incomingAllLeads: Lead[] = useMemo(() => columns.flatMap((c) => c.leads as Lead[]), [columns]);
   const [localLeads, setLocalLeads] = useState<Lead[]>(incomingAllLeads);
+  // Fingerprint includes every field a user can edit from the list view.
+  // The previous key only watched rating, so non-rating edits (phone, email,
+  // program, advisor, dates, etc.) never re-synced from the server and the
+  // user had to hard-reload to see their own changes.
   const incomingKey = useMemo(
-    () => incomingAllLeads.map((l) => `${l.id}:${l.rating}`).join("|"),
+    () =>
+      incomingAllLeads
+        .map((l) =>
+          [
+            l.id, l.rating, l.score, l.name, l.email ?? "", l.phone ?? "",
+            l.city ?? "", l.program ?? "", l.programId ?? "",
+            l.advisorId ?? "", l.advisorName ?? "",
+            l.source ?? "", l.sourceLabel ?? "",
+            l.value ?? "", l.description ?? "",
+            l.deliveryMode ?? "", l.timeZone ?? "",
+            l.feePaid ?? "", l.feeDue ?? "",
+            l.dueDate ?? "", l.registeredDate ?? "",
+            l.nextFollowupAt ?? "", l.demoAttendedAt ?? "",
+          ].join("|"),
+        )
+        .join("\n"),
     [incomingAllLeads],
   );
   // Re-sync local state when the server data changes.
-  useMemo(() => { setLocalLeads(incomingAllLeads); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [incomingKey]);
+  useEffect(() => {
+    setLocalLeads(incomingAllLeads);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [incomingKey]);
 
   const fields = useMemo(() => buildFields(localLeads), [localLeads]);
   const [filtered, state, setState] = useFilter(localLeads, fields);
   const [view, setView] = useState<ViewMode>("kanban");
+  const [groupBy, setGroupBy] = useState<GroupBy>("rating");
   const [dragError, setDragError] = useState<string | null>(null);
 
-  const filteredByRating = useMemo(() => {
-    const m = new Map<LeadRating, Lead[]>();
-    for (const l of filtered) {
-      const arr = m.get(l.rating) ?? [];
-      arr.push(l);
-      m.set(l.rating, arr);
+  // ─── saved views (list view only) ──────────────────────────────────────
+  const [views, setViews] = useState<SavedView[]>(initialViews);
+  const [activeViewId, setActiveViewId] = useState<string>(DEFAULT_VIEW_ID);
+  // Live snapshot of which columns the list view is showing — captured here
+  // so the saved-view editor can persist them. Starts null until the list
+  // view's first onColumnsChange fires.
+  const [liveColumns, setLiveColumns] = useState<string[] | null>(null);
+
+  // The columns to *push* into PipelineListView for the active view. Null
+  // means "use whatever's in localStorage / your last picks". When the user
+  // clicks a saved view, we read its columns and push them; PipelineListView
+  // mirrors them into its local state for the column picker.
+  const activeView = activeViewId === DEFAULT_VIEW_ID
+    ? null
+    : views.find((v) => v.id === activeViewId) ?? null;
+  const viewColumnsToPush = activeView?.columns ?? null;
+
+  // Switching views: apply the view's filter (or clear it for default).
+  function selectView(id: string) {
+    setActiveViewId(id);
+    if (id === DEFAULT_VIEW_ID) {
+      setState({ combinator: "and", rules: [] });
+      return;
     }
-    return m;
-  }, [filtered]);
+    const v = views.find((x) => x.id === id);
+    if (!v) return;
+    // Saved view's filter is opaque JSONB; treat it as the filter shape and
+    // fall back to empty if it's malformed.
+    const next = (v.filter && typeof v.filter === "object" && Array.isArray((v.filter as Record<string, unknown>).rules))
+      ? v.filter
+      : { combinator: "and", rules: [] };
+    setState(next as { combinator: "and" | "or"; rules: import("@/components/filter/types").FilterRule[] });
+  }
 
   // Optimistic drag-drop: change local state immediately, fire PATCH, roll
   // back on error. router.refresh keeps the per-column sums + AI strip
-  // notes accurate after a successful drop.
-  async function onDrop(leadId: string, fromRating: LeadRating, toRating: LeadRating) {
-    if (fromRating === toRating) return;
+  // notes accurate after a successful drop. Only valid when grouped by rating.
+  async function onDrop(leadId: string, fromKey: string, toKey: string) {
+    if (groupBy !== "rating") return;
+    if (fromKey === toKey) return;
+    if (!canWrite) {
+      setDragError("You don't have permission to move leads. Ask an admin for the pipeline.write permission.");
+      setTimeout(() => setDragError(null), 4000);
+      return;
+    }
     const before = localLeads;
+    const toRating = toKey as LeadRating;
     setLocalLeads((prev) => prev.map((l) => (l.id === leadId ? { ...l, rating: toRating } : l)));
     try {
       const target = before.find((l) => l.id === leadId);
@@ -135,19 +309,39 @@ export function PipelineBoard({ columns }: { columns: PipelineColumn[] }) {
     }
   }
 
-  // Recompute counts and sums from local state so columns stay in sync after
-  // an optimistic drop without waiting for router.refresh to complete.
-  const liveColumns = useMemo(() => {
+  // Recompute rating-column counts from local state so they stay in sync
+  // with optimistic drops without waiting for router.refresh.
+  const liveRatingColumns = useMemo(() => {
     return columns.map((col) => {
       const inCol = localLeads.filter((l) => l.rating === col.key);
       return { ...col, count: inCol.length, leads: inCol };
     });
   }, [columns, localLeads]);
 
+  const dynamicColumns = useMemo(
+    () => makeColumns(groupBy, liveRatingColumns, filtered, localLeads),
+    [groupBy, liveRatingColumns, filtered, localLeads],
+  );
+
+  // Map from column key → leads that fall in it (after filtering).
+  const leadsByColumn = useMemo(() => {
+    const m = new Map<string, Lead[]>();
+    for (const l of filtered) {
+      const k = groupKey(l, groupBy);
+      const arr = m.get(k) ?? [];
+      arr.push(l);
+      m.set(k, arr);
+    }
+    return m;
+  }, [filtered, groupBy]);
+
   return (
     <>
-      <div className="mb-4 flex items-center gap-3">
+      <div className="mb-4 flex flex-wrap items-center gap-3">
         <ViewSwitcher value={view} onChange={setView} />
+        {(view === "kanban" || view === "chart") && (
+          <GroupBySelector value={groupBy} onChange={setGroupBy} />
+        )}
         <div className="flex-1 rounded-[14px] border border-rule bg-paper p-3">
           <FilterBar
             fields={fields}
@@ -160,15 +354,64 @@ export function PipelineBoard({ columns }: { columns: PipelineColumn[] }) {
         </div>
       </div>
 
+      {/* Saved-view tabs only make sense for the flat list view. Kanban /
+          chart group-by is the existing slicing dimension there. */}
+      {view === "list" && (
+        <div className="mb-3">
+          <ViewTabs
+            views={views}
+            activeId={activeViewId}
+            onSelect={selectView}
+            fields={fields}
+            allColumns={PIPELINE_LIST_COLUMNS}
+            defaultColumns={PIPELINE_LIST_DEFAULT_COLUMNS}
+            currentFilter={state}
+            currentColumns={liveColumns ?? []}
+            onChange={setViews}
+            currentUser={currentUser}
+            canShare={canWrite}
+          />
+        </div>
+      )}
+
       {dragError && (
         <div className="mb-3 rounded-md border border-state-warn/30 bg-state-warn/10 px-3 py-2 text-[12.5px] text-state-warn">
           {dragError}
         </div>
       )}
 
-      {view === "kanban" && <KanbanView columns={liveColumns} byRating={filteredByRating} state={state} onDrop={onDrop} />}
-      {view === "list"   && <ListView   columns={liveColumns} byRating={filteredByRating} />}
-      {view === "chart"  && <ChartView  columns={liveColumns} byRating={filteredByRating} />}
+      {view === "kanban" && (
+        <KanbanView
+          columns={dynamicColumns}
+          leadsByColumn={leadsByColumn}
+          filterActive={state.rules.length > 0}
+          groupBy={groupBy}
+          onDrop={onDrop}
+          canCreateLeads={canCreateLeads}
+        />
+      )}
+      {view === "list"  && (
+        <PipelineListView
+          leads={filtered}
+          catalog={catalog}
+          canWrite={canCreateLeads}
+          canDelete={canDeleteLeads}
+          viewColumns={viewColumnsToPush}
+          onColumnsChange={setLiveColumns}
+          onLocalEdit={(leadId, patch) => {
+            setLocalLeads((prev) =>
+              prev.map((l) => (l.id === leadId ? { ...l, ...patch } : l)),
+            );
+          }}
+          onLocalDelete={(leadIds) => {
+            const dropSet = new Set(leadIds);
+            setLocalLeads((prev) => prev.filter((l) => !dropSet.has(l.id)));
+          }}
+        />
+      )}
+      {view === "chart" && (
+        <ChartView columns={dynamicColumns} leadsByColumn={leadsByColumn} groupByLabel={GROUP_BY_OPTIONS.find((o) => o.value === groupBy)?.label ?? ""} />
+      )}
     </>
   );
 }
@@ -200,19 +443,47 @@ function ViewSwitcher({ value, onChange }: { value: ViewMode; onChange: (v: View
   );
 }
 
+function GroupBySelector({ value, onChange }: { value: GroupBy; onChange: (v: GroupBy) => void }) {
+  return (
+    <div className="inline-flex items-center gap-2 rounded-full border border-rule bg-paper px-3 py-1 text-[12.5px]">
+      <span className="mono-cap text-[10px] font-semibold tracking-[.12em] text-mute">
+        Group by
+      </span>
+      <select
+        value={value}
+        onChange={(e) => onChange(e.target.value as GroupBy)}
+        className="cursor-pointer bg-transparent pr-1 font-semibold text-ink focus:outline-none"
+      >
+        {GROUP_BY_OPTIONS.map((o) => (
+          <option key={o.value} value={o.value}>
+            {o.label}
+          </option>
+        ))}
+      </select>
+    </div>
+  );
+}
+
 // ─── Kanban ───────────────────────────────────────────────────────────────
 
 function KanbanView({
-  columns, byRating, state, onDrop,
+  columns,
+  leadsByColumn,
+  filterActive,
+  groupBy,
+  onDrop,
+  canCreateLeads,
 }: {
-  columns: PipelineColumn[];
-  byRating: Map<LeadRating, Lead[]>;
-  state: FilterState;
-  onDrop: (leadId: string, fromRating: LeadRating, toRating: LeadRating) => void;
+  columns: SynthColumn[];
+  leadsByColumn: Map<string, Lead[]>;
+  filterActive: boolean;
+  groupBy: GroupBy;
+  onDrop: (leadId: string, fromKey: string, toKey: string) => void;
+  canCreateLeads: boolean;
 }) {
   // Track which column is being hovered with a dragged card so we can
   // highlight it as a valid drop target.
-  const [hoverRating, setHoverRating] = useState<LeadRating | null>(null);
+  const [hoverKey, setHoverKey] = useState<string | null>(null);
   const [draggingId, setDraggingId] = useState<string | null>(null);
 
   // Safety net: when the optimistic drop reorders the lead into another
@@ -221,10 +492,18 @@ function KanbanView({
   // stays stuck at opacity-40. A window-level listener doesn't depend on any
   // particular DOM node and always cleans up.
   useEffect(() => {
-    function clear() { setDraggingId(null); setHoverRating(null); }
+    function clear() { setDraggingId(null); setHoverKey(null); }
     window.addEventListener("dragend", clear);
     return () => window.removeEventListener("dragend", clear);
   }, []);
+
+  if (columns.length === 0) {
+    return (
+      <div className="rounded-2xl border border-rule bg-paper p-12 text-center text-[13px] text-mute">
+        No leads match the current filter.
+      </div>
+    );
+  }
 
   return (
     <div
@@ -232,36 +511,34 @@ function KanbanView({
       style={{ gridTemplateColumns: `repeat(${columns.length}, minmax(248px, 1fr))` }}
     >
       {columns.map((col) => {
-        const colLeads = byRating.get(col.key) ?? [];
-        const isHover = hoverRating === col.key;
+        const colLeads = leadsByColumn.get(col.key) ?? [];
+        const isHover = hoverKey === col.key && col.droppable;
         return (
           <div
             key={col.key}
             onDragOver={(e) => {
-              // Allow drops only when carrying our own MIME type.
+              if (!col.droppable) return;
               if (e.dataTransfer.types.includes(DRAG_MIME)) {
                 e.preventDefault();
                 e.dataTransfer.dropEffect = "move";
-                if (hoverRating !== col.key) setHoverRating(col.key);
+                if (hoverKey !== col.key) setHoverKey(col.key);
               }
             }}
             onDragLeave={(e) => {
-              // Only clear when actually leaving the column container.
               if (!e.currentTarget.contains(e.relatedTarget as Node)) {
-                setHoverRating((curr) => (curr === col.key ? null : curr));
+                setHoverKey((curr) => (curr === col.key ? null : curr));
               }
             }}
             onDrop={(e) => {
+              if (!col.droppable) return;
               e.preventDefault();
-              // Clear drag state up-front so the source card doesn't stay
-              // dimmed across the optimistic re-mount in the new column.
               setDraggingId(null);
-              setHoverRating(null);
+              setHoverKey(null);
               const raw = e.dataTransfer.getData(DRAG_MIME);
               if (!raw) return;
               try {
-                const { id, fromRating } = JSON.parse(raw) as { id: string; fromRating: LeadRating };
-                onDrop(id, fromRating, col.key);
+                const { id, fromKey } = JSON.parse(raw) as { id: string; fromKey: string };
+                onDrop(id, fromKey, col.key);
               } catch { /* ignore malformed payload */ }
             }}
             className={cn(
@@ -271,10 +548,10 @@ function KanbanView({
             style={{ maxHeight: "calc(100vh - 250px)" }}
           >
             <div className="flex items-center gap-[9px] p-[14px_16px_12px]">
-              <span className={cn("h-[9px] w-[9px] flex-shrink-0 rounded-full", colDot[col.key])} />
-              <span className="text-[13.5px] font-bold tracking-[-.01em]">{col.label}</span>
+              <span className={cn("h-[9px] w-[9px] flex-shrink-0 rounded-full", col.dotClass)} />
+              <span className="truncate text-[13.5px] font-bold tracking-[-.01em]" title={col.label}>{col.label}</span>
               <span className="rounded-full border border-rule bg-warm2 px-2 py-0.5 font-mono text-[10px] font-semibold text-mute">
-                {state.rules.length > 0 ? `${colLeads.length}/${col.count}` : col.count}
+                {filterActive ? `${colLeads.length}/${col.count}` : col.count}
               </span>
               <span className="ml-auto font-mono text-[10px] tracking-[.04em] text-mute">{col.sum}</span>
             </div>
@@ -298,30 +575,31 @@ function KanbanView({
               {colLeads.map((l) => {
                 const ai = l.score >= 85 && (l.rating === "hot" || l.rating === "superhot");
                 const isDragging = draggingId === l.id;
+                const draggable = col.droppable; // only when grouped by rating
                 return (
                   <Link
                     key={l.id}
                     href={`/records/${l.number}`}
-                    draggable
+                    draggable={draggable}
                     onDragStart={(e) => {
+                      if (!draggable) return;
                       e.dataTransfer.effectAllowed = "move";
                       e.dataTransfer.setData(
                         DRAG_MIME,
-                        JSON.stringify({ id: l.id, fromRating: l.rating }),
+                        JSON.stringify({ id: l.id, fromKey: col.key }),
                       );
                       setDraggingId(l.id);
                     }}
                     onDragEnd={() => {
                       setDraggingId(null);
-                      setHoverRating(null);
+                      setHoverKey(null);
                     }}
                     onClick={(e) => {
-                      // Suppress the navigate when a drag has just finished.
                       if (draggingId) e.preventDefault();
                     }}
                     className={cn(
                       "group block rounded-[13px] border bg-paper p-3.5 transition hover:-translate-y-0.5 hover:border-rule2 hover:shadow-card",
-                      "cursor-grab active:cursor-grabbing",
+                      draggable ? "cursor-grab active:cursor-grabbing" : "cursor-pointer",
                       ai ? "border-[rgba(199,25,122,.28)] shadow-glowSoft" : "border-rule",
                       isDragging && "opacity-40 ring-2 ring-brand-violet/40",
                     )}
@@ -338,6 +616,22 @@ function KanbanView({
                     </div>
                     <div className="text-[12px] font-medium text-ink2">{l.program}</div>
                     <div className="mt-1 font-mono text-[10px] tracking-[.04em] text-mute">{l.value}</div>
+                    {/* When grouped by something other than rating, surface the rating
+                        chip on each card so users still see it inline. */}
+                    {groupBy !== "rating" && (
+                      <div className="mt-1.5">
+                        <span
+                          className={cn(
+                            "mono-cap inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[9px] font-semibold tracking-[.06em]",
+                            ratingStyles[l.rating].bg,
+                            ratingStyles[l.rating].text,
+                          )}
+                        >
+                          <span className={cn("h-1.5 w-1.5 rounded-full", ratingStyles[l.rating].dot)} />
+                          {ratingStyles[l.rating].label}
+                        </span>
+                      </div>
+                    )}
                     <div
                       className={cn(
                         "mt-[11px] flex items-center gap-2 border-t border-dashed border-rule pt-2.5 text-[11.5px]",
@@ -352,10 +646,15 @@ function KanbanView({
                   </Link>
                 );
               })}
-              {state.rules.length === 0 && <NewLeadButton variant="ghost" defaultRating={col.key} />}
+              {/* New-lead inline only when grouped by rating + no filter applied. */}
+              {groupBy === "rating" && !filterActive && canCreateLeads && (
+                <NewLeadButton variant="ghost" defaultRating={col.key as LeadRating} />
+              )}
               {colLeads.length === 0 && (
                 <div className="rounded-[11px] border border-dashed border-rule2 p-4 text-center text-[11.5px] text-mute">
-                  Drop a lead here to mark as <b className="font-semibold text-ink">{col.label}</b>.
+                  {col.droppable
+                    ? <>Drop a lead here to mark as <b className="font-semibold text-ink">{col.label}</b>.</>
+                    : <>No leads in <b className="font-semibold text-ink">{col.label}</b>.</>}
                 </div>
               )}
             </div>
@@ -366,128 +665,25 @@ function KanbanView({
   );
 }
 
-// ─── List (flat table grouped by stage) ───────────────────────────────────
-
-function ListView({
-  columns, byRating,
-}: {
-  columns: PipelineColumn[];
-  byRating: Map<LeadRating, Lead[]>;
-}) {
-  const visibleColumns = columns.filter((c) => (byRating.get(c.key) ?? []).length > 0);
-
-  if (visibleColumns.length === 0) {
-    return (
-      <div className="rounded-2xl border border-rule bg-paper p-12 text-center text-[13px] text-mute">
-        No leads match the current filter.
-      </div>
-    );
-  }
-
-  return (
-    <div className="overflow-hidden rounded-2xl border border-rule bg-paper">
-      {/* Sticky header */}
-      <Row hdr>
-        <div>Lead</div>
-        <div>Program</div>
-        <div className="text-center">Score</div>
-        <div className="text-right">Value</div>
-        <div>Next action</div>
-      </Row>
-
-      {visibleColumns.map((col) => {
-        const colLeads = byRating.get(col.key) ?? [];
-        const sc = ratingStyles[col.key];
-        return (
-          <div key={col.key}>
-            {/* Section header */}
-            <div className="grid items-center gap-4 border-b border-rule bg-warm px-[22px] py-2"
-                 style={{ gridTemplateColumns: "2.6fr 1.4fr 90px 110px 1.4fr" }}>
-              <div className="flex items-center gap-2.5">
-                <span className={cn("inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-[11.5px] font-semibold", sc.bg, sc.text)}>
-                  <span className={cn("h-1.5 w-1.5 rounded-full", sc.dot)} />
-                  {col.label}
-                </span>
-                <span className="font-mono text-[10.5px] text-mute">
-                  {colLeads.length} of {col.count}
-                </span>
-              </div>
-              <div />
-              <div />
-              <div className="text-right font-mono text-[10.5px] text-mute">{col.sum}</div>
-              <div />
-            </div>
-
-            {/* Section rows */}
-            {colLeads.map((l) => (
-              <Link key={l.id} href={`/records/${l.number}`}>
-                <Row hover>
-                  <div className="flex min-w-0 items-center gap-3">
-                    <div className={cn("flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-full text-[12px] font-bold text-white", avatarGradClass[l.avatar])}>
-                      {l.initials}
-                    </div>
-                    <div className="min-w-0">
-                      <div className="truncate text-[14px] font-semibold tracking-[-.005em]">{l.name}</div>
-                      <div className="mono-cap mt-0.5 text-[9.5px] tracking-[.04em] text-mute">{l.number} · {l.city}</div>
-                    </div>
-                  </div>
-                  <div className="text-[13px] text-ink2">
-                    <div className="truncate font-semibold text-ink">{l.program}</div>
-                  </div>
-                  <div className="flex items-center justify-center">
-                    <ScoreRing score={l.score} heat={l.heat} size={30} inner={23} fontSize={10} />
-                  </div>
-                  <div className="text-right font-mono text-[12px] text-ink2">
-                    {l.value || "—"}
-                  </div>
-                  <div className="flex items-center gap-2 text-[12px] text-ink2">
-                    <span className={cn("flex h-5 w-5 flex-shrink-0 items-center justify-center rounded-md", l.nbaGhost ? "bg-warm2" : "bg-grad-soft")}>
-                      <Icon name={l.nbaIcon as IconName} size={11} strokeWidth={2} className={l.nbaGhost ? "text-mute" : "text-brand-violet"} />
-                    </span>
-                    <span className={cn("truncate", l.nbaGhost && "text-mute")}>{l.nbaLabel}</span>
-                  </div>
-                </Row>
-              </Link>
-            ))}
-          </div>
-        );
-      })}
-    </div>
-  );
-}
-
-function Row({ hdr = false, hover = false, children }: { hdr?: boolean; hover?: boolean; children: React.ReactNode }) {
-  return (
-    <div
-      className={cn(
-        "grid items-center gap-4 border-b border-rule px-[22px] last:border-b-0 transition",
-        hdr
-          ? "mono-cap py-3 text-[9.5px] font-semibold tracking-[.12em] text-mute bg-warm/60 cursor-default"
-          : "py-3 cursor-pointer",
-        hover && !hdr && "hover:bg-warm/60",
-      )}
-      style={{ gridTemplateColumns: "2.6fr 1.4fr 90px 110px 1.4fr" }}
-    >
-      {children}
-    </div>
-  );
-}
-
 // ─── Chart (funnel + bar, SVG) ────────────────────────────────────────────
 
 function ChartView({
-  columns, byRating,
+  columns,
+  leadsByColumn,
+  groupByLabel,
 }: {
-  columns: PipelineColumn[];
-  byRating: Map<LeadRating, Lead[]>;
+  columns: SynthColumn[];
+  leadsByColumn: Map<string, Lead[]>;
+  groupByLabel: string;
 }) {
-  // Per rating: count + ₹ sum (computed from filtered leads; falls back to col.sum text)
+  // Per column: count + ₹ sum (computed from filtered leads).
   const data = columns.map((col) => {
-    const leads = byRating.get(col.key) ?? [];
+    const leads = leadsByColumn.get(col.key) ?? [];
     const sumNum = leads.reduce((s, l) => s + parseINR(l.value), 0);
     return {
-      rating: col.key,
+      key: col.key,
       label: col.label,
+      hex: col.hex,
       count: leads.length,
       sum: sumNum,
     };
@@ -498,6 +694,14 @@ function ChartView({
   const maxCount   = Math.max(1, ...data.map((d) => d.count));
   const maxSum     = Math.max(1, ...data.map((d) => d.sum));
 
+  if (columns.length === 0) {
+    return (
+      <div className="rounded-2xl border border-rule bg-paper p-12 text-center text-[13px] text-mute">
+        No leads match the current filter.
+      </div>
+    );
+  }
+
   return (
     <div className="grid grid-cols-2 gap-5">
       {/* Funnel */}
@@ -505,7 +709,7 @@ function ChartView({
         <div className="mb-4 flex items-center justify-between">
           <div>
             <div className="mono-cap text-[10px] font-semibold tracking-[.14em] text-brand-violet">Funnel</div>
-            <div className="mt-0.5 text-[14px] font-bold">Lead count by stage</div>
+            <div className="mt-0.5 text-[14px] font-bold">Lead count by {groupByLabel.toLowerCase()}</div>
           </div>
           <div className="font-mono text-[10.5px] text-mute">{totalCount} total</div>
         </div>
@@ -515,14 +719,14 @@ function ChartView({
             const widthPct = (d.count / maxCount) * 100;
             const sharePct = totalCount > 0 ? Math.round((d.count / totalCount) * 100) : 0;
             return (
-              <div key={d.rating} className="flex items-center gap-3">
-                <div className="w-[110px] flex-shrink-0 text-[12.5px] font-medium text-ink2">{d.label}</div>
+              <div key={d.key} className="flex items-center gap-3">
+                <div className="w-[110px] flex-shrink-0 truncate text-[12.5px] font-medium text-ink2" title={d.label}>{d.label}</div>
                 <div className="relative flex-1 overflow-hidden rounded-md bg-warm2/60">
                   <div
                     className="h-7 rounded-md transition-all"
                     style={{
                       width: `${Math.max(2, widthPct)}%`,
-                      background: colHex[d.rating],
+                      background: d.hex,
                       opacity: d.count === 0 ? 0.18 : 0.9,
                     }}
                   />
@@ -544,7 +748,7 @@ function ChartView({
         <div className="mb-4 flex items-center justify-between">
           <div>
             <div className="mono-cap text-[10px] font-semibold tracking-[.14em] text-brand-violet">Value</div>
-            <div className="mt-0.5 text-[14px] font-bold">₹ open by stage</div>
+            <div className="mt-0.5 text-[14px] font-bold">₹ open by {groupByLabel.toLowerCase()}</div>
           </div>
           <div className="font-mono text-[10.5px] text-mute">{fmtINR(totalSum)} total</div>
         </div>
@@ -553,13 +757,13 @@ function ChartView({
           {data.map((d) => {
             const h = d.sum === 0 ? 4 : Math.max(8, (d.sum / maxSum) * 220);
             return (
-              <div key={d.rating} className="flex flex-1 flex-col items-center gap-2">
+              <div key={d.key} className="flex flex-1 flex-col items-center gap-2">
                 <div className="font-mono text-[10px] text-mute">{fmtINR(d.sum)}</div>
                 <div
                   className="w-full rounded-t-md transition-all"
                   style={{
                     height: `${h}px`,
-                    background: `linear-gradient(180deg, ${colHex[d.rating]}, ${colHex[d.rating]}cc)`,
+                    background: `linear-gradient(180deg, ${d.hex}, ${d.hex}cc)`,
                     opacity: d.sum === 0 ? 0.25 : 1,
                   }}
                   title={`${d.label}: ${fmtINR(d.sum)}`}
@@ -570,8 +774,8 @@ function ChartView({
         </div>
         <div className="mt-2 flex gap-3">
           {data.map((d) => (
-            <div key={d.rating} className="flex flex-1 flex-col items-center text-center">
-              <div className="text-[11px] font-semibold text-ink2 truncate w-full">{d.label}</div>
+            <div key={d.key} className="flex flex-1 flex-col items-center text-center">
+              <div className="text-[11px] font-semibold text-ink2 truncate w-full" title={d.label}>{d.label}</div>
               <div className="mono-cap text-[9px] tracking-[.06em] text-mute">{d.count} lead{d.count === 1 ? "" : "s"}</div>
             </div>
           ))}

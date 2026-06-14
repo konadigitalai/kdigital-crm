@@ -1,0 +1,96 @@
+"use client";
+
+// Client wrapper that owns the "sidebar collapsed" state. AppShell stays a
+// server component (loads currentUser / summary / recentRuns server-side);
+// this thin client layer holds the toggle and reshapes the grid template.
+//
+// State persists in localStorage so collapsing the sidebar sticks across
+// navigations and reloads.
+
+import { useEffect, useState } from "react";
+import { IconRail } from "./IconRail";
+import { Sidebar } from "./Sidebar";
+import type { CurrentUser, RecentRun, SummaryResponse } from "@/lib/types";
+
+const STORAGE_KEY = "decrm_sidebar_collapsed";
+
+function loadCollapsed(): boolean {
+  if (typeof window === "undefined") return false;
+  try {
+    return window.localStorage.getItem(STORAGE_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function saveCollapsed(v: boolean) {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(STORAGE_KEY, v ? "1" : "0");
+  } catch {
+    /* private mode — silently ignore */
+  }
+}
+
+export function AppShellClient({
+  recentRuns,
+  currentUser,
+  summary,
+  children,
+}: {
+  recentRuns: RecentRun[];
+  currentUser: CurrentUser | null;
+  summary: SummaryResponse;
+  children: React.ReactNode;
+}) {
+  // Start uncollapsed on first paint so SSR + client first render match.
+  // The real preference loads on mount; the swap is invisible because there's
+  // no animated layout shift — just a width change applied via Tailwind class.
+  const [collapsed, setCollapsed] = useState(false);
+  useEffect(() => {
+    setCollapsed(loadCollapsed());
+  }, []);
+
+  function toggle() {
+    setCollapsed((v) => {
+      const next = !v;
+      saveCollapsed(next);
+      return next;
+    });
+  }
+
+  return (
+    <div
+      className="relative z-[1] grid h-screen"
+      style={{
+        gridTemplateColumns: collapsed ? "66px 0px 1fr" : "66px 280px 1fr",
+        // Constrain the single grid row to exactly the viewport height.
+        // Without this, a long `<main>` would push grid row height to its
+        // content size — the `overflow-y-auto` on <main> never kicks in
+        // because the column has no max height to overflow against.
+        gridTemplateRows: "100vh",
+        transition: "grid-template-columns 200ms ease",
+      }}
+    >
+      <IconRail
+        currentUser={currentUser}
+        summary={summary}
+        sidebarCollapsed={collapsed}
+        onExpandSidebar={() => setCollapsed(false)}
+      />
+      {/* The sidebar's parent column collapses to 0 width; the aside itself
+          adds overflow-hidden so contents don't spill out mid-animation. */}
+      <div className="overflow-hidden">
+        {!collapsed && (
+          <Sidebar
+            recentRuns={recentRuns}
+            currentUser={currentUser}
+            summary={summary}
+            onCollapse={toggle}
+          />
+        )}
+      </div>
+      <main className="relative min-h-0 overflow-y-auto">{children}</main>
+    </div>
+  );
+}

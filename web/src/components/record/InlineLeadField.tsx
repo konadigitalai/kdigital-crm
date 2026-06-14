@@ -28,6 +28,8 @@ export interface InlineLeadFieldProps {
    * where we persist both the canonical key and the human label in one PATCH.
    */
   extraByValue?: Record<string, Record<string, unknown>>;
+  /** If true, the field renders as static text — no edit affordance. */
+  readOnly?: boolean;
 }
 
 export function InlineLeadField({
@@ -40,6 +42,7 @@ export function InlineLeadField({
   valueClass,
   required,
   extraByValue,
+  readOnly,
 }: InlineLeadFieldProps) {
   const router = useRouter();
   return (
@@ -50,6 +53,7 @@ export function InlineLeadField({
       className={className}
       valueClass={valueClass}
       required={required}
+      readOnly={readOnly}
       onSave={async (next) => {
         const patch: Record<string, unknown> = { [field]: next };
         if (extraByValue && next != null) {

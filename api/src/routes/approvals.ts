@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { sql } from "drizzle-orm";
 import { withTenant } from "../db/app.js";
+import { requirePermission } from "../middleware/require.js";
 
 export const approvalsRouter = Router();
 
@@ -10,7 +11,10 @@ export const approvalsRouter = Router();
 // reject:  status='rejected', writes activity.
 // If `proposed` is included on approve, the body is replaced before sending —
 // covers the "Edit draft" UX.
-approvalsRouter.post("/:id/decide", async (req, res, next) => {
+//
+// Permission: agents.run — approving an agent's queued action is conceptually
+// "running the agent," and rejecting also requires the same authority.
+approvalsRouter.post("/:id/decide", requirePermission("agents.run"), async (req, res, next) => {
   try {
     const id = String(req.params.id);
     if (!/^[0-9a-fA-F-]{36}$/.test(id)) return res.status(400).json({ error: "invalid id" });

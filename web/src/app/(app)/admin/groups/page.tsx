@@ -1,11 +1,13 @@
 import { Topbar } from "@/components/shell/Topbar";
 import { Icon } from "@/components/ui/Icon";
 import { getGroups } from "@/lib/api";
+import { requirePagePermission } from "@/lib/guards";
 import { GroupsTable } from "@/components/admin/GroupsTable";
 import Link from "next/link";
 
 export default async function AdminGroupsPage() {
-  const { groups, catalog } = await getGroups();
+  await requirePagePermission("groups.manage");
+  const { groups, modules, presets } = await getGroups();
 
   return (
     <>
@@ -45,7 +47,7 @@ export default async function AdminGroupsPage() {
           </div>
         </div>
 
-        <GroupsTable initial={groups} catalog={catalog} />
+        <GroupsTable initial={groups} modules={modules} presets={presets} />
       </div>
     </>
   );

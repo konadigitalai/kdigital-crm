@@ -32,15 +32,17 @@ summaryRouter.get("/", async (req, res, next) => {
         GROUP BY l.stage
       `);
 
-      // Ticket counts for the sidebar badge + dashboard hero.
-      const tickets = await db.execute(sql`
+      // Case counts for the sidebar badge + dashboard hero. Field name kept
+      // as `tickets` in the response for now to avoid touching every call
+      // site that reads `summary.tickets.open`. The web layer renames it.
+      const cases = await db.execute(sql`
         SELECT
           COUNT(*) FILTER (WHERE status NOT IN ('closed','resolved','cancelled'))::int AS "open",
           COUNT(*) FILTER (WHERE due_at < NOW() AND status NOT IN ('closed','resolved','cancelled'))::int AS "overdue"
-        FROM ticket
+        FROM support_case
       `);
 
-      return { overall: overall.rows[0], byStage: byStage.rows, tickets: tickets.rows[0] };
+      return { overall: overall.rows[0], byStage: byStage.rows, cases: cases.rows[0] };
     });
     res.json(data);
   } catch (err) {

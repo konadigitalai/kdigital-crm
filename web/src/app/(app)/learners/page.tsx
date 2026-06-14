@@ -1,8 +1,10 @@
 import { Topbar } from "@/components/shell/Topbar";
 import { getLearners } from "@/lib/api";
+import { requirePagePermission } from "@/lib/guards";
 import { LearnersTable } from "@/components/learner/LearnersTable";
 
 export default async function LearnersPage() {
+  await requirePagePermission("learners.read");
   const learners = await getLearners();
   const activeCount = learners.filter((l) => l.activeBatches > 0).length;
   const totalEnrol  = learners.reduce((s, l) => s + l.activeBatches, 0);

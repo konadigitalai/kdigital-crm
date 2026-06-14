@@ -3,6 +3,7 @@ import { notFound } from "next/navigation";
 import { Topbar } from "@/components/shell/Topbar";
 import { Icon } from "@/components/ui/Icon";
 import { getLearner } from "@/lib/api";
+import { requirePagePermission } from "@/lib/guards";
 import { cn } from "@/lib/cn";
 import type {
   BatchAssignment, BatchSlot, BatchStatus, CourseAssignment, EnrolmentStatus, ProgramEnrolment,
@@ -10,6 +11,7 @@ import type {
 import { AssignBatchButton, EnrolmentStatusMenu } from "@/components/learner/AssignBatchDialog";
 import { AddCourseButton } from "@/components/learner/AddCourseDialog";
 import { CourseStatusBadgeClient } from "@/components/learner/CourseStatusBadge";
+import { ShareToSlackButton } from "@/components/share/ShareToSlackButton";
 
 const BATCH_STATUS_CLS: Record<BatchStatus, string> = {
   upcoming:  "bg-[rgba(31,63,207,.08)]  text-brand-blue",
@@ -25,6 +27,7 @@ const SLOT_LABEL: Record<BatchSlot, string> = {
 };
 
 export default async function LearnerRecordPage({ params }: { params: Promise<{ partyId: string }> }) {
+  await requirePagePermission("learners.read");
   const { partyId } = await params;
   const data = await getLearner(partyId);
   if (!data) notFound();
@@ -100,6 +103,7 @@ export default async function LearnerRecordPage({ params }: { params: Promise<{ 
             <div className="ml-auto flex gap-2">
               <button className="btn"><Icon name="mail" size={14} strokeWidth={2} />Email</button>
               <button className="btn"><Icon name="clock" size={14} strokeWidth={2} />Schedule</button>
+              <ShareToSlackButton surface="learners" recordId={partyId} />
             </div>
           </div>
 

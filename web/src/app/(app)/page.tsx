@@ -25,6 +25,8 @@ export default async function AgentHome() {
   ]);
   const liveAgentCount = summary.overall.liveAgents;
   const firstName = me?.name?.split(" ")[0] ?? "there";
+  const canReadAgents = me?.permissions.includes("agents.read") ?? false;
+  const canRunAgents  = me?.permissions.includes("agents.run")  ?? false;
   // Time-of-day greeting
   const hr = new Date().getHours();
   const greeting = hr < 12 ? "Good morning" : hr < 17 ? "Good afternoon" : "Good evening";
@@ -56,9 +58,11 @@ export default async function AgentHome() {
         </p>
 
         {/* COMMAND BOX + QUICK CHIPS — interactive Edify chat assistant */}
-        <EdifyCommandBox />
+        {canRunAgents && <EdifyCommandBox />}
 
         {/* ACTIVE AGENTS */}
+        {canReadAgents && agentCards.length > 0 && (
+          <>
         <SectionHead label="Your active agents" more="Manage all →" />
         <div className="mb-12 grid grid-cols-1 gap-3.5 md:grid-cols-2">
           {agentCards.map((a) => (
@@ -87,8 +91,12 @@ export default async function AgentHome() {
             </Link>
           ))}
         </div>
+          </>
+        )}
 
         {/* FEED */}
+        {canReadAgents && feedItems.length > 0 && (
+          <>
         <SectionHead label="Agent activity · today" more="Full log →" />
         <div className="overflow-hidden rounded-2xl border border-rule bg-paper">
           {feedItems.map((f) => (
@@ -121,6 +129,8 @@ export default async function AgentHome() {
             </div>
           ))}
         </div>
+          </>
+        )}
       </div>
     </>
   );

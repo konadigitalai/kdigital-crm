@@ -11,7 +11,7 @@ import {
   resetUserPassword,
   updateUser,
 } from "@/lib/api";
-import type { AdminUser, Client, UserGroupSummary } from "@/lib/types";
+import type { AdminUser, Client, ModuleAccess, UserGroupSummary } from "@/lib/types";
 
 const ROLES = ["admin", "advisor", "service_rep", "readonly"] as const;
 
@@ -25,10 +25,12 @@ export function UsersTable({
   initial,
   groups,
   clients,
+  modules,
 }: {
   initial: AdminUser[];
   groups: UserGroupSummary[];
   clients: Client[];
+  modules: ModuleAccess[];
 }) {
   const router = useRouter();
   const [users, setUsers] = useState<AdminUser[]>(initial);
@@ -284,6 +286,7 @@ export function UsersTable({
           submitLabel="Create"
           groups={groups}
           clients={clients}
+          modules={modules}
           onClose={() => setMode({ kind: "idle" })}
           onSubmit={(out) =>
             onCreate({
@@ -306,6 +309,7 @@ export function UsersTable({
           submitLabel="Save"
           groups={groups}
           clients={clients}
+          modules={modules}
           onClose={() => setMode({ kind: "idle" })}
           onSubmit={(out) =>
             onUpdate(mode.user, {
@@ -446,6 +450,7 @@ function UserFormDialog({
   initial,
   groups,
   clients,
+  modules,
   onClose,
   onSubmit,
   busy,
@@ -457,6 +462,7 @@ function UserFormDialog({
   initial?: UserFormState;
   groups: UserGroupSummary[];
   clients: Client[];
+  modules: ModuleAccess[];
   onClose: () => void;
   onSubmit: (out: UserFormState) => void;
   busy: boolean;
@@ -481,6 +487,18 @@ function UserFormDialog({
       prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id],
     );
   }
+
+  // Union of every selected group's permissions — what the user will actually
+  // be able to do once saved. Recomputes live as boxes are toggled.
+  const effectivePerms = useMemo(() => {
+    const out = new Set<string>();
+    for (const id of groupIds) {
+      const g = groups.find((x) => x.id === id);
+      if (!g) continue;
+      for (const p of g.permissions) out.add(p);
+    }
+    return out;
+  }, [groupIds, groups]);
 
   // Show active clients first; inactive ones already-attached to this user
   // remain so admin can detach them. Pure inactive ones are hidden.
@@ -550,7 +568,10 @@ function UserFormDialog({
         <Field label="Groups">
           <div className="grid max-h-[180px] grid-cols-2 gap-2 overflow-y-auto rounded-[10px] border border-rule bg-warm/40 p-3">
             {groups.length === 0 ? (
-              <div className="col-span-2 text-[12px] text-mute">No groups yet — create one first.</div>
+              <div className="col-span-2 text-[12px] text-mute">
+                No groups yet — create one first on{" "}
+                <a href="/admin/groups" className="font-semibold text-brand-violet hover:underline">Admin · Groups</a>.
+              </div>
             ) : (
               groups.map((g) => (
                 <label key={g.id} className="flex items-center gap-2 text-[13px]">
@@ -565,6 +586,8 @@ function UserFormDialog({
             )}
           </div>
         </Field>
+
+        <EffectiveAccess modules={modules} permissions={effectivePerms} />
         <Field label={`Clients · ${clientIds.length} assigned`}>
           {clients.length === 0 ? (
             <div className="rounded-[10px] border border-rule bg-warm/40 p-3 text-[12px] text-mute">
@@ -779,6 +802,50 @@ function ResetPasswordDialog({
 
 const inputCls =
   "w-full rounded-[10px] border border-rule bg-paper px-3 py-2.5 text-[13.5px] text-ink placeholder:text-hint focus:border-brand-violet focus:outline-none focus:ring-2 focus:ring-brand-violet/20 disabled:bg-warm/40 disabled:text-mute";
+
+function EffectiveAccess({
+  modules,
+  permissions,
+}: {
+  modules: ModuleAccess[];
+  permissions: Set<string>;
+}) {
+  const rows = modules
+    .map((m) => {
+      const granted = m.levels.filter((lvl) => permissions.has(lvl.permission));
+      return granted.length > 0 ? { module: m, granted } : null;
+    })
+    .filter(Boolean) as { module: ModuleAccess; granted: ModuleAccess["levels"] }[];
+
+  return (
+    <div className="rounded-[10px] border border-rule bg-grad-soft p-3">
+      <div className="mono-cap mb-2 flex items-center justify-between text-[10px] font-semibold tracking-[.12em] text-mute">
+        <span>Effective access · what this user will be able to do</span>
+        <span>{permissions.size} permission{permissions.size === 1 ? "" : "s"}</span>
+      </div>
+      {rows.length === 0 ? (
+        <div className="text-[12.5px] text-mute">
+          No module access yet. Tick at least one group above.
+        </div>
+      ) : (
+        <div className="flex flex-wrap gap-1.5">
+          {rows.map(({ module, granted }) => (
+            <span
+              key={module.key}
+              className="inline-flex items-center gap-1.5 rounded-full border border-brand-violet/30 bg-paper px-2.5 py-1 text-[11.5px] font-semibold text-ink2"
+            >
+              <span className="text-ink">{module.label}</span>
+              <span className="text-mute">·</span>
+              <span className="font-mono text-[10px] uppercase tracking-[.04em] text-brand-violet">
+                {granted.map((lvl) => lvl.label).join(" + ")}
+              </span>
+            </span>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
 
 function Field({
   label,

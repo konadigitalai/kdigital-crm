@@ -44,6 +44,24 @@ export interface Lead {
   // Phase H+: cadence dates (also exposed for filtering on /leads).
   nextFollowupAt: string | null;
   demoAttendedAt: string | null;
+  // Pipeline-list editable fields. These are nullable because the slim
+  // /leads endpoint doesn't surface them; the pipeline endpoint does.
+  email?: string | null;
+  phone?: string | null;
+  phoneCountryCode?: string | null;
+  description?: string | null;
+  programId?: string | null;
+  deliveryMode?: string | null;     // online | offline | hybrid
+  timeZone?: string | null;          // IANA tz
+  feePaid?: string | null;
+  feeDue?: string | null;
+  dueDate?: string | null;
+  registeredDate?: string | null;
+  source?: string | null;
+  sourceLabel?: string | null;
+  advisorId?: string | null;
+  advisorName?: string | null;
+  createdAt?: string | null;
 }
 
 export interface PipelineColumn {
@@ -238,7 +256,7 @@ export interface ForecastSnapshot {
 // ─── Edify chat assistant ──────────────────────────────────────────────────
 
 export type EdifyCitationKind =
-  | "lead" | "learner" | "ticket" | "program" | "cohort" | "user" | "agent";
+  | "lead" | "learner" | "case" | "program" | "cohort" | "user" | "agent";
 
 export interface EdifyCitation {
   kind: EdifyCitationKind;
@@ -395,9 +413,60 @@ export interface CalendarEventDetail {
   invitees: CalendarInvitee[];
 }
 
+export interface ModuleLevel {
+  key: string;
+  label: string;
+  permission: string;
+}
+
+export interface ModuleAccess {
+  key: string;
+  label: string;
+  description?: string;
+  levels: ModuleLevel[];
+}
+
+export interface PermissionPreset {
+  key: string;
+  name: string;
+  description: string;
+  permissions: string[];
+}
+
 export interface GroupsResponse {
   groups: UserGroupSummary[];
   catalog: string[];
+  modules: ModuleAccess[];
+  presets: PermissionPreset[];
+}
+
+// ─── Saved view ───────────────────────────────────────────────────────────
+// A persisted snapshot of a list view's filter rules + visible columns.
+// `scope` names the surface ('pipeline_list'); `filter` is the FilterBar
+// state shape (`{ rules: [...] }`); `columns` is the ordered list of
+// visible column keys.
+
+export type SavedViewScope = "pipeline_list";
+export type SavedViewVisibility = "personal" | "shared";
+
+export interface SavedView {
+  id: string;
+  tenantId: string;
+  ownerId: string;
+  scope: SavedViewScope;
+  name: string;
+  visibility: SavedViewVisibility;
+  filter: { rules?: unknown[] } & Record<string, unknown>;
+  columns: string[] | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface SavedViewInput {
+  name: string;
+  visibility: SavedViewVisibility;
+  filter: { rules?: unknown[] } & Record<string, unknown>;
+  columns: string[] | null;
 }
 
 export interface Program {
@@ -593,50 +662,145 @@ export interface CatalogResponse {
   employees: { id: string; name: string; email: string; role: string }[];
   staff: { id: string; name: string; email: string; role: string }[];
   sources: { key: string; label: string }[];
-  ticketCategories: { key: TicketCategory; label: string }[];
-  ticketPriorities: { value: TicketPriority; label: string }[];
-  ticketStatuses:   { key: TicketStatus; label: string }[];
-  resolutionCodes:  { key: TicketResolutionCode; label: string }[];
+  caseCategories: { key: CaseCategory; label: string }[];
+  casePriorities: { value: CasePriority; label: string }[];
+  caseStatuses:   { key: CaseStatus; label: string }[];
+  resolutionCodes:  { key: CaseResolutionCode; label: string }[];
+  slackEvents: { type: SlackEventType; label: string; hint: string }[];
 }
 
-// ── Tickets ────────────────────────────────────────────────────────────────
+// ── Deleted lead (admin trash view) ───────────────────────────────────────
 
-export type TicketStatus = "open" | "in_progress" | "pending" | "resolved" | "closed" | "cancelled";
-export type TicketPriority = 1 | 2 | 3 | 4;
-export type TicketCategory =
+export interface DeletedLead {
+  id: string;          // work_item id
+  number: string;
+  partyId: string;
+  name: string;
+  email: string | null;
+  phone: string | null;
+  program: string | null;
+  source: string | null;
+  sourceLabel: string | null;
+  score: number | null;
+  heat: string | null;
+  rating: string | null;
+  advisorName: string | null;
+  deletedAt: string;
+}
+
+// ── Slack integration ─────────────────────────────────────────────────────
+
+export type SlackEventType = "lead.created" | "case.opened" | "case.closed";
+
+export interface SlackRule {
+  id: string;
+  tenantId: string;
+  name: string;
+  eventType: SlackEventType;
+  enabled: boolean;
+  filter: Record<string, unknown>;
+  webhookUrl: string | null;
+  channel: string | null;
+  template: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface SlackRuleInput {
+  name: string;
+  eventType: SlackEventType;
+  enabled?: boolean;
+  filter?: Record<string, unknown>;
+  webhookUrl: string;
+  channel?: string | null;
+  template?: string | null;
+}
+
+export interface SlackDelivery {
+  id: string;
+  ruleId: string | null;
+  eventType: SlackEventType;
+  status: "ok" | "error";
+  httpStatus: number | null;
+  response: string | null;
+  context: Record<string, unknown>;
+  sentAt: string;
+}
+
+// ── Slack manual "Share to Slack" ─────────────────────────────────────────
+
+export type ShareSurface = "leads" | "learners" | "cases";
+
+export interface SlackShareTarget {
+  id: string | null;
+  surface: ShareSurface;
+  enabled: boolean;
+  channel: string | null;
+  webhookUrl: string | null;
+  fieldKeys: string[];
+  headerTemplate: string | null;
+  createdAt: string | null;
+  updatedAt: string | null;
+}
+
+export interface SlackShareTargetsResponse {
+  targets: SlackShareTarget[];
+  fields: Record<ShareSurface, { key: string; label: string }[]>;
+}
+
+export interface SlackShareTargetInput {
+  surface: ShareSurface;
+  enabled: boolean;
+  webhookUrl: string | null;
+  channel: string | null;
+  fieldKeys: string[];
+  headerTemplate?: string | null;
+}
+
+export interface SlackSharePreview {
+  target: { surface: ShareSurface; channel: string | null; fieldKeys: string[] };
+  preview: { text: string; blocks: Record<string, unknown>[] };
+  record: Record<string, unknown>;
+}
+
+// ── Cases ─────────────────────────────────────────────────────────────────
+
+export type CaseStatus = "open" | "in_progress" | "pending" | "resolved" | "closed" | "cancelled";
+export type CasePriority = 1 | 2 | 3 | 4;
+export type CaseCategory =
   | "billing" | "technical" | "content_lms" | "onboarding"
   | "cohort_batch" | "refund" | "certificate" | "other";
-export type TicketRequesterKind = "lead" | "learner" | "external";
-export type TicketResolutionCode = "fixed" | "duplicate" | "wont_fix" | "no_action";
+export type CaseRequesterKind = "lead" | "learner" | "external";
+export type CaseResolutionCode = "fixed" | "duplicate" | "wont_fix" | "no_action";
 
-export interface Ticket {
+export interface Case {
   id: string;
   number: string;
   createdAt: string;
   updatedAt: string;
   subject: string;
   description: string | null;
-  category: TicketCategory;
-  priority: TicketPriority;
-  status: TicketStatus;
+  category: CaseCategory;
+  priority: CasePriority;
+  status: CaseStatus;
   requesterName: string;
   requesterEmail: string;
   requesterPhone: string;
-  requesterKind: TicketRequesterKind;
+  requesterKind: CaseRequesterKind;
   partyId: string | null;
   dueAt: string | null;
   remindAt: string | null;
   resolvedAt: string | null;
   closedAt: string | null;
   resolution: string | null;
-  resolutionCode: TicketResolutionCode | null;
+  resolutionCode: CaseResolutionCode | null;
   assigneeId: string | null;
   assigneeName: string | null;
   isOverdue: boolean;
 }
 
-export interface TicketDetail {
-  ticket: Ticket & {
+export interface CaseDetail {
+  case: Case & {
     assigneeEmail: string | null;
     createdByName: string | null;
     partyName: string | null;
@@ -647,40 +811,40 @@ export interface TicketDetail {
   linked: { kind: "lead" | "learner"; href: string; label: string } | null;
 }
 
-export interface TicketDashboard {
+export interface CaseDashboard {
   counts: {
     total: number; open: number; inProgress: number; pending: number;
     resolved: number; closed: number; cancelled: number;
     overdue: number; dueToday: number; dueThisWeek: number; closedThisWeek: number;
   };
   byPriority: { priority: number; count: number }[];
-  byCategory: { category: TicketCategory; count: number }[];
+  byCategory: { category: CaseCategory; count: number }[];
   byAssignee: {
     assigneeId: string; name: string; role: string;
     open: number; overdue: number; closedThisWeek: number;
   }[];
   oldestOpen: {
-    id: string; number: string; subject: string; status: TicketStatus; priority: TicketPriority;
+    id: string; number: string; subject: string; status: CaseStatus; priority: CasePriority;
     dueAt: string | null; requesterName: string; assigneeName: string | null;
     createdAt: string; isOverdue: boolean;
   }[];
   recentClosed: {
-    id: string; number: string; subject: string; status: TicketStatus; priority: TicketPriority;
+    id: string; number: string; subject: string; status: CaseStatus; priority: CasePriority;
     closedAt: string | null; requesterName: string; assigneeName: string | null;
     resolution: string | null;
   }[];
 }
 
-export interface CreateTicketInput {
+export interface CreateCaseInput {
   requesterName: string;
   requesterEmail: string;
   requesterPhone: string;
-  requesterKind: TicketRequesterKind;
+  requesterKind: CaseRequesterKind;
   partyId?: string | null;
   subject: string;
   description?: string;
-  category?: TicketCategory;
-  priority?: TicketPriority;
+  category?: CaseCategory;
+  priority?: CasePriority;
   assigneeId?: string;
   dueAt?: string;
   remindAt?: string;
@@ -715,7 +879,7 @@ export interface SummaryResponse {
     liveAgents: number;
   };
   byStage: { stage: Stage; count: number; deal_value_sum: string | null }[];
-  tickets: { open: number; overdue: number };
+  cases: { open: number; overdue: number };
 }
 
 export interface RecordResponse {

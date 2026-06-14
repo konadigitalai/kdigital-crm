@@ -21,7 +21,7 @@ import {
   partyRole,
   program,
   tenant,
-  ticket,
+  supportCase,
   userGroup,
   userGroupMember,
   userGroupPermission,
@@ -161,7 +161,7 @@ async function main() {
     "agent_assignment", "lead_score_signal",
     "approval", "approval_policy", "activity", "relationship",
     "attachment", "embedding", "agent_run", "agent",
-    "ticket",
+    "support_case",
     "onboarding_task", "service_case", "deal", "lead",
     "batch_assignment", "enrolment",
     "work_item", "cohort", "course", "program",
@@ -189,8 +189,8 @@ async function main() {
   }).returning();
   void advisorRahul;
 
-  // Service-rep employees who own tickets. Manikanta is already the admin
-  // above and is also the first ticket-handling employee.
+  // Service-rep employees who own cases. Manikanta is already the admin
+  // above and is also the first case-handling employee.
   const ticketAgentSpecs = [
     { name: "Anirudh", email: "anirudh@edify.io", role: "service_rep" as const },
     { name: "Sheshi",  email: "sheshi@edify.io",  role: "service_rep" as const },
@@ -693,8 +693,8 @@ async function main() {
   }
   console.log(`  ${wonLeads.rows.length} learners enrolled (no courses/batches yet — assign on the learner page)`);
 
-  // ── Tickets — sample data for the dashboard
-  console.log("→ tickets…");
+  // ── Cases — sample data for the dashboard
+  console.log("→ cases…");
   // Pick a couple of seeded leads + a converted learner so the cross-link demo works.
   const aaravWiId   = leadByNumber["LEAD-9842"]!.workItemId; void aaravWiId;
   const aaravParty  = leadByNumber["LEAD-9842"]!.partyId;
@@ -718,7 +718,7 @@ async function main() {
   const snehaSnap = await partySnapshot(sneha.partyId);
   const meghaSnap = await partySnapshot(meghaParty);
 
-  type SeedTicket = {
+  type SeedCase = {
     subject: string;
     description: string;
     requesterName: string;
@@ -737,7 +737,7 @@ async function main() {
   };
 
   const NOW = Date.now();
-  const tickets: SeedTicket[] = [
+  const cases: SeedCase[] = [
     {
       subject: "Cohort 026 onboarding link not working",
       description: "Aarav says he is unable to access the onboarding portal — the link in the welcome email returns 404.",
@@ -800,10 +800,10 @@ async function main() {
     },
   ];
 
-  for (let i = 0; i < tickets.length; i++) {
-    const T = tickets[i]!;
-    const numR = await pool.query<{ n: string }>(`SELECT nextval('seq_ticket')::text AS n`);
-    const number = `TKT-${numR.rows[0]!.n}`;
+  for (let i = 0; i < cases.length; i++) {
+    const T = cases[i]!;
+    const numR = await pool.query<{ n: string }>(`SELECT nextval('seq_support_case')::text AS n`);
+    const number = `CSE-${numR.rows[0]!.n}`;
 
     const dueAt    = new Date(NOW + T.dueOffsetHours * 3600_000);
     const remindAt = T.remindOffsetHours == null ? null : new Date(NOW + T.remindOffsetHours * 3600_000);
@@ -818,7 +818,7 @@ async function main() {
     const [wi] = await db.insert(workItem).values({
       tenantId,
       number,
-      type: "ticket",
+      type: "support_case",
       partyId: T.partyId ?? undefined,
       assigneeId,
       state: wiState,
@@ -827,7 +827,7 @@ async function main() {
     const isClosed = T.status === "closed";
     const isResolved = T.status === "resolved" || T.status === "closed";
 
-    await db.insert(ticket).values({
+    await db.insert(supportCase).values({
       workItemId: wi!.id,
       tenantId,
       requesterName: T.requesterName,
@@ -849,14 +849,14 @@ async function main() {
       createdById: admin!.id,
     });
 
-    // Activity row — ticket created
+    // Activity row — case created
     await db.insert(activity).values({
       tenantId,
       workItemId: wi!.id,
       partyId: T.partyId ?? undefined,
       actorType: "user",
       actorName: "Manikanta",
-      verb: "Ticket created",
+      verb: "Case created",
       detail: T.subject,
       tag: "you",
       payload: sql`${JSON.stringify({ when: "Earlier today", kind: "create" })}::jsonb`,
@@ -907,7 +907,7 @@ async function main() {
       });
     }
   }
-  console.log(`  ${tickets.length} tickets seeded across ${Object.keys(ticketAgents).length} employees`);
+  console.log(`  ${cases.length} cases seeded across ${Object.keys(ticketAgents).length} employees`);
 
   console.log("✓ seed complete");
   await pool.end();

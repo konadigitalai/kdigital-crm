@@ -4,13 +4,13 @@ import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Icon } from "@/components/ui/Icon";
 import { cn } from "@/lib/cn";
-import { createTicket, getCatalog, getLeads, getLearners } from "@/lib/api";
+import { createCase, getCatalog, getLeads, getLearners } from "@/lib/api";
 import type {
-  CatalogResponse, Lead, LearnerSummary, TicketCategory, TicketPriority, TicketRequesterKind,
+  CatalogResponse, Lead, LearnerSummary, CaseCategory, CasePriority, CaseRequesterKind,
 } from "@/lib/types";
 
-export function NewTicketButton({
-  label = "New ticket",
+export function NewCaseButton({
+  label = "New case",
   className,
 }: {
   label?: string;
@@ -38,15 +38,15 @@ function Dialog({ onClose }: { onClose: () => void }) {
   const [error, setError] = useState<string | null>(null);
 
   // Form state
-  const [requesterKind, setRequesterKind] = useState<TicketRequesterKind>("external");
+  const [requesterKind, setRequesterKind] = useState<CaseRequesterKind>("external");
   const [partyId, setPartyId] = useState<string>("");
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [phone, setPhone] = useState("");
   const [subject, setSubject] = useState("");
   const [description, setDescription] = useState("");
-  const [category, setCategory] = useState<TicketCategory>("other");
-  const [priority, setPriority] = useState<TicketPriority>(3);
+  const [category, setCategory] = useState<CaseCategory>("other");
+  const [priority, setPriority] = useState<CasePriority>(3);
   const [assigneeId, setAssigneeId] = useState<string>("");
   const [dueAt, setDueAt] = useState<string>("");
   const [remindAt, setRemindAt] = useState<string>("");
@@ -115,10 +115,10 @@ function Dialog({ onClose }: { onClose: () => void }) {
 
     setSubmitting(true);
     try {
-      const effectiveKind: TicketRequesterKind =
+      const effectiveKind: CaseRequesterKind =
         requesterKind === "learner" && partyId ? "learner" : "external";
 
-      const created = await createTicket({
+      const created = await createCase({
         requesterName: name.trim(),
         requesterEmail: email.trim(),
         requesterPhone: phone.trim(),
@@ -133,7 +133,7 @@ function Dialog({ onClose }: { onClose: () => void }) {
         remindAt: remindAt ? new Date(remindAt).toISOString() : undefined,
       });
       router.refresh();
-      router.push(`/tickets/${created.number}`);
+      router.push(`/cases/${created.number}`);
       onClose();
     } catch (err) {
       setError((err as Error).message);
@@ -152,7 +152,7 @@ function Dialog({ onClose }: { onClose: () => void }) {
       >
         <div className="mb-6 flex items-start justify-between gap-4">
           <div>
-            <h2 className="font-serif text-[28px] font-normal leading-tight tracking-[-.01em]">New ticket</h2>
+            <h2 className="font-serif text-[28px] font-normal leading-tight tracking-[-.01em]">New case</h2>
             <p className="mt-1 text-[13px] text-mute">
               Track an issue end-to-end. Name, email and phone are required regardless of whether the
               stakeholder already exists in the CRM.
@@ -209,7 +209,7 @@ function Dialog({ onClose }: { onClose: () => void }) {
 
           {requesterKind === "lead" && (
             <div className="rounded-lg border border-rule2 bg-warm2 px-3 py-2 text-[12px] text-mute">
-              Capture the lead's contact details below. The ticket will be opened against an external
+              Capture the lead's contact details below. The case will be opened against an external
               record for now — link it from the lead's record page after creation.
             </div>
           )}
@@ -242,15 +242,15 @@ function Dialog({ onClose }: { onClose: () => void }) {
 
           <div className="grid grid-cols-2 gap-4">
             <Field label="Category">
-              <select className={inputCls} value={category} onChange={(e) => setCategory(e.target.value as TicketCategory)}>
-                {catalog?.ticketCategories.map((c) => (
+              <select className={inputCls} value={category} onChange={(e) => setCategory(e.target.value as CaseCategory)}>
+                {catalog?.caseCategories.map((c) => (
                   <option key={c.key} value={c.key}>{c.label}</option>
                 ))}
               </select>
             </Field>
             <Field label="Priority">
-              <select className={inputCls} value={priority} onChange={(e) => setPriority(Number(e.target.value) as TicketPriority)}>
-                {catalog?.ticketPriorities.map((p) => (
+              <select className={inputCls} value={priority} onChange={(e) => setPriority(Number(e.target.value) as CasePriority)}>
+                {catalog?.casePriorities.map((p) => (
                   <option key={p.value} value={p.value}>{p.label}</option>
                 ))}
               </select>
@@ -286,7 +286,7 @@ function Dialog({ onClose }: { onClose: () => void }) {
           <div className="flex items-center justify-end gap-3 pt-2">
             <button type="button" onClick={onClose} className="btn">Cancel</button>
             <button type="submit" disabled={submitting} className="btn-grad disabled:opacity-60">
-              {submitting ? "Creating…" : "Create ticket"}
+              {submitting ? "Creating…" : "Create case"}
             </button>
           </div>
         </form>

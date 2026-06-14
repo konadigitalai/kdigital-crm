@@ -184,13 +184,16 @@ function cleanCountry(raw: string): string | null {
   return m ? `+${m[1]}` : null;
 }
 
-function formatDisplay(cc: string | null, num: string | null): string | null {
-  if (!num) return cc ? cc : null;
+// Phone display intentionally omits the country code — the CC has its own
+// dedicated row ("Phone CC") on the lead record, so showing it here too is
+// noisy and easy to misread (people confuse "+1 5859..." for a single ID).
+// `cc` stays in the signature for API compatibility but is unused.
+function formatDisplay(_cc: string | null, num: string | null): string | null {
+  if (!num) return null;
   // Indian-style 5-5 grouping if length permits, else simple 3-grouping.
-  const grouped = num.length === 10
+  return num.length === 10
     ? `${num.slice(0, 5)} ${num.slice(5)}`
     : num.replace(/(\d{3,4})(?=\d)/g, "$1 ").trim();
-  return cc ? `${cc} ${grouped}` : grouped;
 }
 
 const inputCls = "rounded-md border border-rule bg-paper px-2 py-1 text-[13px] text-ink focus:border-brand-violet focus:outline-none focus:ring-2 focus:ring-brand-violet/20";

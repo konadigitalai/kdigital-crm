@@ -20,7 +20,7 @@ const QUICK_PROMPTS = [
   "How many hot leads do we have?",
   "Which leads should I prioritise today?",
   "Summarise the latest forecast",
-  "Show me open tickets by category",
+  "Show me open cases by category",
   "Who hasn't been touched in 7 days?",
 ];
 
@@ -272,7 +272,7 @@ export function EdifyPanel({ initialSessions, initialActiveId, initialMessages }
                 Ask Edify anything about your CRM.
               </div>
               <p className="mt-2 max-w-[460px] text-[13px] text-mute">
-                Reads leads, learners, tickets, batches, programs, users, agents — everything in your tenant.
+                Reads leads, learners, cases, batches, programs, users, agents — everything in your tenant.
               </p>
               <div className="mt-5 flex flex-wrap justify-center gap-1.5">
                 {QUICK_PROMPTS.map((p) => (

@@ -7,7 +7,7 @@ import type { FilterField } from "@/components/filter/types";
 import { StatusPill } from "./StatusPill";
 import { PriorityChip } from "./PriorityChip";
 import { cn } from "@/lib/cn";
-import type { Ticket, TicketCategory, TicketStatus } from "@/lib/types";
+import type { Case, CaseCategory, CaseStatus } from "@/lib/types";
 
 const STATUS_OPTS = [
   { value: "open",        label: "Open" },
@@ -39,27 +39,27 @@ const KIND_OPTS = [
   { value: "external", label: "External" },
 ];
 
-const CATEGORY_LABEL: Record<TicketCategory, string> = Object.fromEntries(
+const CATEGORY_LABEL: Record<CaseCategory, string> = Object.fromEntries(
   CATEGORY_OPTS.map((c) => [c.value, c.label]),
-) as Record<TicketCategory, string>;
+) as Record<CaseCategory, string>;
 
 function buildFields(): FilterField[] {
   return [
-    { key: "number",        label: "Ticket #",   type: "text",   get: (t: Ticket) => t.number },
-    { key: "subject",       label: "Subject",    type: "text",   get: (t: Ticket) => t.subject },
-    { key: "requesterName", label: "Requester",  type: "text",   get: (t: Ticket) => t.requesterName },
-    { key: "requesterEmail",label: "Email",      type: "text",   get: (t: Ticket) => t.requesterEmail },
-    { key: "status",        label: "Status",     type: "enum",   options: STATUS_OPTS,   get: (t: Ticket) => t.status },
-    { key: "priority",      label: "Priority",   type: "enum",   options: PRIORITY_OPTS, get: (t: Ticket) => String(t.priority) },
-    { key: "category",      label: "Category",   type: "enum",   options: CATEGORY_OPTS, get: (t: Ticket) => t.category },
-    { key: "requesterKind", label: "Requester type", type: "enum", options: KIND_OPTS,   get: (t: Ticket) => t.requesterKind },
-    { key: "assignee",      label: "Assignee",   type: "text",   get: (t: Ticket) => t.assigneeName ?? "" },
+    { key: "number",        label: "Case #",     type: "text",   get: (t: Case) => t.number },
+    { key: "subject",       label: "Subject",    type: "text",   get: (t: Case) => t.subject },
+    { key: "requesterName", label: "Requester",  type: "text",   get: (t: Case) => t.requesterName },
+    { key: "requesterEmail",label: "Email",      type: "text",   get: (t: Case) => t.requesterEmail },
+    { key: "status",        label: "Status",     type: "enum",   options: STATUS_OPTS,   get: (t: Case) => t.status },
+    { key: "priority",      label: "Priority",   type: "enum",   options: PRIORITY_OPTS, get: (t: Case) => String(t.priority) },
+    { key: "category",      label: "Category",   type: "enum",   options: CATEGORY_OPTS, get: (t: Case) => t.category },
+    { key: "requesterKind", label: "Requester type", type: "enum", options: KIND_OPTS,   get: (t: Case) => t.requesterKind },
+    { key: "assignee",      label: "Assignee",   type: "text",   get: (t: Case) => t.assigneeName ?? "" },
   ];
 }
 
-export function TicketsTable({ tickets }: { tickets: Ticket[] }) {
+export function CasesTable({ cases }: { cases: Case[] }) {
   const fields = buildFields();
-  const [filtered, state, setState] = useFilter(tickets, fields);
+  const [filtered, state, setState] = useFilter(cases, fields);
 
   return (
     <>
@@ -68,15 +68,15 @@ export function TicketsTable({ tickets }: { tickets: Ticket[] }) {
           fields={fields}
           state={state}
           onChange={setState}
-          placeholder="Filter tickets by status, priority, assignee…"
-          totalRows={tickets.length}
+          placeholder="Filter cases by status, priority, assignee…"
+          totalRows={cases.length}
           filteredRows={filtered.length}
         />
       </div>
 
       <div className="overflow-hidden rounded-2xl border border-rule bg-paper">
         <Row hdr>
-          <div>Ticket</div>
+          <div>Case</div>
           <div>Subject</div>
           <div>Requester</div>
           <div>Status</div>
@@ -87,14 +87,14 @@ export function TicketsTable({ tickets }: { tickets: Ticket[] }) {
 
         {filtered.length === 0 ? (
           <div className="px-[22px] py-12 text-center text-[13px] text-mute">
-            No tickets match the current filter.
+            No cases match the current filter.
           </div>
         ) : (
           filtered.map((t) => {
             const dueLabel = t.dueAt ? formatDue(t.dueAt) : "—";
             const overdue = t.isOverdue;
             return (
-              <Row key={t.id} href={`/tickets/${t.number}`}>
+              <Row key={t.id} href={`/cases/${t.number}`}>
                 <div>
                   <div className="font-mono text-[11px] tracking-[.04em] text-mute">{t.number}</div>
                   <div className="mt-0.5 text-[10px] uppercase tracking-[.08em] text-hint">
@@ -114,7 +114,7 @@ export function TicketsTable({ tickets }: { tickets: Ticket[] }) {
                   <div className="truncate text-[11px] text-mute">{t.requesterEmail}</div>
                 </div>
 
-                <div><StatusPill status={t.status as TicketStatus} /></div>
+                <div><StatusPill status={t.status as CaseStatus} /></div>
                 <div><PriorityChip priority={t.priority} /></div>
 
                 <div className="min-w-0 truncate text-[13px] text-ink2">

@@ -2,9 +2,11 @@ import Link from "next/link";
 import { Topbar } from "@/components/shell/Topbar";
 import { Icon } from "@/components/ui/Icon";
 import { getBatches, getCatalog, getCourses } from "@/lib/api";
+import { requirePagePermission } from "@/lib/guards";
 import { BatchesTable } from "@/components/admin/BatchesTable";
 
 export default async function AdminCohortsPage() {
+  await requirePagePermission("admin.batches.manage");
   const [batches, courses, catalog] = await Promise.all([getBatches(), getCourses(), getCatalog()]);
   const activeCourses = courses.filter((c) => c.enabled && c.programEnabled);
 

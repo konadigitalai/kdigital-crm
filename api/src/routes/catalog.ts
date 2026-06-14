@@ -25,7 +25,7 @@ catalogRouter.get("/", async (req, res, next) => {
         WHERE active = true AND role IN ('admin','advisor')
         ORDER BY name
       `);
-      // The full set of users who can own tickets — admin + advisor + service_rep.
+      // The full set of users who can own cases — admin + advisor + service_rep.
       const employees = await db.execute(sql`
         SELECT id, name, email, role FROM app_user
         WHERE active = true AND role IN ('admin','advisor','service_rep')
@@ -47,7 +47,7 @@ catalogRouter.get("/", async (req, res, next) => {
         { key: "webinar",      label: "Webinar" },
         { key: "paid",         label: "Paid search" },
       ];
-      const ticketCategories = [
+      const caseCategories = [
         { key: "billing",       label: "Billing" },
         { key: "technical",     label: "Technical" },
         { key: "content_lms",   label: "Content / LMS" },
@@ -57,13 +57,13 @@ catalogRouter.get("/", async (req, res, next) => {
         { key: "certificate",   label: "Certificate" },
         { key: "other",         label: "Other" },
       ];
-      const ticketPriorities = [
+      const casePriorities = [
         { value: 1, label: "Urgent" },
         { value: 2, label: "High" },
         { value: 3, label: "Medium" },
         { value: 4, label: "Low" },
       ];
-      const ticketStatuses = [
+      const caseStatuses = [
         { key: "open",        label: "Open" },
         { key: "in_progress", label: "In progress" },
         { key: "pending",     label: "Pending" },
@@ -77,6 +77,12 @@ catalogRouter.get("/", async (req, res, next) => {
         { key: "wont_fix",  label: "Won't fix" },
         { key: "no_action", label: "No action needed" },
       ];
+      // Slack integration — drives the rule editor's event dropdown.
+      const slackEvents = [
+        { type: "lead.created", label: "Lead created", hint: "When a new lead enters the pipeline" },
+        { type: "case.opened",  label: "Case opened",  hint: "When a support case is created" },
+        { type: "case.closed",  label: "Case closed",  hint: "When a support case is closed" },
+      ];
       return {
         programs: programs.rows,
         courses: courses.rows,
@@ -84,10 +90,11 @@ catalogRouter.get("/", async (req, res, next) => {
         employees: employees.rows,
         staff: staff.rows,
         sources,
-        ticketCategories,
-        ticketPriorities,
-        ticketStatuses,
+        caseCategories,
+        casePriorities,
+        caseStatuses,
         resolutionCodes,
+        slackEvents,
       };
     });
     res.json(data);

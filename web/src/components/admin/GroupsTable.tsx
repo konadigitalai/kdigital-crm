@@ -5,38 +5,27 @@ import { useRouter } from "next/navigation";
 import { Icon } from "@/components/ui/Icon";
 import { cn } from "@/lib/cn";
 import { createGroup, deleteGroup, setGroupPermissions, updateGroup } from "@/lib/api";
-import type { UserGroupSummary } from "@/lib/types";
+import type { ModuleAccess, PermissionPreset, UserGroupSummary } from "@/lib/types";
 
 type Mode =
   | { kind: "idle" }
   | { kind: "creating" }
   | { kind: "editing"; group: UserGroupSummary };
 
-// Group permissions by their dotted prefix for the checkbox UI.
-function groupCatalogByDomain(catalog: string[]): { domain: string; perms: string[] }[] {
-  const m = new Map<string, string[]>();
-  for (const p of catalog) {
-    const domain = p.split(".")[0] ?? "other";
-    if (!m.has(domain)) m.set(domain, []);
-    m.get(domain)!.push(p);
-  }
-  return Array.from(m.entries()).map(([domain, perms]) => ({ domain, perms }));
-}
-
 export function GroupsTable({
   initial,
-  catalog,
+  modules,
+  presets,
 }: {
   initial: UserGroupSummary[];
-  catalog: string[];
+  modules: ModuleAccess[];
+  presets: PermissionPreset[];
 }) {
   const router = useRouter();
   const [groups, setGroups] = useState<UserGroupSummary[]>(initial);
   const [mode, setMode] = useState<Mode>({ kind: "idle" });
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-
-  const grouped = useMemo(() => groupCatalogByDomain(catalog), [catalog]);
 
   function reload() { router.refresh(); }
 
@@ -170,7 +159,8 @@ export function GroupsTable({
         <GroupFormDialog
           title="New group"
           submitLabel="Create"
-          grouped={grouped}
+          modules={modules}
+          presets={presets}
           onClose={() => setMode({ kind: "idle" })}
           onSubmit={(name, description, perms) => onCreate(name, description, perms)}
           busy={busy === "create"}
@@ -180,11 +170,12 @@ export function GroupsTable({
         <GroupFormDialog
           title="Edit group"
           submitLabel="Save"
-          grouped={grouped}
+          modules={modules}
+          presets={presets}
           initialName={mode.group.name}
           initialDescription={mode.group.description ?? ""}
           initialPerms={mode.group.permissions}
-          isSystem={mode.group.is_system}
+          isAdministratorsGroup={mode.group.name === "Administrators"}
           onClose={() => setMode({ kind: "idle" })}
           onSubmit={(name, description, perms) =>
             onSaveEdit(mode.group, name, description, perms)
@@ -235,7 +226,7 @@ function DialogShell({
       }}
     >
       <div
-        className="my-12 w-full max-w-[640px] rounded-2xl border border-rule bg-paper p-7 shadow-card"
+        className="my-12 w-full max-w-[760px] rounded-2xl border border-rule bg-paper p-7 shadow-card"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="mb-6 flex items-start justify-between gap-4">
@@ -256,22 +247,24 @@ function DialogShell({
 function GroupFormDialog({
   title,
   submitLabel,
-  grouped,
+  modules,
+  presets,
   initialName = "",
   initialDescription = "",
   initialPerms = [],
-  isSystem = false,
+  isAdministratorsGroup = false,
   onClose,
   onSubmit,
   busy,
 }: {
   title: string;
   submitLabel: string;
-  grouped: { domain: string; perms: string[] }[];
+  modules: ModuleAccess[];
+  presets: PermissionPreset[];
   initialName?: string;
   initialDescription?: string;
   initialPerms?: string[];
-  isSystem?: boolean;
+  isAdministratorsGroup?: boolean;
   onClose: () => void;
   onSubmit: (name: string, description: string, perms: string[]) => void;
   busy: boolean;
@@ -279,6 +272,15 @@ function GroupFormDialog({
   const [name, setName] = useState(initialName);
   const [description, setDescription] = useState(initialDescription);
   const [perms, setPerms] = useState<Set<string>>(new Set(initialPerms));
+
+  // Permissions that don't fit into any module — shown in an "Other" group so
+  // nothing is silently dropped if the API catalog adds something new.
+  const knownByModule = useMemo(() => {
+    const all = new Set<string>();
+    for (const m of modules) for (const lvl of m.levels) all.add(lvl.permission);
+    return all;
+  }, [modules]);
+  const orphanPerms = Array.from(perms).filter((p) => !knownByModule.has(p));
 
   function toggle(p: string) {
     setPerms((prev) => {
@@ -289,10 +291,30 @@ function GroupFormDialog({
     });
   }
 
+  function applyPreset(preset: PermissionPreset) {
+    setPerms(new Set(preset.permissions));
+  }
+
+  function selectAllInModule(m: ModuleAccess) {
+    setPerms((prev) => {
+      const next = new Set(prev);
+      const allOn = m.levels.every((lvl) => next.has(lvl.permission));
+      for (const lvl of m.levels) {
+        if (allOn) next.delete(lvl.permission);
+        else next.add(lvl.permission);
+      }
+      return next;
+    });
+  }
+
   return (
     <DialogShell
       title={title}
-      subtitle={isSystem ? "This is a system group. The 'users.manage' permission cannot be removed." : undefined}
+      subtitle={
+        isAdministratorsGroup
+          ? "This is the Administrators system group. The 'users.manage' permission cannot be removed (otherwise the tenant would lock itself out)."
+          : "Tick which modules this group has access to. A user's effective access is the union of every group they belong to."
+      }
       onClose={onClose}
     >
       <form
@@ -301,63 +323,161 @@ function GroupFormDialog({
           if (!name.trim()) return;
           onSubmit(name.trim(), description.trim(), Array.from(perms));
         }}
-        className="space-y-4"
+        className="space-y-5"
       >
-        <Field label="Name" required>
-          <input
-            className={inputCls}
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            disabled={isSystem}
-            autoFocus={!isSystem}
-            placeholder="e.g. Reporting Analysts"
-          />
-        </Field>
-        <Field label="Description">
-          <input
-            className={inputCls}
-            value={description}
-            onChange={(e) => setDescription(e.target.value)}
-            placeholder="Optional"
-          />
-        </Field>
+        <div className="grid grid-cols-2 gap-4">
+          <Field label="Name" required>
+            <input
+              className={inputCls}
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              disabled={isAdministratorsGroup}
+              autoFocus={!isAdministratorsGroup}
+              placeholder="e.g. Reporting Analysts"
+            />
+          </Field>
+          <Field label="Description">
+            <input
+              className={inputCls}
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
+              placeholder="Optional"
+            />
+          </Field>
+        </div>
+
+        {/* Quick-fill presets */}
         <div>
-          <span className="mono-cap mb-2 block text-[10px] font-semibold tracking-[.12em] text-mute">
-            Permissions ({perms.size})
-          </span>
-          <div className="max-h-[320px] space-y-3 overflow-y-auto rounded-[10px] border border-rule bg-warm/40 p-3">
-            {grouped.map(({ domain, perms: list }) => (
-              <div key={domain}>
-                <div className="mono-cap mb-1.5 text-[9.5px] font-semibold tracking-[.12em] text-hint">
-                  {domain}
-                </div>
-                <div className="grid grid-cols-2 gap-1.5">
-                  {list.map((p) => {
-                    const lockedSystem = isSystem && p === "users.manage";
-                    return (
-                      <label
-                        key={p}
-                        className={cn(
-                          "flex items-center gap-2 text-[12.5px] text-ink2",
-                          lockedSystem && "opacity-60",
-                        )}
-                      >
-                        <input
-                          type="checkbox"
-                          checked={perms.has(p)}
-                          disabled={lockedSystem}
-                          onChange={() => toggle(p)}
-                        />
-                        <span className="font-mono">{p}</span>
-                      </label>
-                    );
-                  })}
-                </div>
-              </div>
+          <div className="mono-cap mb-2 block text-[10px] font-semibold tracking-[.12em] text-mute">
+            Quick presets
+          </div>
+          <div className="flex flex-wrap gap-2">
+            {presets.map((preset) => (
+              <button
+                key={preset.key}
+                type="button"
+                onClick={() => applyPreset(preset)}
+                title={preset.description}
+                className="rounded-full border border-rule bg-warm2 px-3 py-1.5 text-[12px] font-semibold text-ink2 hover:border-brand-violet hover:text-brand-violet"
+              >
+                {preset.name}
+              </button>
             ))}
+            <button
+              type="button"
+              onClick={() => setPerms(new Set())}
+              className="rounded-full border border-rule bg-paper px-3 py-1.5 text-[12px] font-semibold text-mute hover:border-state-warn hover:text-state-warn"
+            >
+              Clear all
+            </button>
+          </div>
+          <div className="mono-cap mt-1.5 text-[10px] tracking-[.04em] text-hint">
+            Click a preset to fill in the boxes below — you can still tweak before saving.
           </div>
         </div>
-        <div className="flex items-center justify-end gap-3 pt-2">
+
+        {/* Module table */}
+        <div>
+          <div className="mb-2 flex items-baseline justify-between">
+            <span className="mono-cap text-[10px] font-semibold tracking-[.12em] text-mute">
+              Module access
+            </span>
+            <span className="mono-cap text-[10px] tracking-[.04em] text-hint">
+              {perms.size} permission{perms.size === 1 ? "" : "s"} on
+            </span>
+          </div>
+          <div className="overflow-hidden rounded-[10px] border border-rule">
+            <table className="w-full border-collapse">
+              <thead className="bg-warm/60 text-[10.5px] uppercase tracking-[.1em] text-mute">
+                <tr>
+                  <th className="px-3 py-2 text-left font-semibold">Module</th>
+                  <th className="px-3 py-2 text-right font-semibold">Access levels</th>
+                </tr>
+              </thead>
+              <tbody>
+                {modules.map((m) => {
+                  const allChecked = m.levels.every((lvl) => perms.has(lvl.permission));
+                  const someChecked = !allChecked && m.levels.some((lvl) => perms.has(lvl.permission));
+                  return (
+                    <tr key={m.key} className="border-t border-rule align-top">
+                      <td className="px-3 py-2.5">
+                        <div className="flex items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={() => selectAllInModule(m)}
+                            className={cn(
+                              "h-4 w-4 flex-shrink-0 rounded border text-white",
+                              allChecked
+                                ? "border-brand-violet bg-brand-violet"
+                                : someChecked
+                                  ? "border-brand-violet bg-brand-violet/30"
+                                  : "border-rule2 bg-paper hover:border-brand-violet",
+                            )}
+                            title={allChecked ? "Disable all" : "Enable all"}
+                          >
+                            {allChecked && (
+                              <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="3" className="h-full w-full p-0.5">
+                                <path d="M4 11l4 4 8-9" />
+                              </svg>
+                            )}
+                            {someChecked && (
+                              <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="3" className="h-full w-full p-0.5">
+                                <path d="M5 10h10" />
+                              </svg>
+                            )}
+                          </button>
+                          <div className="flex flex-col">
+                            <span className="text-[13px] font-semibold text-ink">{m.label}</span>
+                            {m.description && (
+                              <span className="text-[11.5px] leading-snug text-mute">{m.description}</span>
+                            )}
+                          </div>
+                        </div>
+                      </td>
+                      <td className="px-3 py-2.5">
+                        <div className="flex flex-wrap items-center justify-end gap-3">
+                          {m.levels.map((lvl) => {
+                            const locked =
+                              isAdministratorsGroup && lvl.permission === "users.manage";
+                            const checked = perms.has(lvl.permission);
+                            return (
+                              <label
+                                key={lvl.permission}
+                                className={cn(
+                                  "flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-[12px] font-medium",
+                                  checked
+                                    ? "border-brand-violet bg-brand-violet/8 text-brand-violet"
+                                    : "border-rule bg-paper text-ink2 hover:border-rule2",
+                                  locked && "opacity-60",
+                                )}
+                              >
+                                <input
+                                  type="checkbox"
+                                  className="h-3 w-3 accent-brand-violet"
+                                  checked={checked}
+                                  disabled={locked}
+                                  onChange={() => toggle(lvl.permission)}
+                                />
+                                <span>{lvl.label}</span>
+                              </label>
+                            );
+                          })}
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+          {orphanPerms.length > 0 && (
+            <div className="mono-cap mt-2 text-[10px] tracking-[.04em] text-hint">
+              Other permissions on this group: {orphanPerms.join(", ")}
+            </div>
+          )}
+        </div>
+
+        <div className="flex items-center justify-end gap-3 border-t border-rule pt-4">
           <button type="button" onClick={onClose} className="btn">
             Cancel
           </button>

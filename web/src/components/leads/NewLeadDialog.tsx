@@ -167,8 +167,18 @@ function Dialog({ defaultRating, onClose }: { defaultRating?: LeadRating; onClos
                 ))}
               </select>
             </Field>
-            <Field label="Value">
-              <input className={inputCls} value={value} onChange={(e) => setValue(e.target.value)} placeholder="₹1.49L" />
+            <Field label="Price quoted (₹)">
+              <input
+                className={inputCls}
+                inputMode="decimal"
+                value={value}
+                onChange={(e) => {
+                  // Digits-only with one optional decimal — same rule the API enforces.
+                  const cleaned = e.target.value.replace(/[^\d.]/g, "").replace(/(\..*)\./g, "$1");
+                  setValue(cleaned);
+                }}
+                placeholder="149000"
+              />
             </Field>
           </div>
 

@@ -137,27 +137,7 @@ body::before {
 }
 .live-dot { animation: pulse-soft 2s infinite; }
 
-/* Tooltip on rail buttons */
-.rail-tip {
-  position: absolute;
-  left: 54px;
-  top: 50%;
-  transform: translateY(-50%) scale(0.92);
-  background: var(--ink);
-  color: #fff;
-  border: 1px solid rgba(255, 255, 255, 0.14);
-  padding: 6px 11px;
-  border-radius: 8px;
-  font-size: 12px;
-  font-weight: 600;
-  white-space: nowrap;
-  opacity: 0;
-  pointer-events: none;
-  transition: 0.14s;
-  z-index: 40;
-  box-shadow: 0 8px 22px rgba(0, 0, 0, 0.4);
-}
-.rail-btn:hover .rail-tip {
-  opacity: 1;
-  transform: translateY(-50%) scale(1);
-}
+/* Rail tooltips are rendered via portal in IconRail.tsx (RailTooltip).
+ * The old .rail-tip / .rail-btn CSS classes used to live here, but they
+ * relied on absolute positioning inside the rail — which gets clipped once
+ * the rail has overflow:auto. The portal-based version doesn't need any CSS. */

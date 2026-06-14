@@ -19,6 +19,8 @@ interface NbaCardProps {
   fallbackReason: string | null;
   nbaCard: { confidence: number | null; headline: string; why: string } | null;
   nbaIcon: string | null;
+  /** When false, the "Refresh suggestion" button is hidden. */
+  canRefresh?: boolean;
 }
 
 export function NbaCard({
@@ -27,6 +29,7 @@ export function NbaCard({
   fallbackReason,
   nbaCard,
   nbaIcon,
+  canRefresh = true,
 }: NbaCardProps) {
   const router = useRouter();
   const [busy, setBusy] = useState(false);
@@ -80,23 +83,25 @@ export function NbaCard({
       )}
 
       <div className="relative z-[1] flex flex-wrap gap-2.5">
-        <button
-          type="button"
-          onClick={onRefresh}
-          disabled={busy}
-          className="inline-flex items-center gap-2 rounded-full border-0 bg-white px-4 py-2.5 text-[12.5px] font-semibold text-ink disabled:opacity-60"
-        >
-          {busy ? (
-            <>
-              <Spinner /> Thinking…
-            </>
-          ) : (
-            <>
-              <Icon name="star" size={13} strokeWidth={2} />
-              Refresh suggestion
-            </>
-          )}
-        </button>
+        {canRefresh && (
+          <button
+            type="button"
+            onClick={onRefresh}
+            disabled={busy}
+            className="inline-flex items-center gap-2 rounded-full border-0 bg-white px-4 py-2.5 text-[12.5px] font-semibold text-ink disabled:opacity-60"
+          >
+            {busy ? (
+              <>
+                <Spinner /> Thinking…
+              </>
+            ) : (
+              <>
+                <Icon name="star" size={13} strokeWidth={2} />
+                Refresh suggestion
+              </>
+            )}
+          </button>
+        )}
         <span className="self-center text-[11px] text-white/50">
           Generated from this lead's full timeline, payment trail, notes, and rating.
         </span>

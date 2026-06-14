@@ -2,9 +2,11 @@ import Link from "next/link";
 import { Topbar } from "@/components/shell/Topbar";
 import { Icon } from "@/components/ui/Icon";
 import { getClients } from "@/lib/api";
+import { requirePagePermission } from "@/lib/guards";
 import { ClientsTable } from "@/components/admin/ClientsTable";
 
 export default async function AdminClientsPage() {
+  await requirePagePermission("clients.manage");
   const clients = await getClients();
 
   return (

@@ -17,7 +17,7 @@ import type { EdifyAnswer as TEdifyAnswer, EdifyCitation } from "@/lib/types";
 const CITATION_STYLES: Record<EdifyCitation["kind"], { bg: string; text: string }> = {
   lead:    { bg: "bg-[rgba(199,25,122,.10)]", text: "text-brand-magenta" },
   learner: { bg: "bg-[rgba(46,158,106,.10)]", text: "text-state-ok" },
-  ticket:  { bg: "bg-[rgba(224,138,30,.12)]", text: "text-state-amber" },
+  case:    { bg: "bg-[rgba(224,138,30,.12)]", text: "text-state-amber" },
   program: { bg: "bg-[rgba(31,63,207,.08)]",  text: "text-brand-blue" },
   cohort:  { bg: "bg-[rgba(31,63,207,.08)]",  text: "text-brand-blue" },
   user:    { bg: "bg-warm2",                   text: "text-ink2" },
@@ -28,7 +28,7 @@ function citationHref(c: EdifyCitation): string | null {
   switch (c.kind) {
     case "lead":    return `/records/${c.ref}`;
     case "learner": return `/learners/${c.ref}`;
-    case "ticket":  return `/tickets/${c.ref}`;
+    case "case":    return `/cases/${c.ref}`;
     case "agent":   return `/agents/${c.ref}`;
     case "program": return `/admin/programs`;
     case "cohort":  return `/admin/cohorts`;

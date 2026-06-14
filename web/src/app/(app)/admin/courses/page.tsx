@@ -2,9 +2,11 @@ import Link from "next/link";
 import { Topbar } from "@/components/shell/Topbar";
 import { Icon } from "@/components/ui/Icon";
 import { getCourses, getPrograms } from "@/lib/api";
+import { requirePagePermission } from "@/lib/guards";
 import { CoursesTable } from "@/components/admin/CoursesTable";
 
 export default async function AdminCoursesPage() {
+  await requirePagePermission("admin.courses.manage");
   const [courses, programs] = await Promise.all([getCourses(), getPrograms()]);
   const activePrograms = programs.filter((p) => p.enabled);
 

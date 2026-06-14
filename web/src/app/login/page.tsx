@@ -46,7 +46,7 @@ export default async function LoginPage({
 
         <div className="relative z-[1] max-w-[480px]">
           <h1 className="font-serif text-[44px] font-normal leading-[1.05] tracking-[-.015em]">
-            Where every lead, ticket, and learner runs through the same intelligent fabric.
+            Where every lead, case, and learner runs through the same intelligent fabric.
           </h1>
           <p className="mt-6 max-w-[440px] text-[14px] leading-[1.7] text-white/85">
             Sign in to manage leads, run agents, and orchestrate your sales and service teams.
@@ -55,7 +55,7 @@ export default async function LoginPage({
           <div className="mt-10 grid grid-cols-3 gap-3">
             <Pill icon="users" label="Leads" />
             <Pill icon="chart" label="Pipeline" />
-            <Pill icon="inbox" label="Tickets" />
+            <Pill icon="inbox" label="Cases" />
             <Pill icon="stamp" label="Learners" />
             <Pill icon="agents-grid" label="Agents" />
             <Pill icon="settings" label="Admin" />

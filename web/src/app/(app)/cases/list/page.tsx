@@ -1,11 +1,14 @@
 import Link from "next/link";
 import { Topbar } from "@/components/shell/Topbar";
-import { getTickets } from "@/lib/api";
-import { TicketsTable } from "@/components/tickets/TicketsTable";
-import { NewTicketButton } from "@/components/tickets/NewTicketDialog";
+import { getCurrentUser, getCases } from "@/lib/api";
+import { requirePagePermission } from "@/lib/guards";
+import { CasesTable } from "@/components/cases/CasesTable";
+import { NewCaseButton } from "@/components/cases/NewCaseDialog";
 
-export default async function TicketsListPage() {
-  const tickets = await getTickets();
+export default async function CasesListPage() {
+  await requirePagePermission("cases.read");
+  const [cases, me] = await Promise.all([getCases(), getCurrentUser()]);
+  const canWrite = me?.permissions.includes("cases.write") ?? false;
 
   return (
     <>
@@ -13,34 +16,34 @@ export default async function TicketsListPage() {
         crumb={
           <>
             Edify CRM <span className="text-hint">/</span>{" "}
-            <Link href="/tickets" className="hover:text-brand-violet">Tickets</Link>{" "}
+            <Link href="/cases" className="hover:text-brand-violet">Cases</Link>{" "}
             <span className="text-hint">/</span>{" "}
-            <b className="font-semibold text-ink">All tickets</b>
+            <b className="font-semibold text-ink">All cases</b>
           </>
         }
-        search={`Search ${tickets.length} ticket${tickets.length === 1 ? "" : "s"}…`}
+        search={`Search ${cases.length} case${cases.length === 1 ? "" : "s"}…`}
       />
 
       <div className="px-9 pb-[60px] pt-7">
         <div className="mb-6 flex items-end justify-between gap-6">
           <div>
-            <h1 className="font-serif text-[40px] font-normal leading-none tracking-[-.01em]">All tickets</h1>
+            <h1 className="font-serif text-[40px] font-normal leading-none tracking-[-.01em]">All cases</h1>
             <p className="mt-2 text-[13.5px] text-mute">
               Filter, sort, and dive into any record. Use the dashboard for the high-level view.
             </p>
           </div>
           <div className="flex items-center gap-2.5">
             <Link
-              href="/tickets"
+              href="/cases"
               className="rounded-full border border-rule bg-paper px-4 py-2 text-[12.5px] font-semibold text-ink2 hover:border-rule2"
             >
               ← Dashboard
             </Link>
-            <NewTicketButton />
+            {canWrite && <NewCaseButton />}
           </div>
         </div>
 
-        <TicketsTable tickets={tickets} />
+        <CasesTable cases={cases} />
       </div>
     </>
   );

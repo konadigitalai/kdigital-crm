@@ -131,7 +131,7 @@ recordsRouter.get("/:idOrNumber", async (req, res, next) => {
 
       // Timeline — only ai/you rows; auto/sent/need are home-page feed entries.
       // Includes activity attached either directly to this lead's work_item
-      // OR to any work_item that shares this party (so tickets opened against
+      // OR to any work_item that shares this party (so cases opened against
       // the same person appear in their unified history).
       const timeline = await db.execute(sql`
         SELECT

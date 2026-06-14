@@ -3,18 +3,18 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Icon } from "@/components/ui/Icon";
-import { closeTicket } from "@/lib/api";
+import { closeCase } from "@/lib/api";
 import { cn } from "@/lib/cn";
-import type { CatalogResponse, TicketResolutionCode } from "@/lib/types";
+import type { CatalogResponse, CaseResolutionCode } from "@/lib/types";
 
-const FALLBACK_CODES: { key: TicketResolutionCode; label: string }[] = [
+const FALLBACK_CODES: { key: CaseResolutionCode; label: string }[] = [
   { key: "fixed",     label: "Fixed" },
   { key: "duplicate", label: "Duplicate" },
   { key: "wont_fix",  label: "Won't fix" },
   { key: "no_action", label: "No action needed" },
 ];
 
-export function CloseTicketDialog({
+export function CloseCaseDialog({
   number,
   catalog,
   onClose,
@@ -27,7 +27,7 @@ export function CloseTicketDialog({
   const codes = catalog?.resolutionCodes?.length ? catalog.resolutionCodes : FALLBACK_CODES;
 
   const [resolution, setResolution] = useState("");
-  const [resolutionCode, setResolutionCode] = useState<TicketResolutionCode>("fixed");
+  const [resolutionCode, setResolutionCode] = useState<CaseResolutionCode>("fixed");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -40,10 +40,10 @@ export function CloseTicketDialog({
   async function submit(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
-    if (!resolution.trim()) return setError("Resolution is required to close a ticket.");
+    if (!resolution.trim()) return setError("Resolution is required to close a case.");
     setSubmitting(true);
     try {
-      await closeTicket(number, { resolution: resolution.trim(), resolutionCode });
+      await closeCase(number, { resolution: resolution.trim(), resolutionCode });
       router.refresh();
       onClose();
     } catch (err) {
@@ -66,9 +66,9 @@ export function CloseTicketDialog({
       >
         <div className="mb-4 flex items-start justify-between gap-4">
           <div>
-            <h2 className="font-serif text-[24px] font-normal leading-tight tracking-[-.01em]">Close ticket {number}</h2>
+            <h2 className="font-serif text-[24px] font-normal leading-tight tracking-[-.01em]">Close case {number}</h2>
             <p className="mt-1 text-[12.5px] text-mute">
-              You must record a resolution. It becomes part of the ticket's permanent history.
+              You must record a resolution. It becomes part of the case's permanent history.
             </p>
           </div>
           <button onClick={onClose} className="text-mute hover:text-ink" aria-label="Close">
@@ -101,7 +101,7 @@ export function CloseTicketDialog({
             <span className="mono-cap mb-1.5 block text-[10px] font-semibold tracking-[.12em] text-mute">Resolution code</span>
             <select
               value={resolutionCode}
-              onChange={(e) => setResolutionCode(e.target.value as TicketResolutionCode)}
+              onChange={(e) => setResolutionCode(e.target.value as CaseResolutionCode)}
               className="w-full rounded-[10px] border border-rule bg-paper px-3 py-2.5 text-[13.5px] text-ink focus:border-brand-violet focus:outline-none focus:ring-2 focus:ring-brand-violet/20"
             >
               {codes.map((c) => (
@@ -123,7 +123,7 @@ export function CloseTicketDialog({
               disabled={submitting || !resolution.trim()}
               className="btn-grad disabled:opacity-50"
             >
-              {submitting ? "Closing…" : "Close ticket"}
+              {submitting ? "Closing…" : "Close case"}
             </button>
           </div>
         </form>

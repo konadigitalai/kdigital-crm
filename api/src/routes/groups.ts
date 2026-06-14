@@ -4,7 +4,7 @@
 import { Router } from "express";
 import { sql } from "drizzle-orm";
 import { withTenant } from "../db/app.js";
-import { isPermission, PERMISSIONS } from "../lib/permissions.js";
+import { isPermission, MODULE_CATALOG, PERMISSIONS, PRESETS } from "../lib/permissions.js";
 
 export const groupsRouter = Router();
 
@@ -26,7 +26,36 @@ groupsRouter.get("/", async (req, res, next) => {
       `);
       return r.rows;
     });
-    res.json({ groups: rows, catalog: PERMISSIONS });
+    res.json({
+      groups: rows,
+      catalog: PERMISSIONS,
+      modules: MODULE_CATALOG,
+      presets: PRESETS,
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// POST /groups/effective — preview the union of permissions for a set of group ids.
+// Used by the user-edit dialog to render the "Effective access" summary
+// without touching the DB directly from the web client.
+groupsRouter.post("/effective", async (req, res, next) => {
+  try {
+    const groupIds: string[] = Array.isArray(req.body?.groupIds) ? req.body.groupIds : [];
+    if (!groupIds.length) {
+      return res.json({ permissions: [] });
+    }
+    const perms = await withTenant(req.tenantId!, async (db) => {
+      const r = await db.execute(sql`
+        SELECT DISTINCT p.permission
+        FROM user_group g
+        JOIN user_group_permission p ON p.group_id = g.id
+        WHERE g.id = ANY(${groupIds}::uuid[])
+      `);
+      return r.rows.map((row) => (row as { permission: string }).permission);
+    });
+    res.json({ permissions: perms });
   } catch (err) {
     next(err);
   }

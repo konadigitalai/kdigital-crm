@@ -1,5 +1,5 @@
 // Edify Agent — the home-page CRM chat assistant. Answers natural-language
-// questions about the tenant's leads, learners, tickets, batches, users,
+// questions about the tenant's leads, learners, cases, batches, users,
 // programs, agents, approvals — by:
 //
 //   1. Building a compact, structured snapshot of the entire tenant state
@@ -25,7 +25,7 @@ const VALID_ACTIONS = [
 ] as const;
 type SuggestedActionKind = (typeof VALID_ACTIONS)[number];
 
-const VALID_CITATION_KINDS = ["lead", "learner", "ticket", "program", "cohort", "user", "agent"] as const;
+const VALID_CITATION_KINDS = ["lead", "learner", "case", "program", "cohort", "user", "agent"] as const;
 type CitationKind = (typeof VALID_CITATION_KINDS)[number];
 
 export interface EdifyCitation {
@@ -68,8 +68,8 @@ interface CrmSnapshot {
   totals: {
     activeLeads: number;
     enrolledLearners: number;
-    openTickets: number;
-    overdueTickets: number;
+    openCases: number;
+    overdueCases: number;
     pendingApprovals: number;
     liveAgents: number;
   };
@@ -92,7 +92,7 @@ interface CrmSnapshot {
     enrolledAt: string;
     pricePaid: string | null;
   }>;
-  ticketsSummary: {
+  casesSummary: {
     byStatus: Record<string, number>;
     byCategory: Record<string, number>;
     recent: Array<{
@@ -159,8 +159,8 @@ async function buildSnapshot(
       SELECT
         (SELECT COUNT(*)::int FROM lead WHERE rating <> 'enrolled')                             AS "activeLeads",
         (SELECT COUNT(*)::int FROM party_role pr WHERE pr.role = 'learner' AND pr.valid_to IS NULL) AS "enrolledLearners",
-        (SELECT COUNT(*)::int FROM ticket WHERE status NOT IN ('closed','resolved','cancelled')) AS "openTickets",
-        (SELECT COUNT(*)::int FROM ticket WHERE due_at < NOW() AND status NOT IN ('closed','resolved','cancelled')) AS "overdueTickets",
+        (SELECT COUNT(*)::int FROM support_case WHERE status NOT IN ('closed','resolved','cancelled')) AS "openCases",
+        (SELECT COUNT(*)::int FROM support_case WHERE due_at < NOW() AND status NOT IN ('closed','resolved','cancelled')) AS "overdueCases",
         (SELECT COUNT(*)::int FROM approval WHERE status = 'pending')                          AS "pendingApprovals",
         (SELECT COUNT(*)::int FROM agent_run WHERE live = true)                                AS "liveAgents"
     `);
@@ -240,14 +240,14 @@ async function buildSnapshot(
       pricePaid: r.pricePaid == null ? null : String(r.pricePaid),
     }));
 
-    // Ticket summary
-    const ticketStatusR = await db.execute(sql`
-      SELECT status, COUNT(*)::int AS count FROM ticket GROUP BY status
+    // Case summary
+    const caseStatusR = await db.execute(sql`
+      SELECT status, COUNT(*)::int AS count FROM support_case GROUP BY status
     `);
-    const ticketCategoryR = await db.execute(sql`
-      SELECT category, COUNT(*)::int AS count FROM ticket GROUP BY category
+    const caseCategoryR = await db.execute(sql`
+      SELECT category, COUNT(*)::int AS count FROM support_case GROUP BY category
     `);
-    const recentTicketR = await db.execute(sql`
+    const recentCaseR = await db.execute(sql`
       SELECT
         wi.number,
         t.subject,
@@ -255,21 +255,21 @@ async function buildSnapshot(
         t.priority,
         u.name AS assignee,
         t.created_at AS "createdAt"
-      FROM ticket t
+      FROM support_case t
       JOIN work_item wi ON wi.id = t.work_item_id
       LEFT JOIN app_user u ON u.id = wi.assignee_id
       WHERE t.status NOT IN ('closed','resolved','cancelled')
       ORDER BY t.created_at DESC
       LIMIT 10
     `);
-    const ticketsSummary = {
+    const casesSummary = {
       byStatus: Object.fromEntries(
-        (ticketStatusR.rows as Array<{ status: string; count: number }>).map((r) => [r.status, r.count]),
+        (caseStatusR.rows as Array<{ status: string; count: number }>).map((r) => [r.status, r.count]),
       ),
       byCategory: Object.fromEntries(
-        (ticketCategoryR.rows as Array<{ category: string; count: number }>).map((r) => [r.category, r.count]),
+        (caseCategoryR.rows as Array<{ category: string; count: number }>).map((r) => [r.category, r.count]),
       ),
-      recent: (recentTicketR.rows as Array<Record<string, unknown>>).map((r) => ({
+      recent: (recentCaseR.rows as Array<Record<string, unknown>>).map((r) => ({
         number: r.number as string,
         subject: r.subject as string,
         status: r.status as string,
@@ -403,7 +403,7 @@ async function buildSnapshot(
       ratingFunnel,
       topLeads,
       recentLearners,
-      ticketsSummary,
+      casesSummary,
       cohorts,
       programs,
       users,
@@ -451,8 +451,8 @@ Everything you can use is in the snapshot below.
 
 Hard rules:
 - Cite specifics: when you mention a lead, use its number (e.g. LEAD-9810).
-  When you mention a learner, use their name. When you mention a ticket,
-  use its number.
+  When you mention a learner, use their name. When you mention a case,
+  use its number (e.g. CSE-1042).
 - Never invent counts, names, lead numbers, or amounts. If the answer is
   not in the snapshot, say so plainly: "I don't see that in your CRM data."
 - Be concise. If the user asks "how many", lead with the number.
@@ -464,8 +464,8 @@ Hard rules:
   suggestedAction field — but only when it makes obvious sense.
 
 Citations: 0 to 8 entries. Each must reference an entity that ACTUALLY
-appears in the snapshot. kind ∈ {"lead","learner","ticket","program",
-"cohort","user","agent"}. ref must be the lead number, party id, ticket
+appears in the snapshot. kind ∈ {"lead","learner","case","program",
+"cohort","user","agent"}. ref must be the lead number, party id, case
 number, program id, user id, or agent key respectively.
 
 suggestedAction: null OR exactly one of these actions:
@@ -516,7 +516,7 @@ function validate(o: unknown, snapshot: CrmSnapshot): {
   // Build the set of valid refs by kind so the validator can drop fabricated ones.
   const validLeadNumbers = new Set(snapshot.topLeads.map((l) => l.number));
   const validLearnerIds = new Set(snapshot.recentLearners.map((l) => l.partyId));
-  const validTicketNumbers = new Set(snapshot.ticketsSummary.recent.map((t) => t.number));
+  const validCaseNumbers = new Set(snapshot.casesSummary.recent.map((t) => t.number));
   const validProgramIds = new Set(snapshot.programs.map((p) => p.id));
   const validUserIds = new Set(snapshot.users.map((u) => u.id));
   const validAgentKeys = new Set(snapshot.recentAgentRuns.map((r) => r.agentKey));
@@ -533,7 +533,7 @@ function validate(o: unknown, snapshot: CrmSnapshot): {
       // Validate ref against the snapshot.
       if (kind === "lead" && !validLeadNumbers.has(ref)) return null;
       if (kind === "learner" && !validLearnerIds.has(ref)) return null;
-      if (kind === "ticket" && !validTicketNumbers.has(ref)) return null;
+      if (kind === "case" && !validCaseNumbers.has(ref)) return null;
       if (kind === "program" && !validProgramIds.has(ref)) return null;
       if (kind === "user" && !validUserIds.has(ref)) return null;
       if (kind === "agent" && !validAgentKeys.has(ref) && !["outreach", "scoring", "nba", "forecast", "scheduler", "triage", "onboarding", "edify"].includes(ref)) return null;

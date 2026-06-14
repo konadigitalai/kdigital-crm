@@ -3,9 +3,9 @@ import { cn } from "@/lib/cn";
 import { Icon, type IconName } from "@/components/ui/Icon";
 import { StatusPill } from "./StatusPill";
 import { PriorityChip } from "./PriorityChip";
-import type { TicketDashboard, TicketCategory, TicketPriority, TicketStatus } from "@/lib/types";
+import type { CaseDashboard, CaseCategory, CasePriority, CaseStatus } from "@/lib/types";
 
-const CATEGORY_LABEL: Record<TicketCategory, string> = {
+const CATEGORY_LABEL: Record<CaseCategory, string> = {
   billing: "Billing",
   technical: "Technical",
   content_lms: "Content / LMS",
@@ -23,7 +23,7 @@ const PRIORITY_COLOR: Record<number, { bar: string; pill: string; text: string; 
   4: { bar: "bg-mute",          pill: "bg-warm2",                  text: "text-mute",          label: "Low"    },
 };
 
-export function TicketDashboardCards({ data }: { data: TicketDashboard }) {
+export function CaseDashboardCards({ data }: { data: CaseDashboard }) {
   const c = data.counts;
   const totalActive = c.open + c.inProgress + c.pending;
 
@@ -45,7 +45,7 @@ export function TicketDashboardCards({ data }: { data: TicketDashboard }) {
           <div className="mb-3 flex items-baseline justify-between">
             <div>
               <h3 className="font-serif text-[20px] tracking-[-.01em]">Active workload by priority</h3>
-              <p className="text-[12px] text-mute">{totalActive} open ticket{totalActive === 1 ? "" : "s"} across all priorities.</p>
+              <p className="text-[12px] text-mute">{totalActive} open case{totalActive === 1 ? "" : "s"} across all priorities.</p>
             </div>
           </div>
           <PriorityBar
@@ -68,7 +68,7 @@ export function TicketDashboardCards({ data }: { data: TicketDashboard }) {
 
         <div className="rounded-[16px] border border-rule bg-paper p-5">
           <h3 className="font-serif text-[20px] tracking-[-.01em]">By category</h3>
-          <p className="mb-3 text-[12px] text-mute">Open tickets only.</p>
+          <p className="mb-3 text-[12px] text-mute">Open cases only.</p>
           <div className="space-y-2">
             {data.byCategory.length === 0 ? (
               <div className="text-[12px] text-mute">Nothing open right now.</div>
@@ -115,38 +115,38 @@ export function TicketDashboardCards({ data }: { data: TicketDashboard }) {
 
         <div className="rounded-[16px] border border-rule bg-paper p-5 lg:col-span-2">
           <div className="grid grid-cols-1 gap-5 md:grid-cols-2">
-            <ListCard title="Oldest open" subtitle="Tickets sitting longest in the queue.">
+            <ListCard title="Oldest open" subtitle="Cases sitting longest in the queue.">
               {data.oldestOpen.length === 0 ? (
                 <Empty />
               ) : (
                 data.oldestOpen.map((t) => (
                   <Link
                     key={t.id}
-                    href={`/tickets/${t.number}`}
+                    href={`/cases/${t.number}`}
                     className="block rounded-lg border border-rule bg-warm p-2.5 transition hover:border-rule2"
                   >
                     <div className="flex items-baseline justify-between gap-2">
                       <span className="font-mono text-[10.5px] text-mute">{t.number}</span>
-                      <PriorityChip priority={t.priority as TicketPriority} size="sm" />
+                      <PriorityChip priority={t.priority as CasePriority} size="sm" />
                     </div>
                     <div className="mt-1 line-clamp-2 text-[12.5px] font-semibold text-ink">{t.subject}</div>
                     <div className="mt-1 flex items-center justify-between text-[11px] text-mute">
                       <span className="truncate">{t.requesterName}</span>
-                      <StatusPill status={t.status as TicketStatus} size="sm" />
+                      <StatusPill status={t.status as CaseStatus} size="sm" />
                     </div>
                   </Link>
                 ))
               )}
             </ListCard>
 
-            <ListCard title="Recently closed" subtitle="Last five tickets put to bed.">
+            <ListCard title="Recently closed" subtitle="Last five cases put to bed.">
               {data.recentClosed.length === 0 ? (
                 <Empty />
               ) : (
                 data.recentClosed.map((t) => (
                   <Link
                     key={t.id}
-                    href={`/tickets/${t.number}`}
+                    href={`/cases/${t.number}`}
                     className="block rounded-lg border border-rule bg-warm p-2.5 transition hover:border-rule2"
                   >
                     <div className="flex items-baseline justify-between gap-2">

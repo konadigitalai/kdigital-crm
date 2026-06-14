@@ -15,7 +15,7 @@ export const agentsRouter = Router();
 //    AGENT_META registry; run rows only contribute the live status pill, target
 //    string, and the 24h run count. This way agent cards never go blank just
 //    because a fresh agent_run row didn't populate visual columns.
-agentsRouter.get("/runs", async (req, res, next) => {
+agentsRouter.get("/runs", requirePermission("agents.read"), async (req, res, next) => {
   try {
     const data = await withTenant(req.tenantId!, async (db) => {
       const r = await db.execute(sql`
@@ -114,7 +114,7 @@ agentsRouter.get("/runs", async (req, res, next) => {
 });
 
 // ── Sidebar "Recent agent runs" — real rows from the last 24h.
-agentsRouter.get("/recent", async (req, res, next) => {
+agentsRouter.get("/recent", requirePermission("agents.read"), async (req, res, next) => {
   try {
     const rows = await withTenant(req.tenantId!, async (db) => {
       const r = await db.execute(sql`
@@ -267,10 +267,11 @@ agentsRouter.post(
   },
 );
 
-// ── Edify chat assistant. Read-only by default — no special permission.
-//    Sessions are per-user; only the owning user can read or write to one.
+// ── Edify chat assistant. Asking = agents.run (it can hit the LLM with the
+//    user's data). Listing/reading sessions = agents.read. Sessions are
+//    per-user; only the owning user can read or write to one.
 
-agentsRouter.post("/edify/ask", async (req, res, next) => {
+agentsRouter.post("/edify/ask", requirePermission("agents.run"), async (req, res, next) => {
   try {
     const question = String(req.body?.question ?? "").trim();
     const sessionId = req.body?.sessionId ? String(req.body.sessionId) : null;
@@ -284,7 +285,7 @@ agentsRouter.post("/edify/ask", async (req, res, next) => {
   }
 });
 
-agentsRouter.get("/edify/sessions", async (req, res, next) => {
+agentsRouter.get("/edify/sessions", requirePermission("agents.read"), async (req, res, next) => {
   try {
     const limit = Number(req.query.limit ?? 50);
     const sessions = await listEdifySessions(req.tenantId!, req.userId!, limit);
@@ -294,7 +295,7 @@ agentsRouter.get("/edify/sessions", async (req, res, next) => {
   }
 });
 
-agentsRouter.get("/edify/sessions/:id", async (req, res, next) => {
+agentsRouter.get("/edify/sessions/:id", requirePermission("agents.read"), async (req, res, next) => {
   try {
     const data = await getEdifySession(req.tenantId!, req.userId!, String(req.params.id));
     if (!data) return res.status(404).json({ error: "Session not found" });
@@ -304,7 +305,7 @@ agentsRouter.get("/edify/sessions/:id", async (req, res, next) => {
   }
 });
 
-agentsRouter.patch("/edify/sessions/:id", async (req, res, next) => {
+agentsRouter.patch("/edify/sessions/:id", requirePermission("agents.run"), async (req, res, next) => {
   try {
     const title = String(req.body?.title ?? "");
     const ok = await renameEdifySession(req.tenantId!, req.userId!, String(req.params.id), title);
@@ -317,7 +318,7 @@ agentsRouter.patch("/edify/sessions/:id", async (req, res, next) => {
   }
 });
 
-agentsRouter.delete("/edify/sessions/:id", async (req, res, next) => {
+agentsRouter.delete("/edify/sessions/:id", requirePermission("agents.run"), async (req, res, next) => {
   try {
     const ok = await deleteEdifySession(req.tenantId!, req.userId!, String(req.params.id));
     if (!ok) return res.status(404).json({ error: "Session not found" });

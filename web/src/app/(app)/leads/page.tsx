@@ -1,12 +1,23 @@
 import { Topbar } from "@/components/shell/Topbar";
 import { Icon } from "@/components/ui/Icon";
-import { getLeads, getSummary } from "@/lib/api";
+import { getCatalog, getCurrentUser, getLeads, getSavedViews, getSummary } from "@/lib/api";
+import { requirePagePermission } from "@/lib/guards";
 import { NewLeadButton } from "@/components/leads/NewLeadDialog";
-import { LeadsTable } from "@/components/leads/LeadsTable";
+import { LeadsBoard } from "@/components/leads/LeadsBoard";
 
 export default async function LeadsPage() {
-  const [leads, summary] = await Promise.all([getLeads(), getSummary()]);
+  await requirePagePermission("leads.read");
+  const [leads, summary, me, catalog, views] = await Promise.all([
+    getLeads(),
+    getSummary(),
+    getCurrentUser(),
+    getCatalog(),
+    getSavedViews("pipeline_list"),
+  ]);
+  const canWrite  = me?.permissions.includes("leads.write")  ?? false;
+  const canDelete = me?.permissions.includes("leads.delete") ?? false;
   const o = summary.overall;
+
   return (
     <>
       <Topbar
@@ -25,7 +36,7 @@ export default async function LeadsPage() {
             </p>
           </div>
           <div className="flex gap-2.5">
-            <NewLeadButton label="New lead" />
+            {canWrite && <NewLeadButton label="New lead" />}
           </div>
         </div>
 
@@ -44,7 +55,14 @@ export default async function LeadsPage() {
           </div>
         )}
 
-        <LeadsTable leads={leads} />
+        <LeadsBoard
+          initialLeads={leads}
+          catalog={catalog}
+          initialViews={views}
+          currentUser={me}
+          canWrite={canWrite}
+          canDelete={canDelete}
+        />
       </div>
     </>
   );

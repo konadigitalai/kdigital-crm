@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { Topbar } from "@/components/shell/Topbar";
 import { getMyClients, getTimesheetRange } from "@/lib/api";
+import { requirePagePermission } from "@/lib/guards";
 import { TimesheetView } from "@/components/timesheet/TimesheetView";
 
 // IST date helpers — keep server and DB consistent.
@@ -29,6 +30,7 @@ function weekDatesIST(): string[] {
 }
 
 export default async function TimesheetPage() {
+  await requirePagePermission("timesheets.read.self");
   const week = weekDatesIST();
   const todayISO = istDateString(istNow());
   const [range, myClients] = await Promise.all([

@@ -2,6 +2,7 @@ import Link from "next/link";
 import { Topbar } from "@/components/shell/Topbar";
 import { Icon } from "@/components/ui/Icon";
 import { getClients, getTimesheetReport, getUsers } from "@/lib/api";
+import { requirePagePermission } from "@/lib/guards";
 import { TimesheetReport } from "@/components/admin/TimesheetReport";
 
 // Default: rolling last 30 days (IST), inclusive.
@@ -12,6 +13,7 @@ function istShift(days: number): string {
 }
 
 export default async function AdminTimesheetReportPage() {
+  await requirePagePermission("timesheets.read.all");
   const from = istShift(-29);
   const to   = istShift(0);
 

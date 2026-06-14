@@ -54,12 +54,14 @@ interface InlineFieldProps {
   valueClass?: string;
   /** When true, shows a "(required)" hint and refuses to save empty. */
   required?: boolean;
+  /** When true, the field renders as plain text — no hover state, no edit affordance. */
+  readOnly?: boolean;
 }
 
 type Phase = "idle" | "editing" | "saving" | "saved" | "error";
 
 export function InlineField(props: InlineFieldProps) {
-  const { kind, onSave, ariaLabel, idleStyle, className, valueClass, required } = props;
+  const { kind, onSave, ariaLabel, idleStyle, className, valueClass, required, readOnly } = props;
   const [phase, setPhase] = useState<Phase>("idle");
   const [error, setError] = useState<string | null>(null);
   // Local current value — what to render in idle. Updated optimistically post-save.
@@ -96,6 +98,13 @@ export function InlineField(props: InlineFieldProps) {
   // ── IDLE ─────────────────────────────────────────────────────────────────
   if (phase === "idle" || phase === "saved") {
     const idleNode = renderIdle(kind, current, idleStyle);
+    if (readOnly) {
+      return (
+        <span aria-label={ariaLabel} className={cn("inline-flex items-center", className)}>
+          <span className={cn("min-w-[1ch]", valueClass)}>{idleNode}</span>
+        </span>
+      );
+    }
     return (
       <button
         type="button"

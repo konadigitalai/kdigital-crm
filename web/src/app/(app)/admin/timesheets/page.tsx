@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { Topbar } from "@/components/shell/Topbar";
 import { getTimesheetRange, getUsers } from "@/lib/api";
+import { requirePagePermission } from "@/lib/guards";
 import { TimesheetGrid, type UserTimesheet } from "@/components/admin/TimesheetGrid";
 
 function istNow(): Date {
@@ -26,6 +27,7 @@ function weekDatesIST(): string[] {
 }
 
 export default async function AdminTimesheetsPage() {
+  await requirePagePermission("timesheets.read.all");
   const week = weekDatesIST();
   const todayISO = istDateString(istNow());
   const from = week[0]!;

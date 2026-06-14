@@ -8,6 +8,7 @@ import {
   getEvents,
   getTimesheetRange,
 } from "@/lib/api";
+import { requirePagePermission } from "@/lib/guards";
 import { CalendarShell } from "@/components/calendar/CalendarShell";
 
 function istNow(): Date {
@@ -31,6 +32,7 @@ function weekDatesIST(): string[] {
 }
 
 export default async function CalendarPage() {
+  await requirePagePermission("events.manage.self");
   const me = await getCurrentUser();
   if (!me) redirect("/login");
 

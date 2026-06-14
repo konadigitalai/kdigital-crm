@@ -34,7 +34,7 @@ export const AGENT_META: Record<string, AgentMeta> = {
     capabilities: ["ask"],
     glyph: "vm",
     iconKey: "spark",
-    desc: "On-page chat assistant. Knows leads, learners, tickets, batches, programs, users — and can suggest actions like drafting outreach or running a forecast.",
+    desc: "On-page chat assistant. Knows leads, learners, cases, batches, programs, users — and can suggest actions like drafting outreach or running a forecast.",
     metricLabel: "questions answered",
     rightPill: "ask anything",
   },

@@ -22,7 +22,7 @@ import { coursesRouter } from "./routes/courses.js";
 import { convertRouter } from "./routes/convert.js";
 import { learnersRouter } from "./routes/learners.js";
 import { approvalsRouter } from "./routes/approvals.js";
-import { ticketsRouter } from "./routes/tickets.js";
+import { casesRouter } from "./routes/cases.js";
 import { usersRouter } from "./routes/users.js";
 import { groupsRouter } from "./routes/groups.js";
 import { clientsRouter } from "./routes/clients.js";
@@ -30,6 +30,9 @@ import { timesheetsRouter } from "./routes/timesheets.js";
 import { leavesRouter } from "./routes/leaves.js";
 import { eventsRouter } from "./routes/events.js";
 import { batchesRouter } from "./routes/batches.js";
+import { viewsRouter } from "./routes/views.js";
+import { integrationsRouter } from "./routes/integrations.js";
+import { shareRouter } from "./routes/share.js";
 
 const app = express();
 app.use(express.json());
@@ -69,24 +72,48 @@ app.use("/auth", authRouter);
 // ── Authenticated ──────────────────────────────────────────────────────────
 app.use(authMiddleware);
 app.use("/me", meRouter);
-app.use("/leads", leadsRouter);
-app.use("/leads", convertRouter); // POST /leads/:idOrNumber/convert
-app.use("/learners", learnersRouter);
-app.use("/approvals", approvalsRouter);
-app.use("/tickets", ticketsRouter);
-app.use("/pipeline", pipelineRouter);
-app.use("/activity", activityRouter);
-app.use("/agents", agentsRouter);
-app.use("/records", recordsRouter);
-app.use("/summary", summaryRouter);
-app.use("/catalog", catalogRouter);
-// programs/courses/cohorts: GET is readable by any authenticated user (advisor
-// dialogs need them); writes require the manage permission.
-const writeOnly = (perm: Parameters<typeof requirePermission>[0]) =>
+
+// Method-aware guard: reads need readPerm, mutating verbs need writePerm.
+// We treat GET as the read fence so routes with PATCH/POST/DELETE always
+// fall through the write check (POST /:id/notes, POST /:id/comms, etc.).
+type Perm = Parameters<typeof requirePermission>[0];
+const readWrite = (readPerm: Perm, writePerm: Perm) =>
+  (req: express.Request, res: express.Response, next: express.NextFunction) => {
+    const perm = req.method === "GET" ? readPerm : writePerm;
+    return requirePermission(perm)(req, res, next);
+  };
+const writeOnly = (perm: Perm) =>
   (req: express.Request, res: express.Response, next: express.NextFunction) => {
     if (req.method === "GET") return next();
     return requirePermission(perm)(req, res, next);
   };
+// Like readWrite, but with a separate gate for DELETE — used by /leads where
+// deletion is a strictly higher privilege than write.
+const readWriteDelete = (readPerm: Perm, writePerm: Perm, deletePerm: Perm) =>
+  (req: express.Request, res: express.Response, next: express.NextFunction) => {
+    const perm =
+      req.method === "GET"    ? readPerm
+    : req.method === "DELETE" ? deletePerm
+    :                           writePerm;
+    return requirePermission(perm)(req, res, next);
+  };
+
+app.use("/leads",    readWriteDelete("leads.read", "leads.write", "leads.delete"), leadsRouter);
+app.use("/leads",    requirePermission("leads.write"),             convertRouter); // POST /leads/:idOrNumber/convert
+app.use("/learners", readWrite("learners.read", "learners.write"), learnersRouter);
+app.use("/approvals", approvalsRouter);
+app.use("/cases",    readWrite("cases.read",    "cases.write"),    casesRouter);
+app.use("/pipeline", readWrite("pipeline.read", "pipeline.write"), pipelineRouter);
+// /activity is the home-page agent feed (tag IN auto/sent/need), not the
+// per-record timeline (which lives behind /records/:id). Agents.read fits
+// because what the feed surfaces is "what the agents have been doing."
+app.use("/activity", requirePermission("agents.read"),             activityRouter);
+app.use("/agents",   agentsRouter);
+app.use("/records",  requirePermission("leads.read"),              recordsRouter);
+app.use("/summary",  summaryRouter);
+app.use("/catalog",  catalogRouter);
+// programs/courses/cohorts: GET is readable by any authenticated user (advisor
+// dialogs need them); writes require the manage permission.
 app.use("/programs", writeOnly("admin.programs.manage"), programsRouter);
 app.use("/cohorts",  writeOnly("admin.batches.manage"),  cohortsRouter);
 app.use("/courses",  writeOnly("admin.courses.manage"),  coursesRouter);
@@ -98,6 +125,14 @@ app.use("/timesheets",  timesheetsRouter);
 app.use("/leaves",      leavesRouter);
 app.use("/events",      eventsRouter);
 app.use("/batches",     batchesRouter);
+// Saved views — gated per-handler against the surface's read perm
+// (pipeline_list ⇒ pipeline.read for GET, etc.). The router itself does
+// the visibility checks (personal vs shared, owner vs others).
+app.use("/views",       requirePermission("pipeline.read"), viewsRouter);
+// Integrations admin — Slack rules + delivery log.
+app.use("/integrations", readWrite("integrations.read", "integrations.manage"), integrationsRouter);
+// Manual "Share to Slack" — gated per-handler by the surface's read perm.
+app.use("/share", shareRouter);
 
 // JSON error envelope
 app.use((err: Error, _req: express.Request, res: express.Response, _next: express.NextFunction) => {

@@ -1,10 +1,12 @@
 import { Topbar } from "@/components/shell/Topbar";
 import { Icon } from "@/components/ui/Icon";
 import { getAgentCatalog, getCurrentUser } from "@/lib/api";
+import { requirePagePermission } from "@/lib/guards";
 import { AgentCatalog } from "@/components/agents/AgentCatalog";
 import Link from "next/link";
 
 export default async function AgentsPage() {
+  await requirePagePermission("agents.read");
   const [agents, currentUser] = await Promise.all([getAgentCatalog(), getCurrentUser()]);
   const canManage = currentUser?.permissions.includes("users.manage") ?? false;
 

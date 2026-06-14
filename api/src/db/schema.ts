@@ -253,7 +253,7 @@ export const workItem = pgTable(
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => ({
-    typeCheck: check("work_item_type_check", sql`${t.type} IN ('lead','deal','service_case','onboarding_task','agent_run','ticket')`),
+    typeCheck: check("work_item_type_check", sql`${t.type} IN ('lead','deal','service_case','onboarding_task','agent_run','support_case')`),
     tenantNumberKey: uniqueIndex("work_item_tenant_number_key").on(t.tenantId, t.number),
     tenantTypeStateIdx: index("wi_tenant_type_state_idx").on(t.tenantId, t.type, t.state),
     assigneeIdx: index("wi_assignee_idx").on(t.tenantId, t.assigneeId),
@@ -371,13 +371,16 @@ export const serviceCase = pgTable("service_case", {
   csatCheck: check("service_case_csat_check", sql`${t.csat} BETWEEN 1 AND 5`),
 }));
 
-// ─── Ticket (ServiceNow-style support cases) ──────────────────────────────
-// 1:1 with work_item.type = 'ticket'. The "stakeholder" of a ticket is a
-// person — they may be an existing lead/learner (linked via party_id) or
+// ─── Support case (ServiceNow-style) ──────────────────────────────────────
+// 1:1 with work_item.type = 'support_case'. The "stakeholder" of a case is
+// a person — they may be an existing lead/learner (linked via party_id) or
 // fully external (no party row). Either way, name + email + phone are
-// captured on the ticket itself so external requesters can be tracked.
-export const ticket = pgTable(
-  "ticket",
+// captured on the case itself so external requesters can be tracked.
+//
+// (We literally use "support_case" as the SQL identifier because plain
+//  "case" is a reserved word in PostgreSQL.)
+export const supportCase = pgTable(
+  "support_case",
   {
     workItemId: uuid("work_item_id")
       .primaryKey()
@@ -415,31 +418,31 @@ export const ticket = pgTable(
   },
   (t) => ({
     requesterKindCheck: check(
-      "ticket_requester_kind_check",
+      "support_case_requester_kind_check",
       sql`${t.requesterKind} IN ('lead','learner','external')`,
     ),
     statusCheck: check(
-      "ticket_status_check",
+      "support_case_status_check",
       sql`${t.status} IN ('open','in_progress','pending','resolved','closed','cancelled')`,
     ),
     categoryCheck: check(
-      "ticket_category_check",
+      "support_case_category_check",
       sql`${t.category} IN ('billing','technical','content_lms','onboarding','cohort_batch','refund','certificate','other')`,
     ),
-    priorityCheck: check("ticket_priority_check", sql`${t.priority} BETWEEN 1 AND 4`),
+    priorityCheck: check("support_case_priority_check", sql`${t.priority} BETWEEN 1 AND 4`),
     resolutionCodeCheck: check(
-      "ticket_resolution_code_check",
+      "support_case_resolution_code_check",
       sql`${t.resolutionCode} IS NULL OR ${t.resolutionCode} IN ('fixed','duplicate','wont_fix','no_action')`,
     ),
     closedRequiresResolution: check(
-      "ticket_closed_has_resolution",
+      "support_case_closed_has_resolution",
       sql`${t.status} <> 'closed' OR (${t.resolution} IS NOT NULL AND length(trim(${t.resolution})) > 0)`,
     ),
-    partyIdx:    index("ticket_party_idx").on(t.tenantId, t.partyId),
-    statusIdx:   index("ticket_status_idx").on(t.tenantId, t.status),
-    assigneeIdx: index("ticket_assignee_via_wi_idx").on(t.tenantId, t.workItemId),
-    dueIdx:      index("ticket_due_idx").on(t.tenantId, t.dueAt),
-    remindIdx:   index("ticket_remind_idx").on(t.tenantId, t.remindAt),
+    partyIdx:    index("support_case_party_idx").on(t.tenantId, t.partyId),
+    statusIdx:   index("support_case_status_idx").on(t.tenantId, t.status),
+    assigneeIdx: index("support_case_assignee_via_wi_idx").on(t.tenantId, t.workItemId),
+    dueIdx:      index("support_case_due_idx").on(t.tenantId, t.dueAt),
+    remindIdx:   index("support_case_remind_idx").on(t.tenantId, t.remindAt),
   }),
 );
 
@@ -906,10 +909,132 @@ export const attachment = pgTable(
   }),
 );
 
+// ─── Saved view ───────────────────────────────────────────────────────────
+// Per-user (or tenant-shared) snapshot of a list-view's filter rules + which
+// columns to show. Scoped by surface (`pipeline_list`, etc.) so we can use
+// the same table for different lists later.
+export const savedView = pgTable(
+  "saved_view",
+  {
+    id:         uuid("id").primaryKey().defaultRandom(),
+    tenantId:   uuid("tenant_id").notNull().references(() => tenant.id),
+    ownerId:    uuid("owner_id").notNull().references(() => appUser.id, { onDelete: "cascade" }),
+    scope:      text("scope").notNull(),                 // 'pipeline_list' | future surfaces
+    name:       text("name").notNull(),
+    visibility: text("visibility").notNull().default("personal"),
+    filter:     jsonb("filter").notNull().default(sql`'{}'::jsonb`),
+    columns:    text("columns").array(),
+    createdAt:  timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt:  timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    visibilityCheck: check(
+      "saved_view_visibility_check",
+      sql`${t.visibility} IN ('personal','shared')`,
+    ),
+    ownerScopeIdx:  index("saved_view_owner_scope_idx").on(t.tenantId, t.ownerId, t.scope),
+    sharedScopeIdx: index("saved_view_shared_scope_idx").on(t.tenantId, t.scope),
+  }),
+);
+
+// ─── Slack integration ────────────────────────────────────────────────────
+// Outbound notification rules + delivery log + a placeholder workspace
+// table reserved for the v2 bot-token flow. v1 ships with `webhookUrl`
+// populated; v2 will populate `slack_workspace.bot_token` per tenant.
+export const slackRule = pgTable(
+  "slack_rule",
+  {
+    id:          uuid("id").primaryKey().defaultRandom(),
+    tenantId:    uuid("tenant_id").notNull().references(() => tenant.id),
+    name:        text("name").notNull(),
+    eventType:   text("event_type").notNull(),
+    enabled:     boolean("enabled").notNull().default(true),
+    filter:      jsonb("filter").notNull().default(sql`'{}'::jsonb`),
+    webhookUrl:  text("webhook_url"),
+    channel:     text("channel"),
+    template:    text("template"),
+    createdAt:   timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt:   timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    eventTypeCheck: check(
+      "slack_rule_event_type_check",
+      sql`${t.eventType} IN ('lead.created','case.opened','case.closed')`,
+    ),
+    tenantEventIdx: index("slack_rule_tenant_event_idx").on(t.tenantId, t.eventType, t.enabled),
+  }),
+);
+
+export const slackDeliveryLog = pgTable(
+  "slack_delivery_log",
+  {
+    id:          uuid("id").primaryKey().defaultRandom(),
+    tenantId:    uuid("tenant_id").notNull().references(() => tenant.id),
+    ruleId:      uuid("rule_id").references(() => slackRule.id, { onDelete: "set null" }),
+    eventType:   text("event_type").notNull(),
+    status:      text("status").notNull(),
+    httpStatus:  integer("http_status"),
+    response:    text("response"),
+    context:     jsonb("context").notNull().default(sql`'{}'::jsonb`),
+    sentAt:      timestamp("sent_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    statusCheck: check("slack_delivery_log_status_check", sql`${t.status} IN ('ok','error')`),
+    tenantSentIdx: index("slack_delivery_log_tenant_sent_idx").on(t.tenantId, t.sentAt),
+  }),
+);
+
+// Slack manual-share configuration — one row per (tenant, surface). Drives
+// the "Share to Slack" button on lead / learner / case record pages.
+export const slackShareTarget = pgTable(
+  "slack_share_target",
+  {
+    id:              uuid("id").primaryKey().defaultRandom(),
+    tenantId:        uuid("tenant_id").notNull().references(() => tenant.id),
+    surface:         text("surface").notNull(),
+    enabled:         boolean("enabled").notNull().default(true),
+    channel:         text("channel"),
+    webhookUrl:      text("webhook_url"),
+    fieldKeys:       text("field_keys").array().notNull().default(sql`'{}'::text[]`),
+    headerTemplate:  text("header_template"),
+    createdAt:       timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt:       timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    surfaceCheck: check(
+      "slack_share_target_surface_check",
+      sql`${t.surface} IN ('leads','learners','cases')`,
+    ),
+    tenantSurfaceKey: uniqueIndex("slack_share_target_tenant_surface_key").on(t.tenantId, t.surface),
+  }),
+);
+
+export const slackWorkspace = pgTable(
+  "slack_workspace",
+  {
+    id:           uuid("id").primaryKey().defaultRandom(),
+    tenantId:     uuid("tenant_id").notNull().references(() => tenant.id),
+    teamId:       text("team_id"),
+    teamName:     text("team_name"),
+    botToken:     text("bot_token"),
+    installedAt:  timestamp("installed_at", { withTimezone: true }),
+    createdAt:    timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt:    timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    tenantUnique: uniqueIndex("slack_workspace_tenant_unique").on(t.tenantId),
+  }),
+);
+
 // Type exports — convenient for routes/seed
 export type Tenant = typeof tenant.$inferSelect;
 export type Lead = typeof lead.$inferSelect;
 export type WorkItem = typeof workItem.$inferSelect;
 export type Activity = typeof activity.$inferSelect;
 export type AgentRun = typeof agentRun.$inferSelect;
-export type Ticket = typeof ticket.$inferSelect;
+export type SupportCase = typeof supportCase.$inferSelect;
+export type SavedView = typeof savedView.$inferSelect;
+export type SlackRule = typeof slackRule.$inferSelect;
+export type SlackDeliveryLog = typeof slackDeliveryLog.$inferSelect;
+export type SlackWorkspace = typeof slackWorkspace.$inferSelect;
+export type SlackShareTarget = typeof slackShareTarget.$inferSelect;

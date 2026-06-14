@@ -1,8 +1,14 @@
 import { Router } from "express";
 import { sql } from "drizzle-orm";
 import { withTenant } from "../db/app.js";
+import { emitEvent } from "../lib/events.js";
 
-export const ticketsRouter = Router();
+export const casesRouter = Router();
+
+// Internally the table is "support_case" because plain "case" is a reserved
+// SQL keyword in PostgreSQL. Externally — URL paths, response field names,
+// log lines, error messages — everything is "case". The aliasing happens
+// only at the SQL boundary.
 
 // ─── shared constants ─────────────────────────────────────────────────────
 
@@ -35,9 +41,9 @@ function statusToWiState(s: string): string {
   return "open";
 }
 
-// ─── GET /tickets/dashboard ───────────────────────────────────────────────
+// ─── GET /cases/dashboard ─────────────────────────────────────────────────
 
-ticketsRouter.get("/dashboard", async (req, res, next) => {
+casesRouter.get("/dashboard", async (req, res, next) => {
   try {
     const data = await withTenant(req.tenantId!, async (db) => {
       const counts = await db.execute(sql`
@@ -55,12 +61,12 @@ ticketsRouter.get("/dashboard", async (req, res, next) => {
           COUNT(*) FILTER (WHERE due_at >= NOW() AND due_at < NOW() + interval '7 days'
                           AND status NOT IN ('closed','resolved','cancelled'))::int               AS "dueThisWeek",
           COUNT(*) FILTER (WHERE closed_at >= NOW() - interval '7 days')::int                     AS "closedThisWeek"
-        FROM ticket
+        FROM support_case
       `);
 
       const byPriority = await db.execute(sql`
         SELECT priority::int AS priority, COUNT(*)::int AS count
-        FROM ticket
+        FROM support_case
         WHERE status NOT IN ('closed','resolved','cancelled')
         GROUP BY priority
         ORDER BY priority
@@ -68,7 +74,7 @@ ticketsRouter.get("/dashboard", async (req, res, next) => {
 
       const byCategory = await db.execute(sql`
         SELECT category, COUNT(*)::int AS count
-        FROM ticket
+        FROM support_case
         WHERE status NOT IN ('closed','resolved','cancelled')
         GROUP BY category
         ORDER BY count DESC
@@ -83,8 +89,8 @@ ticketsRouter.get("/dashboard", async (req, res, next) => {
           COUNT(*) FILTER (WHERE t.due_at < NOW() AND t.status NOT IN ('closed','resolved','cancelled'))::int AS "overdue",
           COUNT(*) FILTER (WHERE t.closed_at >= NOW() - interval '7 days')::int          AS "closedThisWeek"
         FROM app_user u
-        LEFT JOIN work_item wi ON wi.assignee_id = u.id AND wi.type = 'ticket'
-        LEFT JOIN ticket t     ON t.work_item_id = wi.id
+        LEFT JOIN work_item wi ON wi.assignee_id = u.id AND wi.type = 'support_case'
+        LEFT JOIN support_case t     ON t.work_item_id = wi.id
         WHERE u.active = true AND u.role IN ('admin','advisor','service_rep')
         GROUP BY u.id, u.name, u.role
         ORDER BY "open" DESC, u.name
@@ -97,7 +103,7 @@ ticketsRouter.get("/dashboard", async (req, res, next) => {
           u.name AS "assigneeName",
           wi.created_at AS "createdAt",
           (t.due_at IS NOT NULL AND t.due_at < NOW()) AS "isOverdue"
-        FROM ticket t
+        FROM support_case t
         JOIN work_item wi  ON wi.id = t.work_item_id
         LEFT JOIN app_user u ON u.id = wi.assignee_id
         WHERE t.status NOT IN ('closed','resolved','cancelled')
@@ -111,7 +117,7 @@ ticketsRouter.get("/dashboard", async (req, res, next) => {
           t.requester_name AS "requesterName",
           u.name AS "assigneeName",
           t.resolution
-        FROM ticket t
+        FROM support_case t
         JOIN work_item wi  ON wi.id = t.work_item_id
         LEFT JOIN app_user u ON u.id = wi.assignee_id
         WHERE t.status IN ('closed','resolved')
@@ -134,9 +140,9 @@ ticketsRouter.get("/dashboard", async (req, res, next) => {
   }
 });
 
-// ─── GET /tickets — list with filters ─────────────────────────────────────
+// ─── GET /cases — list with filters ───────────────────────────────────────
 
-ticketsRouter.get("/", async (req, res, next) => {
+casesRouter.get("/", async (req, res, next) => {
   try {
     const status     = typeof req.query.status     === "string" ? req.query.status     : null;
     const assigneeId = typeof req.query.assigneeId === "string" ? req.query.assigneeId : null;
@@ -186,7 +192,7 @@ ticketsRouter.get("/", async (req, res, next) => {
           u.id              AS "assigneeId",
           u.name            AS "assigneeName",
           (t.due_at IS NOT NULL AND t.due_at < NOW() AND t.status NOT IN ('closed','resolved','cancelled')) AS "isOverdue"
-        FROM ticket t
+        FROM support_case t
         JOIN work_item wi  ON wi.id = t.work_item_id
         LEFT JOIN app_user u ON u.id = wi.assignee_id
         ${where}
@@ -198,15 +204,15 @@ ticketsRouter.get("/", async (req, res, next) => {
       return r.rows;
     });
 
-    res.json({ tickets: rows });
+    res.json({ cases: rows });
   } catch (err) {
     next(err);
   }
 });
 
-// ─── GET /tickets/:idOrNumber ─────────────────────────────────────────────
+// ─── GET /cases/:idOrNumber ───────────────────────────────────────────────
 
-ticketsRouter.get("/:idOrNumber", async (req, res, next) => {
+casesRouter.get("/:idOrNumber", async (req, res, next) => {
   try {
     const { idOrNumber } = req.params;
     const lookupIsUuid = isUuid(idOrNumber);
@@ -236,12 +242,12 @@ ticketsRouter.get("/:idOrNumber", async (req, res, next) => {
                 p.name            AS "partyName",
                 p.email           AS "partyEmail",
                 p.phone           AS "partyPhone"
-              FROM ticket t
+              FROM support_case t
               JOIN work_item wi   ON wi.id = t.work_item_id
               LEFT JOIN app_user u  ON u.id = wi.assignee_id
               LEFT JOIN app_user cu ON cu.id = t.created_by_id
               LEFT JOIN party p     ON p.id = t.party_id
-              WHERE wi.id = ${idOrNumber} AND wi.type = 'ticket'
+              WHERE wi.id = ${idOrNumber} AND wi.type = 'support_case'
               LIMIT 1
             `
           : sql`
@@ -266,18 +272,18 @@ ticketsRouter.get("/:idOrNumber", async (req, res, next) => {
                 p.name            AS "partyName",
                 p.email           AS "partyEmail",
                 p.phone           AS "partyPhone"
-              FROM ticket t
+              FROM support_case t
               JOIN work_item wi   ON wi.id = t.work_item_id
               LEFT JOIN app_user u  ON u.id = wi.assignee_id
               LEFT JOIN app_user cu ON cu.id = t.created_by_id
               LEFT JOIN party p     ON p.id = t.party_id
-              WHERE wi.number = ${idOrNumber} AND wi.type = 'ticket'
+              WHERE wi.number = ${idOrNumber} AND wi.type = 'support_case'
               LIMIT 1
             `,
       );
       if (!row.rows[0]) return null;
-      const ticket = row.rows[0] as Record<string, unknown>;
-      const wiId = ticket.id as string;
+      const supportCase = row.rows[0] as Record<string, unknown>;
+      const wiId = supportCase.id as string;
 
       const timeline = await db.execute(sql`
         SELECT
@@ -293,19 +299,19 @@ ticketsRouter.get("/:idOrNumber", async (req, res, next) => {
       // user to the learner record. Only fall back to the lead record when
       // they're still a lead (or have no learner role yet).
       let linked: { kind: "lead" | "learner"; href: string; label: string } | null = null;
-      if (ticket.partyId) {
+      if (supportCase.partyId) {
         const learnerActive = await db.execute(sql`
           SELECT 1 FROM party_role
-          WHERE party_id = ${ticket.partyId as string} AND role = 'learner' AND valid_to IS NULL
+          WHERE party_id = ${supportCase.partyId as string} AND role = 'learner' AND valid_to IS NULL
           LIMIT 1
         `);
         if (learnerActive.rows[0]) {
-          linked = { kind: "learner", href: `/learners/${ticket.partyId}`, label: "Learner record" };
+          linked = { kind: "learner", href: `/learners/${supportCase.partyId}`, label: "Learner record" };
         } else {
           const lead = await db.execute(sql`
             SELECT wi.number FROM lead l
             JOIN work_item wi ON wi.id = l.work_item_id
-            WHERE wi.party_id = ${ticket.partyId as string}
+            WHERE wi.party_id = ${supportCase.partyId as string}
             LIMIT 1
           `);
           if (lead.rows[0]) {
@@ -315,19 +321,19 @@ ticketsRouter.get("/:idOrNumber", async (req, res, next) => {
         }
       }
 
-      return { ticket, timeline: timeline.rows, linked };
+      return { case: supportCase, timeline: timeline.rows, linked };
     });
 
-    if (!data) return res.status(404).json({ error: "Ticket not found" });
+    if (!data) return res.status(404).json({ error: "Case not found" });
     res.json(data);
   } catch (err) {
     next(err);
   }
 });
 
-// ─── POST /tickets — create ───────────────────────────────────────────────
+// ─── POST /cases — create ─────────────────────────────────────────────────
 
-ticketsRouter.post("/", async (req, res, next) => {
+casesRouter.post("/", async (req, res, next) => {
   try {
     const b = req.body ?? {};
     const errors: string[] = [];
@@ -387,20 +393,20 @@ ticketsRouter.post("/", async (req, res, next) => {
       }
 
       // Number
-      const numR = await db.execute(sql`SELECT nextval('seq_ticket')::text AS n`);
-      const number = `TKT-${(numR.rows[0] as { n: string }).n}`;
+      const numR = await db.execute(sql`SELECT nextval('seq_support_case')::text AS n`);
+      const number = `CSE-${(numR.rows[0] as { n: string }).n}`;
 
       // 1. work_item
       const wiR = await db.execute(sql`
         INSERT INTO work_item (tenant_id, number, type, party_id, assignee_id, state)
-        VALUES (current_tenant(), ${number}, 'ticket', ${partyId}, ${assigneeId}, 'open')
+        VALUES (current_tenant(), ${number}, 'support_case', ${partyId}, ${assigneeId}, 'open')
         RETURNING id
       `);
       const wiId = (wiR.rows[0] as { id: string }).id;
 
-      // 2. ticket extension
+      // 2. support_case extension
       await db.execute(sql`
-        INSERT INTO ticket (
+        INSERT INTO support_case (
           work_item_id, tenant_id,
           requester_name, requester_email, requester_phone, requester_kind, party_id,
           subject, description, category, priority, status,
@@ -419,7 +425,7 @@ ticketsRouter.post("/", async (req, res, next) => {
         INSERT INTO activity (tenant_id, work_item_id, party_id, actor_type, actor_name, verb, detail, tag, payload, ts)
         VALUES (
           current_tenant(), ${wiId}, ${partyId},
-          'user', ${creator?.name ?? "System"}, 'Ticket created',
+          'user', ${creator?.name ?? "System"}, 'Case created',
           ${`${subject} · ${CATEGORY_LABEL[category] ?? category} · ${PRIORITY_LABEL[priority] ?? priority}`},
           'you',
           ${JSON.stringify({ when: "Just now", kind: "create", category, priority })}::jsonb,
@@ -440,21 +446,39 @@ ticketsRouter.post("/", async (req, res, next) => {
         `);
       }
 
-      return { kind: "ok" as const, id: wiId, number };
+      return { kind: "ok" as const, id: wiId, number, assigneeName };
     });
 
     if (result.kind === "bad-link")     return res.status(400).json({ error: "linked party does not currently hold the specified role" });
     if (result.kind === "bad-assignee") return res.status(400).json({ error: "assignee not found or inactive" });
 
-    res.status(201).json({ ticket: { id: result.id, number: result.number } });
+    // Fire Slack notifications post-commit. Never throws.
+    await emitEvent({
+      type: "case.opened",
+      tenantId: req.tenantId!,
+      occurredAt: new Date().toISOString(),
+      context: {
+        caseId: result.id,
+        number: result.number,
+        subject,
+        category,
+        priority,
+        requesterName,
+        requesterEmail,
+        requesterKind,
+        assigneeName: result.assigneeName,
+      },
+    });
+
+    res.status(201).json({ case: { id: result.id, number: result.number } });
   } catch (err) {
     next(err);
   }
 });
 
-// ─── PATCH /tickets/:idOrNumber — edit fields, log diff ──────────────────
+// ─── PATCH /cases/:idOrNumber — edit fields, log diff ────────────────────
 
-ticketsRouter.patch("/:idOrNumber", async (req, res, next) => {
+casesRouter.patch("/:idOrNumber", async (req, res, next) => {
   try {
     const { idOrNumber } = req.params;
     const lookupIsUuid = isUuid(idOrNumber);
@@ -473,7 +497,7 @@ ticketsRouter.patch("/:idOrNumber", async (req, res, next) => {
     }
     if (b.status === "closed") {
       // Cannot transition to 'closed' via PATCH — must use /close so resolution is required.
-      return res.status(400).json({ error: "use POST /tickets/:id/close to close a ticket (resolution required)" });
+      return res.status(400).json({ error: "use POST /cases/:id/close to close a case (resolution required)" });
     }
 
     const result = await withTenant(req.tenantId!, async (db) => {
@@ -485,9 +509,9 @@ ticketsRouter.patch("/:idOrNumber", async (req, res, next) => {
                 wi.assignee_id     AS "assigneeId",
                 t.subject, t.description, t.category, t.priority, t.status,
                 t.due_at AS "dueAt", t.remind_at AS "remindAt"
-              FROM ticket t
+              FROM support_case t
               JOIN work_item wi ON wi.id = t.work_item_id
-              WHERE wi.id = ${idOrNumber} AND wi.type = 'ticket'
+              WHERE wi.id = ${idOrNumber} AND wi.type = 'support_case'
             `
           : sql`
               SELECT
@@ -495,9 +519,9 @@ ticketsRouter.patch("/:idOrNumber", async (req, res, next) => {
                 wi.assignee_id     AS "assigneeId",
                 t.subject, t.description, t.category, t.priority, t.status,
                 t.due_at AS "dueAt", t.remind_at AS "remindAt"
-              FROM ticket t
+              FROM support_case t
               JOIN work_item wi ON wi.id = t.work_item_id
-              WHERE wi.number = ${idOrNumber} AND wi.type = 'ticket'
+              WHERE wi.number = ${idOrNumber} AND wi.type = 'support_case'
             `,
       );
       if (!beforeR.rows[0]) return { kind: "not-found" as const };
@@ -506,20 +530,20 @@ ticketsRouter.patch("/:idOrNumber", async (req, res, next) => {
       const partyId = (before.partyId as string | null) ?? null;
 
       // Build dynamic UPDATE
-      const ticketSets: ReturnType<typeof sql>[] = [];
-      if (b.subject !== undefined)     ticketSets.push(sql`subject = ${String(b.subject).trim()}`);
-      if (b.description !== undefined) ticketSets.push(sql`description = ${b.description ? String(b.description) : null}`);
-      if (b.category !== undefined)    ticketSets.push(sql`category = ${String(b.category)}`);
-      if (b.priority !== undefined)    ticketSets.push(sql`priority = ${Number(b.priority)}`);
-      if (b.status !== undefined)      ticketSets.push(sql`status = ${String(b.status)}`);
-      if (b.dueAt !== undefined)       ticketSets.push(sql`due_at = ${b.dueAt ? new Date(String(b.dueAt)).toISOString() : null}`);
-      if (b.remindAt !== undefined)    ticketSets.push(sql`remind_at = ${b.remindAt ? new Date(String(b.remindAt)).toISOString() : null}`);
+      const caseSets: ReturnType<typeof sql>[] = [];
+      if (b.subject !== undefined)     caseSets.push(sql`subject = ${String(b.subject).trim()}`);
+      if (b.description !== undefined) caseSets.push(sql`description = ${b.description ? String(b.description) : null}`);
+      if (b.category !== undefined)    caseSets.push(sql`category = ${String(b.category)}`);
+      if (b.priority !== undefined)    caseSets.push(sql`priority = ${Number(b.priority)}`);
+      if (b.status !== undefined)      caseSets.push(sql`status = ${String(b.status)}`);
+      if (b.dueAt !== undefined)       caseSets.push(sql`due_at = ${b.dueAt ? new Date(String(b.dueAt)).toISOString() : null}`);
+      if (b.remindAt !== undefined)    caseSets.push(sql`remind_at = ${b.remindAt ? new Date(String(b.remindAt)).toISOString() : null}`);
 
-      if (b.status === "resolved")     ticketSets.push(sql`resolved_at = NOW()`);
+      if (b.status === "resolved")     caseSets.push(sql`resolved_at = NOW()`);
 
-      if (ticketSets.length > 0) {
-        const set = sql.join(ticketSets, sql`, `);
-        await db.execute(sql`UPDATE ticket SET ${set} WHERE work_item_id = ${wiId}`);
+      if (caseSets.length > 0) {
+        const set = sql.join(caseSets, sql`, `);
+        await db.execute(sql`UPDATE support_case SET ${set} WHERE work_item_id = ${wiId}`);
       }
 
       // Assignee change
@@ -607,16 +631,16 @@ ticketsRouter.patch("/:idOrNumber", async (req, res, next) => {
       return { kind: "ok" as const };
     });
 
-    if (result.kind === "not-found") return res.status(404).json({ error: "Ticket not found" });
+    if (result.kind === "not-found") return res.status(404).json({ error: "Case not found" });
     res.json({ ok: true });
   } catch (err) {
     next(err);
   }
 });
 
-// ─── POST /tickets/:idOrNumber/comments — add a comment ───────────────────
+// ─── POST /cases/:idOrNumber/comments — add a comment ─────────────────────
 
-ticketsRouter.post("/:idOrNumber/comments", async (req, res, next) => {
+casesRouter.post("/:idOrNumber/comments", async (req, res, next) => {
   try {
     const { idOrNumber } = req.params;
     const lookupIsUuid = isUuid(idOrNumber);
@@ -626,8 +650,8 @@ ticketsRouter.post("/:idOrNumber/comments", async (req, res, next) => {
     const result = await withTenant(req.tenantId!, async (db) => {
       const r = await db.execute(
         lookupIsUuid
-          ? sql`SELECT id, party_id AS "partyId" FROM work_item WHERE id = ${idOrNumber} AND type = 'ticket'`
-          : sql`SELECT id, party_id AS "partyId" FROM work_item WHERE number = ${idOrNumber} AND type = 'ticket'`,
+          ? sql`SELECT id, party_id AS "partyId" FROM work_item WHERE id = ${idOrNumber} AND type = 'support_case'`
+          : sql`SELECT id, party_id AS "partyId" FROM work_item WHERE number = ${idOrNumber} AND type = 'support_case'`,
       );
       if (!r.rows[0]) return null;
       const wiId = (r.rows[0] as { id: string }).id;
@@ -640,23 +664,23 @@ ticketsRouter.post("/:idOrNumber/comments", async (req, res, next) => {
       `);
       return ins.rows[0] as { id: string };
     });
-    if (!result) return res.status(404).json({ error: "Ticket not found" });
+    if (!result) return res.status(404).json({ error: "Case not found" });
     res.status(201).json({ ok: true, id: result.id });
   } catch (err) {
     next(err);
   }
 });
 
-// ─── POST /tickets/:idOrNumber/close — resolution required ────────────────
+// ─── POST /cases/:idOrNumber/close — resolution required ──────────────────
 
-ticketsRouter.post("/:idOrNumber/close", async (req, res, next) => {
+casesRouter.post("/:idOrNumber/close", async (req, res, next) => {
   try {
     const { idOrNumber } = req.params;
     const lookupIsUuid = isUuid(idOrNumber);
     const resolution = String(req.body?.resolution ?? "").trim();
     const resolutionCode = req.body?.resolutionCode ? String(req.body.resolutionCode) : "fixed";
 
-    if (!resolution) return res.status(400).json({ error: "resolution is required to close a ticket" });
+    if (!resolution) return res.status(400).json({ error: "resolution is required to close a case" });
     if (!RES_CODES.includes(resolutionCode as typeof RES_CODES[number])) {
       return res.status(400).json({ error: "invalid resolutionCode" });
     }
@@ -665,23 +689,23 @@ ticketsRouter.post("/:idOrNumber/close", async (req, res, next) => {
       const r = await db.execute(
         lookupIsUuid
           ? sql`
-              SELECT wi.id, wi.party_id AS "partyId", t.status
-              FROM work_item wi JOIN ticket t ON t.work_item_id = wi.id
-              WHERE wi.id = ${idOrNumber} AND wi.type = 'ticket'
+              SELECT wi.id, wi.number, wi.party_id AS "partyId", t.status, t.subject
+              FROM work_item wi JOIN support_case t ON t.work_item_id = wi.id
+              WHERE wi.id = ${idOrNumber} AND wi.type = 'support_case'
             `
           : sql`
-              SELECT wi.id, wi.party_id AS "partyId", t.status
-              FROM work_item wi JOIN ticket t ON t.work_item_id = wi.id
-              WHERE wi.number = ${idOrNumber} AND wi.type = 'ticket'
+              SELECT wi.id, wi.number, wi.party_id AS "partyId", t.status, t.subject
+              FROM work_item wi JOIN support_case t ON t.work_item_id = wi.id
+              WHERE wi.number = ${idOrNumber} AND wi.type = 'support_case'
             `,
       );
       if (!r.rows[0]) return { kind: "not-found" as const };
-      const row = r.rows[0] as { id: string; partyId: string | null; status: string };
+      const row = r.rows[0] as { id: string; number: string; partyId: string | null; status: string; subject: string };
       if (row.status === "closed") return { kind: "already-closed" as const };
       if (row.status === "cancelled") return { kind: "cancelled" as const };
 
       await db.execute(sql`
-        UPDATE ticket
+        UPDATE support_case
         SET status = 'closed',
             resolution = ${resolution},
             resolution_code = ${resolutionCode},
@@ -701,25 +725,55 @@ ticketsRouter.post("/:idOrNumber/close", async (req, res, next) => {
       // Audit log
       await db.execute(sql`
         INSERT INTO audit_log (tenant_id, actor_type, action, target_type, target_id, context)
-        VALUES (current_tenant(), 'user', 'ticket_closed', 'ticket', ${row.id},
+        VALUES (current_tenant(), 'user', 'case_closed', 'support_case', ${row.id},
                 ${JSON.stringify({ resolutionCode })}::jsonb)
       `);
 
-      return { kind: "ok" as const };
+      // Fetch the closer's name (req.userId set by auth middleware) so the
+      // Slack notification can show who closed it.
+      let closedByName: string | null = null;
+      if (req.userId) {
+        const u = await db.execute(sql`SELECT name FROM app_user WHERE id = ${req.userId}`);
+        closedByName = (u.rows[0] as { name: string } | undefined)?.name ?? null;
+      }
+
+      return {
+        kind: "ok" as const,
+        caseId: row.id,
+        number: row.number,
+        subject: row.subject,
+        closedByName,
+      };
     });
 
-    if (result.kind === "not-found")      return res.status(404).json({ error: "Ticket not found" });
-    if (result.kind === "already-closed") return res.status(409).json({ error: "Ticket is already closed" });
-    if (result.kind === "cancelled")      return res.status(409).json({ error: "Cancelled tickets cannot be closed" });
+    if (result.kind === "not-found")      return res.status(404).json({ error: "Case not found" });
+    if (result.kind === "already-closed") return res.status(409).json({ error: "Case is already closed" });
+    if (result.kind === "cancelled")      return res.status(409).json({ error: "Cancelled cases cannot be closed" });
+
+    // Fire Slack notification post-commit. Never throws.
+    await emitEvent({
+      type: "case.closed",
+      tenantId: req.tenantId!,
+      occurredAt: new Date().toISOString(),
+      context: {
+        caseId: result.caseId,
+        number: result.number,
+        subject: result.subject,
+        resolution,
+        resolutionCode,
+        closedByName: result.closedByName,
+      },
+    });
+
     res.json({ ok: true });
   } catch (err) {
     next(err);
   }
 });
 
-// ─── POST /tickets/:idOrNumber/reopen ─────────────────────────────────────
+// ─── POST /cases/:idOrNumber/reopen ───────────────────────────────────────
 
-ticketsRouter.post("/:idOrNumber/reopen", async (req, res, next) => {
+casesRouter.post("/:idOrNumber/reopen", async (req, res, next) => {
   try {
     const { idOrNumber } = req.params;
     const lookupIsUuid = isUuid(idOrNumber);
@@ -729,13 +783,13 @@ ticketsRouter.post("/:idOrNumber/reopen", async (req, res, next) => {
         lookupIsUuid
           ? sql`
               SELECT wi.id, wi.party_id AS "partyId", t.status
-              FROM work_item wi JOIN ticket t ON t.work_item_id = wi.id
-              WHERE wi.id = ${idOrNumber} AND wi.type = 'ticket'
+              FROM work_item wi JOIN support_case t ON t.work_item_id = wi.id
+              WHERE wi.id = ${idOrNumber} AND wi.type = 'support_case'
             `
           : sql`
               SELECT wi.id, wi.party_id AS "partyId", t.status
-              FROM work_item wi JOIN ticket t ON t.work_item_id = wi.id
-              WHERE wi.number = ${idOrNumber} AND wi.type = 'ticket'
+              FROM work_item wi JOIN support_case t ON t.work_item_id = wi.id
+              WHERE wi.number = ${idOrNumber} AND wi.type = 'support_case'
             `,
       );
       if (!r.rows[0]) return { kind: "not-found" as const };
@@ -745,7 +799,7 @@ ticketsRouter.post("/:idOrNumber/reopen", async (req, res, next) => {
       // We keep `resolution` in place for history — the constraint only fires
       // when status='closed'. Clearing closed_at lets the dashboard re-count it.
       await db.execute(sql`
-        UPDATE ticket
+        UPDATE support_case
         SET status = 'in_progress', closed_at = NULL, resolved_at = NULL
         WHERE work_item_id = ${row.id}
       `);
@@ -761,8 +815,8 @@ ticketsRouter.post("/:idOrNumber/reopen", async (req, res, next) => {
       return { kind: "ok" as const };
     });
 
-    if (result.kind === "not-found")  return res.status(404).json({ error: "Ticket not found" });
-    if (result.kind === "not-closed") return res.status(409).json({ error: "Only closed/resolved tickets can be reopened" });
+    if (result.kind === "not-found")  return res.status(404).json({ error: "Case not found" });
+    if (result.kind === "not-closed") return res.status(409).json({ error: "Only closed/resolved cases can be reopened" });
     res.json({ ok: true });
   } catch (err) {
     next(err);

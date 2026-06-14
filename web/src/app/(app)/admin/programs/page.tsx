@@ -1,10 +1,12 @@
 import { Topbar } from "@/components/shell/Topbar";
 import { Icon } from "@/components/ui/Icon";
 import { getPrograms } from "@/lib/api";
+import { requirePagePermission } from "@/lib/guards";
 import { ProgramsTable } from "@/components/admin/ProgramsTable";
 import Link from "next/link";
 
 export default async function AdminProgramsPage() {
+  await requirePagePermission("admin.programs.manage");
   const programs = await getPrograms();
 
   return (

@@ -24,11 +24,17 @@ pipelineRouter.get("/", async (req, res, next) => {
         SELECT
           wi.id              AS id,
           wi.number          AS number,
+          wi.created_at      AS "createdAt",
           p.name             AS name,
+          p.email            AS email,
+          p.phone            AS phone,
+          p.phone_country_code AS "phoneCountryCode",
           l.initials         AS initials,
           l.city             AS city,
           l.program          AS program,
+          l.program_id       AS "programId",
           l.value            AS value,
+          l.description      AS description,
           l.stage            AS stage,
           l.stage_label      AS "stageLabel",
           l.score            AS score,
@@ -39,10 +45,21 @@ pipelineRouter.get("/", async (req, res, next) => {
           l.nba_label        AS "nbaLabel",
           l.nba_ghost        AS "nbaGhost",
           l.next_followup_at AS "nextFollowupAt",
-          l.demo_attended_at AS "demoAttendedAt"
+          l.demo_attended_at AS "demoAttendedAt",
+          l.delivery_mode    AS "deliveryMode",
+          l.time_zone        AS "timeZone",
+          l.fee_paid         AS "feePaid",
+          l.fee_due          AS "feeDue",
+          l.due_date         AS "dueDate",
+          l.registered_date  AS "registeredDate",
+          l.source           AS source,
+          l.source_label     AS "sourceLabel",
+          l.advisor_id       AS "advisorId",
+          au.name            AS "advisorName"
         FROM lead l
         JOIN work_item wi ON wi.id = l.work_item_id
         JOIN party p      ON p.id  = wi.party_id
+        LEFT JOIN app_user au ON au.id = l.advisor_id
         WHERE EXISTS (
           SELECT 1 FROM party_role pr
           WHERE pr.party_id = p.id AND pr.role = 'lead' AND pr.valid_to IS NULL

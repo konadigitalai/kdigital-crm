@@ -1,10 +1,12 @@
 import { Topbar } from "@/components/shell/Topbar";
 import { Icon } from "@/components/ui/Icon";
 import { getClients, getGroups, getUsers } from "@/lib/api";
+import { requirePagePermission } from "@/lib/guards";
 import { UsersTable } from "@/components/admin/UsersTable";
 import Link from "next/link";
 
 export default async function AdminUsersPage() {
+  await requirePagePermission("users.manage");
   const [users, groupsResp, clients] = await Promise.all([getUsers(), getGroups(), getClients()]);
   // Show every client to the admin form so a user can be re-attached to a
   // currently-inactive client too. The filtering for "what shows up in the
@@ -49,7 +51,12 @@ export default async function AdminUsersPage() {
           </div>
         </div>
 
-        <UsersTable initial={users} groups={groupsResp.groups} clients={allClients} />
+        <UsersTable
+          initial={users}
+          groups={groupsResp.groups}
+          clients={allClients}
+          modules={groupsResp.modules}
+        />
       </div>
     </>
   );

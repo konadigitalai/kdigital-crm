@@ -1,6 +1,7 @@
 import { Topbar } from "@/components/shell/Topbar";
 import { Icon } from "@/components/ui/Icon";
-import { getPipeline, getSummary } from "@/lib/api";
+import { getCatalog, getCurrentUser, getPipeline, getSavedViews, getSummary } from "@/lib/api";
+import { requirePagePermission } from "@/lib/guards";
 import { NewLeadButton } from "@/components/leads/NewLeadDialog";
 import { PipelineBoard } from "@/components/pipeline/PipelineBoard";
 
@@ -13,7 +14,17 @@ function formatINR(n: number): string {
 }
 
 export default async function PipelinePage() {
-  const [grouped, summary] = await Promise.all([getPipeline(), getSummary()]);
+  await requirePagePermission("pipeline.read");
+  const [grouped, summary, me, catalog, views] = await Promise.all([
+    getPipeline(),
+    getSummary(),
+    getCurrentUser(),
+    getCatalog(),
+    getSavedViews("pipeline_list"),
+  ]);
+  const canWriteLead = me?.permissions.includes("leads.write") ?? false;
+  const canDeleteLead = me?.permissions.includes("leads.delete") ?? false;
+  const canWritePipeline = me?.permissions.includes("pipeline.write") ?? false;
   const totalLeads = summary.overall.total;
   const openValue = summary.byStage.reduce((sum, s) => sum + Number(s.deal_value_sum ?? 0), 0);
   const openValueFromColumns = grouped.reduce((sum, c) => {
@@ -46,11 +57,19 @@ export default async function PipelinePage() {
             </p>
           </div>
           <div className="flex gap-2.5">
-            <NewLeadButton label="New lead" />
+            {canWriteLead && <NewLeadButton label="New lead" />}
           </div>
         </div>
 
-        <PipelineBoard columns={grouped} />
+        <PipelineBoard
+          columns={grouped}
+          canWrite={canWritePipeline}
+          canCreateLeads={canWriteLead}
+          canDeleteLeads={canDeleteLead}
+          catalog={catalog}
+          initialViews={views}
+          currentUser={me}
+        />
       </div>
     </>
   );
