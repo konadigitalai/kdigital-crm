@@ -1,35 +1,53 @@
--- Phase G: Time tracking, leaves, clients, calendar, in-app invites.
--- 7 new tables + RLS + grants + permission backfill for existing tenants.
+-- Phase G: Time tracking, leaves, calendar, in-app invites.
+-- (The client domain originally lived here too; dropped in post-0033. The
+-- client section below is gated on the post-0033 marker so re-running the
+-- migration set on a dropped DB doesn't resurrect what we just removed.)
+--
 -- Idempotent — safe to re-run.
 
--- ── Clients ──────────────────────────────────────────────────────────────
-CREATE TABLE IF NOT EXISTS "client" (
-  "id"          uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  "tenant_id"   uuid NOT NULL,
-  "name"        text NOT NULL,
-  "code"        text,
-  "description" text,
-  "active"      boolean NOT NULL DEFAULT true,
-  "created_at"  timestamp with time zone NOT NULL DEFAULT now()
+-- Marker table for one-time migrations. Owned by post-0026 originally; we
+-- ensure-create here so post-0033's marker check works even if the order
+-- gets shuffled.
+CREATE TABLE IF NOT EXISTS "_decrm_one_time_migration" (
+  key text PRIMARY KEY,
+  applied_at timestamp with time zone NOT NULL DEFAULT now()
 );
-DO $$ BEGIN
+
+-- ── Clients (creates only if post-0033 hasn't dropped them) ──────────────
+DO $$
+DECLARE clients_dropped boolean;
+BEGIN
+  SELECT EXISTS (
+    SELECT 1 FROM "_decrm_one_time_migration" WHERE key = 'clients_dropped'
+  ) INTO clients_dropped;
+  IF clients_dropped THEN
+    -- Nothing to do — post-0033 has run.
+    RETURN;
+  END IF;
+
+  CREATE TABLE IF NOT EXISTS "client" (
+    "id"          uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    "tenant_id"   uuid NOT NULL,
+    "name"        text NOT NULL,
+    "code"        text,
+    "description" text,
+    "active"      boolean NOT NULL DEFAULT true,
+    "created_at"  timestamp with time zone NOT NULL DEFAULT now()
+  );
   IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'client_tenant_fk') THEN
     ALTER TABLE "client" ADD CONSTRAINT "client_tenant_fk"
       FOREIGN KEY ("tenant_id") REFERENCES "tenant"("id");
   END IF;
-END $$;
-CREATE UNIQUE INDEX IF NOT EXISTS "client_tenant_name_key"
-  ON "client" ("tenant_id", lower("name"));
+  CREATE UNIQUE INDEX IF NOT EXISTS "client_tenant_name_key"
+    ON "client" ("tenant_id", lower("name"));
 
--- ── Client ↔ user assignments ────────────────────────────────────────────
-CREATE TABLE IF NOT EXISTS "client_assignment" (
-  "id"        uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  "tenant_id" uuid NOT NULL,
-  "client_id" uuid NOT NULL,
-  "user_id"   uuid NOT NULL,
-  "added_at"  timestamp with time zone NOT NULL DEFAULT now()
-);
-DO $$ BEGIN
+  CREATE TABLE IF NOT EXISTS "client_assignment" (
+    "id"        uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    "tenant_id" uuid NOT NULL,
+    "client_id" uuid NOT NULL,
+    "user_id"   uuid NOT NULL,
+    "added_at"  timestamp with time zone NOT NULL DEFAULT now()
+  );
   IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'client_assignment_tenant_fk') THEN
     ALTER TABLE "client_assignment" ADD CONSTRAINT "client_assignment_tenant_fk"
       FOREIGN KEY ("tenant_id") REFERENCES "tenant"("id");
@@ -42,11 +60,11 @@ DO $$ BEGIN
     ALTER TABLE "client_assignment" ADD CONSTRAINT "client_assignment_user_fk"
       FOREIGN KEY ("user_id") REFERENCES "app_user"("id") ON DELETE CASCADE;
   END IF;
+  CREATE UNIQUE INDEX IF NOT EXISTS "client_assignment_pk"
+    ON "client_assignment" ("client_id", "user_id");
+  CREATE INDEX IF NOT EXISTS "client_assignment_user_idx"
+    ON "client_assignment" ("tenant_id", "user_id");
 END $$;
-CREATE UNIQUE INDEX IF NOT EXISTS "client_assignment_pk"
-  ON "client_assignment" ("client_id", "user_id");
-CREATE INDEX IF NOT EXISTS "client_assignment_user_idx"
-  ON "client_assignment" ("tenant_id", "user_id");
 
 -- ── Work sessions (clock-in / clock-out) ─────────────────────────────────
 CREATE TABLE IF NOT EXISTS "work_session" (
@@ -100,7 +118,15 @@ DO $$ BEGIN
     ALTER TABLE "time_block" ADD CONSTRAINT "time_block_session_fk"
       FOREIGN KEY ("session_id") REFERENCES "work_session"("id") ON DELETE CASCADE;
   END IF;
-  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'time_block_client_fk') THEN
+  -- The client domain was removed in post-0033 (column + table). Only add
+  -- the FK if both the column and the referenced table still exist; on a
+  -- post-0033 DB this branch is skipped so re-running the migration set
+  -- doesn't fail with "column does not exist".
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'time_block_client_fk')
+     AND EXISTS (SELECT 1 FROM information_schema.columns
+                 WHERE table_name = 'time_block' AND column_name = 'client_id')
+     AND EXISTS (SELECT 1 FROM information_schema.tables
+                 WHERE table_name = 'client') THEN
     ALTER TABLE "time_block" ADD CONSTRAINT "time_block_client_fk"
       FOREIGN KEY ("client_id") REFERENCES "client"("id");
   END IF;
@@ -111,8 +137,15 @@ DO $$ BEGIN
 END $$;
 CREATE INDEX IF NOT EXISTS "time_block_user_date_idx"
   ON "time_block" ("tenant_id", "user_id", "date");
-CREATE INDEX IF NOT EXISTS "time_block_client_idx"
-  ON "time_block" ("tenant_id", "client_id", "date");
+-- Same client-column guard as the FK above: only create the index if the
+-- column still exists. post-0033 drops it, after which this is skipped.
+DO $$ BEGIN
+  IF EXISTS (SELECT 1 FROM information_schema.columns
+             WHERE table_name = 'time_block' AND column_name = 'client_id') THEN
+    EXECUTE 'CREATE INDEX IF NOT EXISTS "time_block_client_idx"
+             ON "time_block" ("tenant_id", "client_id", "date")';
+  END IF;
+END $$;
 
 -- ── Leaves ───────────────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS "leave_day" (
@@ -206,13 +239,22 @@ CREATE INDEX IF NOT EXISTS "calendar_invitee_user_idx"
   ON "calendar_invitee" ("user_id", "rsvp");
 
 -- ── RLS — same pattern as previous migrations ────────────────────────────
+-- Skip 'client' / 'client_assignment' if they no longer exist (post-0033).
 DO $$
 DECLARE t text;
-  tables text[] := ARRAY[
-    'client','client_assignment','work_session','time_block',
-    'leave_day','calendar_event'
+  base text[] := ARRAY[
+    'work_session','time_block','leave_day','calendar_event'
   ];
+  tables text[];
 BEGIN
+  tables := base;
+  IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'client') THEN
+    tables := array_append(tables, 'client');
+  END IF;
+  IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'client_assignment') THEN
+    tables := array_append(tables, 'client_assignment');
+  END IF;
+
   FOREACH t IN ARRAY tables LOOP
     EXECUTE format('ALTER TABLE %I ENABLE ROW LEVEL SECURITY', t);
     EXECUTE format('ALTER TABLE %I FORCE ROW LEVEL SECURITY', t);
@@ -242,19 +284,30 @@ CREATE POLICY "calendar_invitee_isolation" ON "calendar_invitee"
 
 -- ── Grants for the app role ──────────────────────────────────────────────
 GRANT SELECT, INSERT, UPDATE, DELETE ON
-  "client", "client_assignment", "work_session", "time_block",
+  "work_session", "time_block",
   "leave_day", "calendar_event", "calendar_invitee"
 TO decrm_app;
+-- Client GRANTs only when the tables still exist (pre-0033). The client
+-- domain was removed in post-0033; on a dropped DB this skips silently.
+DO $$ BEGIN
+  IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'client') THEN
+    EXECUTE 'GRANT SELECT, INSERT, UPDATE, DELETE ON "client" TO decrm_app';
+  END IF;
+  IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'client_assignment') THEN
+    EXECUTE 'GRANT SELECT, INSERT, UPDATE, DELETE ON "client_assignment" TO decrm_app';
+  END IF;
+END $$;
 
 -- ── Permission backfill for existing tenants ────────────────────────────
--- Administrators groups get all 4 new permissions.
+-- Administrators groups get all the new permissions. (clients.manage was
+-- dropped in post-0033 — don't reseed it; post-0033's DELETE would just
+-- strip it again on re-run.)
 INSERT INTO user_group_permission (group_id, permission)
 SELECT g.id, p.perm
 FROM user_group g
 CROSS JOIN (VALUES
   ('timesheets.read.self'),
   ('timesheets.read.all'),
-  ('clients.manage'),
   ('events.manage.self')
 ) AS p(perm)
 WHERE g.name = 'Administrators'

@@ -33,3 +33,15 @@ DROP TABLE IF EXISTS "client" CASCADE;
 --    was granted to. The string is no longer in the API's catalog so
 --    leaving it would be dead data.
 DELETE FROM user_group_permission WHERE permission = 'clients.manage';
+
+-- 5. Mark the drop so older migrations (post-0020) know to skip their
+--    client-related blocks on subsequent re-runs. Without this marker the
+--    next `db:migrate` would resurrect the client tables (CREATE TABLE
+--    IF NOT EXISTS finds them missing) and re-seed `clients.manage`.
+CREATE TABLE IF NOT EXISTS "_decrm_one_time_migration" (
+  key text PRIMARY KEY,
+  applied_at timestamp with time zone NOT NULL DEFAULT now()
+);
+INSERT INTO "_decrm_one_time_migration" (key)
+VALUES ('clients_dropped')
+ON CONFLICT DO NOTHING;
