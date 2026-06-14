@@ -32,7 +32,6 @@ export const PERMISSIONS = [
 
   "timesheets.read.self",
   "timesheets.read.all",
-  "clients.manage",
   "events.manage.self",
 
   "integrations.read",
@@ -127,14 +126,6 @@ export const MODULE_CATALOG: ModuleAccess[] = [
     description: "Cross-module reporting (admin reports page).",
     levels: [
       { key: "read", label: "Read", permission: "reports.read" },
-    ],
-  },
-  {
-    key: "clients",
-    label: "Clients",
-    description: "Client master data + assignment to employees.",
-    levels: [
-      { key: "manage", label: "Manage", permission: "clients.manage" },
     ],
   },
   {

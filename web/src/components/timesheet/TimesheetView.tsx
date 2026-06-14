@@ -3,7 +3,7 @@
 // Free-form timesheet viewer. Owns:
 //   - anchor date + scope (day / week / month) — toolbar with ‹ › Today + a
 //     mini calendar popover so you can jump to any date.
-//   - filters (client multi-select + free-text note search).
+//   - filter (free-text note search).
 //   - block list with inline Edit per row.
 //   - "+ Add block" dialog that, on a 409 overlap, lets the user inline-edit
 //     the conflicting block and re-submits the original block automatically.
@@ -24,11 +24,10 @@ import {
   getTimesheetRange,
   patchTimeBlock,
 } from "@/lib/api";
-import type { Client, LeaveDay, LeaveKind, TimeBlock, TimeBlockConflict } from "@/lib/types";
+import type { LeaveDay, LeaveKind, TimeBlock, TimeBlockConflict } from "@/lib/types";
 
 interface Props {
   initialWeek: { sessions: unknown[]; blocks: TimeBlock[]; leaves: LeaveDay[] };
-  myClients: Client[];
   weekDates: string[];
   todayISO: string;
 }
@@ -117,7 +116,7 @@ function rangeFor(scope: Scope, anchor: string): { from: string; to: string; dat
 }
 
 // ── component ────────────────────────────────────────────────────────────
-export function TimesheetView({ initialWeek, myClients, weekDates, todayISO }: Props) {
+export function TimesheetView({ initialWeek, weekDates, todayISO }: Props) {
   const router = useRouter();
 
   // Navigation state. Default = today, Day view.
@@ -134,8 +133,7 @@ export function TimesheetView({ initialWeek, myClients, weekDates, todayISO }: P
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // Filters.
-  const [pickedClients, setPickedClients] = useState<Set<string>>(new Set());
+  // Filter.
   const [noteQuery, setNoteQuery] = useState("");
 
   // Dialog state. Single dialog used for create + edit + conflict resolution.
@@ -190,12 +188,9 @@ export function TimesheetView({ initialWeek, myClients, weekDates, todayISO }: P
   );
   const filteredBlocks = useMemo(() => {
     const q = noteQuery.trim().toLowerCase();
-    return blocksInScope
-      .filter((b) => pickedClients.size === 0 || (b.clientId && pickedClients.has(b.clientId)))
-      .filter((b) =>
-        !q || (b.note ?? "").toLowerCase().includes(q) || (b.clientName ?? "").toLowerCase().includes(q),
-      );
-  }, [blocksInScope, pickedClients, noteQuery]);
+    if (!q) return blocksInScope;
+    return blocksInScope.filter((b) => (b.note ?? "").toLowerCase().includes(q));
+  }, [blocksInScope, noteQuery]);
 
   const groupedBlocks = useMemo(() => {
     const m = new Map<string, TimeBlock[]>();
@@ -211,17 +206,6 @@ export function TimesheetView({ initialWeek, myClients, weekDates, todayISO }: P
     () => filteredBlocks.reduce((s, b) => s + durMins(b.startAt, b.endAt), 0),
     [filteredBlocks],
   );
-
-  const clientCounts = useMemo(() => {
-    const m = new Map<string, { name: string; mins: number }>();
-    for (const b of blocksInScope) {
-      if (!b.clientId) continue;
-      const cur = m.get(b.clientId) ?? { name: b.clientName ?? "—", mins: 0 };
-      cur.mins += durMins(b.startAt, b.endAt);
-      m.set(b.clientId, cur);
-    }
-    return m;
-  }, [blocksInScope]);
 
   const blocksByDay = useMemo(() => {
     const m = new Map<string, TimeBlock[]>();
@@ -255,18 +239,8 @@ export function TimesheetView({ initialWeek, myClients, weekDates, todayISO }: P
   function goToday() { setAnchor(todayISO); }
 
   // ── Filter helpers ──────────────────────────────────────────────────────
-  function toggleClient(id: string) {
-    setPickedClients((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id); else next.add(id);
-      return next;
-    });
-  }
-  function clearFilters() {
-    setPickedClients(new Set());
-    setNoteQuery("");
-  }
-  const filtersDirty = pickedClients.size > 0 || noteQuery.trim().length > 0;
+  function clearFilters() { setNoteQuery(""); }
+  const filtersDirty = noteQuery.trim().length > 0;
 
   // ── Dialog helpers ──────────────────────────────────────────────────────
   function defaultSlotFor(date: string): { start: string; end: string } {
@@ -289,7 +263,7 @@ export function TimesheetView({ initialWeek, myClients, weekDates, todayISO }: P
     setDialog({ kind: "edit", block: b });
   }
 
-  async function onAddSubmit(form: { startAt: string; endAt: string; clientId: string; note: string | null }) {
+  async function onAddSubmit(form: { startAt: string; endAt: string; note: string | null }) {
     try {
       await addTimeBlock(form);
       setDialog(null);
@@ -302,7 +276,7 @@ export function TimesheetView({ initialWeek, myClients, weekDates, todayISO }: P
       return { ok: false as const };
     }
   }
-  async function onEditSubmit(blockId: string, patch: { startAt?: string; endAt?: string; clientId?: string | null; note?: string | null }) {
+  async function onEditSubmit(blockId: string, patch: { startAt?: string; endAt?: string; note?: string | null }) {
     try {
       await patchTimeBlock(blockId, patch);
       setDialog(null);
@@ -422,7 +396,7 @@ export function TimesheetView({ initialWeek, myClients, weekDates, todayISO }: P
           <input
             value={noteQuery}
             onChange={(e) => setNoteQuery(e.target.value)}
-            placeholder="Search notes / clients…"
+            placeholder="Search notes…"
             className="w-[220px] rounded-[10px] border border-rule bg-paper px-3 py-1.5 text-[12.5px] text-ink placeholder:text-hint focus:border-brand-violet focus:outline-none focus:ring-2 focus:ring-brand-violet/20"
           />
 
@@ -457,34 +431,6 @@ export function TimesheetView({ initialWeek, myClients, weekDates, todayISO }: P
             block{filteredBlocks.length === 1 ? "" : "s"} ·{" "}
             <b className="font-mono font-semibold text-ink2">{fmtDur(filteredTotalMins)}</b>
           </span>
-          {clientCounts.size > 0 && (
-            <>
-              <span className="text-mute">·</span>
-              <span className="mono-cap text-[9.5px] font-semibold tracking-[.12em] text-mute">Client</span>
-              {Array.from(clientCounts.entries())
-                .sort(([, a], [, b]) => b.mins - a.mins)
-                .map(([cid, info]) => {
-                  const on = pickedClients.has(cid);
-                  return (
-                    <button
-                      key={cid}
-                      onClick={() => toggleClient(cid)}
-                      className={cn(
-                        "inline-flex items-center gap-1.5 rounded-full border px-2.5 py-0.5 text-[11.5px] font-semibold transition",
-                        on
-                          ? "border-brand-violet bg-brand-violet text-white"
-                          : "border-rule bg-paper text-ink2 hover:border-brand-violet hover:text-brand-violet",
-                      )}
-                    >
-                      {info.name}
-                      <span className={cn("font-mono text-[10px]", on ? "opacity-80" : "text-mute")}>
-                        {fmtDur(info.mins)}
-                      </span>
-                    </button>
-                  );
-                })}
-            </>
-          )}
           {filtersDirty && (
             <button onClick={clearFilters} className="ml-1 text-[11px] font-semibold text-mute hover:text-state-warn">
               Clear filters
@@ -499,7 +445,6 @@ export function TimesheetView({ initialWeek, myClients, weekDates, todayISO }: P
             todayISO={todayISO}
             blocksByDay={blocksByDay}
             leavesByDay={leavesByDay}
-            pickedClients={pickedClients}
             noteQuery={noteQuery}
             onPickDay={(iso) => { setAnchor(iso); setScope("day"); }}
             onAddOnDay={openAddDialog}
@@ -591,7 +536,6 @@ export function TimesheetView({ initialWeek, myClients, weekDates, todayISO }: P
       {dialog?.kind === "create" && (
         <BlockDialog
           mode={{ kind: "create" }}
-          clients={myClients}
           defaultStart={dialog.defaultStart}
           defaultEnd={dialog.defaultEnd}
           onClose={() => { setDialog(null); setError(null); }}
@@ -603,7 +547,6 @@ export function TimesheetView({ initialWeek, myClients, weekDates, todayISO }: P
       {dialog?.kind === "edit" && (
         <BlockDialog
           mode={{ kind: "edit", block: dialog.block }}
-          clients={myClients}
           defaultStart={isoToLocalIST(dialog.block.startAt)}
           defaultEnd={isoToLocalIST(dialog.block.endAt)}
           onClose={() => { setDialog(null); setError(null); }}
@@ -653,22 +596,10 @@ function BlockRow({
   const mins = durMins(block.startAt, block.endAt);
   return (
     <div className="grid items-center gap-3 px-5 py-3"
-         style={{ gridTemplateColumns: "120px 240px 1fr 160px" }}>
+         style={{ gridTemplateColumns: "120px 1fr 160px" }}>
       <span className="font-mono text-[12.5px] tracking-tight text-ink">
         {timeIST(block.startAt)}–{timeIST(block.endAt)}
       </span>
-      {block.clientId ? (
-        <span className="truncate text-[12.5px] font-semibold text-ink">
-          {block.clientName ?? "—"}
-        </span>
-      ) : (
-        <span
-          title="This block has no client — Edit to set one."
-          className="mono-cap inline-flex w-fit rounded-full bg-state-warn/10 px-2 py-0.5 text-[10px] font-semibold tracking-[.04em] text-state-warn"
-        >
-          No client
-        </span>
-      )}
       <span className={cn("truncate text-[12.5px]", block.note ? "text-ink2" : "text-hint")}>
         {block.note || "—"}
       </span>
@@ -693,13 +624,12 @@ function BlockRow({
 // ── MonthBody — calendar-grid view ────────────────────────────────────────
 function MonthBody({
   anchor, todayISO, blocksByDay, leavesByDay,
-  pickedClients, noteQuery, onPickDay, onAddOnDay,
+  noteQuery, onPickDay, onAddOnDay,
 }: {
   anchor: string;
   todayISO: string;
   blocksByDay: Map<string, TimeBlock[]>;
   leavesByDay: Map<string, LeaveDay>;
-  pickedClients: Set<string>;
   noteQuery: string;
   onPickDay: (iso: string) => void;
   onAddOnDay: (iso: string) => void;
@@ -710,10 +640,8 @@ function MonthBody({
   function visibleBlocksOn(iso: string): TimeBlock[] {
     const all = blocksByDay.get(iso) ?? [];
     const q = noteQuery.trim().toLowerCase();
-    return all.filter((b) =>
-      (pickedClients.size === 0 || (b.clientId && pickedClients.has(b.clientId))) &&
-      (!q || (b.note ?? "").toLowerCase().includes(q) || (b.clientName ?? "").toLowerCase().includes(q)),
-    );
+    if (!q) return all;
+    return all.filter((b) => (b.note ?? "").toLowerCase().includes(q));
   }
 
   return (
@@ -773,13 +701,10 @@ function MonthBody({
                   <button
                     key={b.id}
                     onClick={() => onPickDay(iso)}
-                    title={`${timeIST(b.startAt)}–${timeIST(b.endAt)} ${b.clientName ?? "(no client)"}`}
-                    className={cn(
-                      "block w-full truncate rounded px-1.5 py-0.5 text-left text-[10px] font-semibold",
-                      b.clientId ? "bg-brand-violet/10 text-brand-violet" : "bg-state-warn/10 text-state-warn",
-                    )}
+                    title={`${timeIST(b.startAt)}–${timeIST(b.endAt)} ${b.note ?? ""}`}
+                    className="block w-full truncate rounded bg-brand-violet/10 px-1.5 py-0.5 text-left text-[10px] font-semibold text-brand-violet"
                   >
-                    {timeIST(b.startAt)} {b.clientName ?? "(no client)"}
+                    {timeIST(b.startAt)} {b.note ?? ""}
                   </button>
                 ))}
                 {dayBlocks.length > 3 && (
@@ -894,27 +819,24 @@ type BlockDialogMode =
   | { kind: "edit"; block: TimeBlock };
 
 function BlockDialog({
-  mode, clients, defaultStart, defaultEnd,
+  mode, defaultStart, defaultEnd,
   onClose, onAddSubmit, onEditSubmit, refreshAfterEdit,
 }: {
   mode: BlockDialogMode;
-  clients: Client[];
   defaultStart: string;
   defaultEnd: string;
   onClose: () => void;
-  onAddSubmit: (form: { startAt: string; endAt: string; clientId: string; note: string | null }) =>
+  onAddSubmit: (form: { startAt: string; endAt: string; note: string | null }) =>
     Promise<{ ok: true } | { ok: false; conflict?: TimeBlockConflict; message?: string }>;
-  onEditSubmit: (id: string, patch: { startAt?: string; endAt?: string; clientId?: string | null; note?: string | null }) =>
+  onEditSubmit: (id: string, patch: { startAt?: string; endAt?: string; note?: string | null }) =>
     Promise<{ ok: true } | { ok: false; conflict?: TimeBlockConflict; message?: string }>;
   refreshAfterEdit: () => Promise<void>;
 }) {
   const isEdit = mode.kind === "edit";
-  const initialClient = isEdit ? (mode.block.clientId ?? "") : "";
   const initialNote = isEdit ? (mode.block.note ?? "") : "";
 
   const [start, setStart] = useState(defaultStart);
   const [end, setEnd] = useState(defaultEnd);
-  const [clientId, setClientId] = useState<string>(initialClient);
   const [note, setNote] = useState(initialNote);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -930,14 +852,13 @@ function BlockDialog({
   async function submit(e: React.FormEvent) {
     e.preventDefault();
     setErr(null);
-    if (!clientId) { setErr("Pick a client for this block."); return; }
     const startISO = localISTToISO(start);
     const endISO = localISTToISO(end);
     if (new Date(endISO) <= new Date(startISO)) { setErr("End must be after start."); return; }
     setBusy(true);
     const out = isEdit
-      ? await onEditSubmit(mode.block.id, { startAt: startISO, endAt: endISO, clientId, note: note.trim() || null })
-      : await onAddSubmit({ startAt: startISO, endAt: endISO, clientId, note: note.trim() || null });
+      ? await onEditSubmit(mode.block.id, { startAt: startISO, endAt: endISO, note: note.trim() || null })
+      : await onAddSubmit({ startAt: startISO, endAt: endISO, note: note.trim() || null });
     setBusy(false);
     if (!out.ok) {
       if (out.conflict) {
@@ -959,8 +880,8 @@ function BlockDialog({
     const startISO = localISTToISO(start);
     const endISO = localISTToISO(end);
     const out = isEdit
-      ? await onEditSubmit(mode.block.id, { startAt: startISO, endAt: endISO, clientId, note: note.trim() || null })
-      : await onAddSubmit({ startAt: startISO, endAt: endISO, clientId, note: note.trim() || null });
+      ? await onEditSubmit(mode.block.id, { startAt: startISO, endAt: endISO, note: note.trim() || null })
+      : await onAddSubmit({ startAt: startISO, endAt: endISO, note: note.trim() || null });
     setBusy(false);
     if (!out.ok) {
       if (out.conflict) setConflict(out.conflict);
@@ -989,24 +910,6 @@ function BlockDialog({
               <input type="datetime-local" value={end} onChange={(e) => setEnd(e.target.value)} className={inputCls} />
             </Field>
           </div>
-          <Field label="Client" required>
-            <select
-              value={clientId}
-              onChange={(e) => setClientId(e.target.value)}
-              required
-              className={cn(inputCls, !clientId && "border-state-warn/60 ring-1 ring-state-warn/30")}
-            >
-              <option value="">— pick a client —</option>
-              {clients.map((c) => (
-                <option key={c.id} value={c.id}>{c.name}{c.code ? ` · ${c.code}` : ""}</option>
-              ))}
-            </select>
-            {clients.length === 0 && (
-              <span className="mt-1 block text-[11px] text-state-warn">
-                No clients assigned to you yet — ask your admin to assign clients before logging time.
-              </span>
-            )}
-          </Field>
           <Field label="Note">
             <textarea
               value={note}
@@ -1023,7 +926,6 @@ function BlockDialog({
           {conflict && (
             <ConflictPane
               conflict={conflict}
-              clients={clients}
               onShrunkOrDeleted={onConflictResolved}
               onPatch={async (patch) => {
                 const out = await onEditSubmit(conflict.id, patch);
@@ -1046,7 +948,7 @@ function BlockDialog({
             <button type="button" onClick={onClose} className="btn">Cancel</button>
             <button
               type="submit"
-              disabled={busy || !clientId || conflict !== null}
+              disabled={busy || conflict !== null}
               title={conflict ? "Resolve the conflict above first." : undefined}
               className="btn-grad disabled:opacity-60"
             >
@@ -1064,17 +966,15 @@ function BlockDialog({
 // can shrink or delete it; either action will refetch and auto-retry the
 // outer dialog's submit.
 function ConflictPane({
-  conflict, clients, onShrunkOrDeleted, onPatch, onDelete,
+  conflict, onShrunkOrDeleted, onPatch, onDelete,
 }: {
   conflict: TimeBlockConflict;
-  clients: Client[];
   onShrunkOrDeleted: () => void;
-  onPatch: (patch: { startAt?: string; endAt?: string; clientId?: string | null; note?: string | null }) => Promise<boolean>;
+  onPatch: (patch: { startAt?: string; endAt?: string; note?: string | null }) => Promise<boolean>;
   onDelete: () => Promise<boolean>;
 }) {
   const [start, setStart] = useState(isoToLocalIST(conflict.startAt));
   const [end, setEnd] = useState(isoToLocalIST(conflict.endAt));
-  const [clientId, setClientId] = useState(conflict.clientId ?? "");
   const [note, setNote] = useState(conflict.note ?? "");
   const [busy, setBusy] = useState(false);
 
@@ -1083,7 +983,6 @@ function ConflictPane({
     const ok = await onPatch({
       startAt: localISTToISO(start),
       endAt: localISTToISO(end),
-      clientId: clientId || null,
       note: note.trim() || null,
     });
     setBusy(false);
@@ -1106,8 +1005,6 @@ function ConflictPane({
         <span className="font-mono text-[11px] text-state-warn">
           {timeIST(conflict.startAt)}–{timeIST(conflict.endAt)}
         </span>
-        <span className="text-[11px] text-mute">·</span>
-        <span className="text-[11px] text-ink2">{conflict.clientName ?? "(no client)"}</span>
         {conflict.note && <span className="truncate text-[11px] text-mute">· {conflict.note}</span>}
       </div>
       <div className="grid grid-cols-2 gap-2">
@@ -1118,15 +1015,7 @@ function ConflictPane({
           <input type="datetime-local" value={end} onChange={(e) => setEnd(e.target.value)} className={inputCls} />
         </Field>
       </div>
-      <div className="mt-2 grid grid-cols-2 gap-2">
-        <Field label="Client">
-          <select value={clientId} onChange={(e) => setClientId(e.target.value)} className={inputCls}>
-            <option value="">— none —</option>
-            {clients.map((c) => (
-              <option key={c.id} value={c.id}>{c.name}{c.code ? ` · ${c.code}` : ""}</option>
-            ))}
-          </select>
-        </Field>
+      <div className="mt-2">
         <Field label="Note">
           <input value={note} onChange={(e) => setNote(e.target.value)} className={inputCls} placeholder="Note" />
         </Field>

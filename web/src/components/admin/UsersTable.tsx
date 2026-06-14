@@ -11,7 +11,7 @@ import {
   resetUserPassword,
   updateUser,
 } from "@/lib/api";
-import type { AdminUser, Client, ModuleAccess, UserGroupSummary } from "@/lib/types";
+import type { AdminUser, ModuleAccess, UserGroupSummary } from "@/lib/types";
 
 const ROLES = ["admin", "advisor", "service_rep", "readonly"] as const;
 
@@ -24,12 +24,10 @@ type Mode =
 export function UsersTable({
   initial,
   groups,
-  clients,
   modules,
 }: {
   initial: AdminUser[];
   groups: UserGroupSummary[];
-  clients: Client[];
   modules: ModuleAccess[];
 }) {
   const router = useRouter();
@@ -44,12 +42,6 @@ export function UsersTable({
     return m;
   }, [groups]);
 
-  const clientsById = useMemo(() => {
-    const m = new Map<string, Client>();
-    clients.forEach((c) => m.set(c.id, c));
-    return m;
-  }, [clients]);
-
   function reload() { router.refresh(); }
 
   async function onCreate(input: {
@@ -58,7 +50,6 @@ export function UsersTable({
     role: string;
     password: string;
     groupIds: string[];
-    clientIds: string[];
   }) {
     setBusy("create");
     setError(null);
@@ -69,18 +60,13 @@ export function UsersTable({
         role: input.role,
         password: input.password || undefined,
         groupIds: input.groupIds,
-        clientIds: input.clientIds,
       });
-      // Server returns minimal user shape; fold groups + clients locally so the
-      // row renders without a refetch.
+      // Server returns minimal user shape; fold groups locally so the row
+      // renders without a refetch.
       const fullGroups = input.groupIds
         .map((id) => groupsById.get(id))
         .filter((g): g is UserGroupSummary => Boolean(g))
         .map((g) => ({ id: g.id, name: g.name }));
-      const fullClients = input.clientIds
-        .map((id) => clientsById.get(id))
-        .filter((c): c is Client => Boolean(c))
-        .map((c) => ({ id: c.id, name: c.name, active: c.active }));
       setUsers((all) => [
         ...all,
         {
@@ -91,7 +77,6 @@ export function UsersTable({
           active: true,
           has_password: !!input.password,
           groups: fullGroups,
-          clients: fullClients,
         } as AdminUser,
       ]);
       setMode({ kind: "idle" });
@@ -103,7 +88,7 @@ export function UsersTable({
     }
   }
 
-  async function onUpdate(u: AdminUser, patch: { name?: string; role?: string; groupIds: string[]; clientIds: string[] }) {
+  async function onUpdate(u: AdminUser, patch: { name?: string; role?: string; groupIds: string[] }) {
     setBusy(u.id);
     setError(null);
     try {
@@ -118,10 +103,6 @@ export function UsersTable({
                   .map((id) => groupsById.get(id))
                   .filter((g): g is UserGroupSummary => Boolean(g))
                   .map((g) => ({ id: g.id, name: g.name })),
-                clients: patch.clientIds
-                  .map((id) => clientsById.get(id))
-                  .filter((c): c is Client => Boolean(c))
-                  .map((c) => ({ id: c.id, name: c.name, active: c.active })),
               }
             : x,
         ),
@@ -182,7 +163,6 @@ export function UsersTable({
           <div>User</div>
           <div>Role</div>
           <div>Groups</div>
-          <div>Clients</div>
           <div className="text-center">Password</div>
           <div className="text-right">Actions</div>
         </Row>
@@ -218,29 +198,6 @@ export function UsersTable({
                       {g.name}
                     </span>
                   ))
-                )}
-              </div>
-              <div className="flex flex-wrap gap-1">
-                {u.clients.length === 0 ? (
-                  <span className="text-[12px] text-mute">—</span>
-                ) : (
-                  u.clients.slice(0, 3).map((c) => (
-                    <span
-                      key={c.id}
-                      title={c.active ? c.name : `${c.name} (inactive)`}
-                      className={cn(
-                        "rounded-full px-2 py-0.5 font-mono text-[10px] font-semibold",
-                        c.active ? "bg-brand-violet/10 text-brand-violet" : "bg-warm2 text-mute line-through",
-                      )}
-                    >
-                      {c.name}
-                    </span>
-                  ))
-                )}
-                {u.clients.length > 3 && (
-                  <span className="rounded-full bg-warm2 px-2 py-0.5 font-mono text-[10px] font-semibold text-mute">
-                    +{u.clients.length - 3}
-                  </span>
                 )}
               </div>
               <div className="text-center text-[12px]">
@@ -285,7 +242,6 @@ export function UsersTable({
           title="New user"
           submitLabel="Create"
           groups={groups}
-          clients={clients}
           modules={modules}
           onClose={() => setMode({ kind: "idle" })}
           onSubmit={(out) =>
@@ -295,7 +251,6 @@ export function UsersTable({
               role: out.role,
               password: out.password,
               groupIds: out.groupIds,
-              clientIds: out.clientIds,
             })
           }
           busy={busy === "create"}
@@ -308,7 +263,6 @@ export function UsersTable({
           title="Edit user"
           submitLabel="Save"
           groups={groups}
-          clients={clients}
           modules={modules}
           onClose={() => setMode({ kind: "idle" })}
           onSubmit={(out) =>
@@ -316,7 +270,6 @@ export function UsersTable({
               name: out.name,
               role: out.role,
               groupIds: out.groupIds,
-              clientIds: out.clientIds,
             })
           }
           busy={busy === mode.user.id}
@@ -326,7 +279,6 @@ export function UsersTable({
             role: mode.user.role,
             password: "",
             groupIds: mode.user.groups.map((g) => g.id),
-            clientIds: mode.user.clients.map((c) => c.id),
           }}
         />
       )}
@@ -389,7 +341,7 @@ function Row({
           : "py-3.5",
         dimmed && !hdr && "bg-warm/40",
       )}
-      style={{ gridTemplateColumns: "2.2fr 110px 1.6fr 1.6fr 100px 250px" }}
+      style={{ gridTemplateColumns: "2.2fr 110px 1.8fr 110px 250px" }}
     >
       {children}
     </div>
@@ -441,7 +393,6 @@ interface UserFormState {
   role: string;
   password: string;
   groupIds: string[];
-  clientIds: string[];
 }
 
 function UserFormDialog({
@@ -449,7 +400,6 @@ function UserFormDialog({
   submitLabel,
   initial,
   groups,
-  clients,
   modules,
   onClose,
   onSubmit,
@@ -461,7 +411,6 @@ function UserFormDialog({
   submitLabel: string;
   initial?: UserFormState;
   groups: UserGroupSummary[];
-  clients: Client[];
   modules: ModuleAccess[];
   onClose: () => void;
   onSubmit: (out: UserFormState) => void;
@@ -474,16 +423,9 @@ function UserFormDialog({
   const [role, setRole] = useState(initial?.role ?? "advisor");
   const [password, setPassword] = useState(initial?.password ?? "");
   const [groupIds, setGroupIds] = useState<string[]>(initial?.groupIds ?? []);
-  const [clientIds, setClientIds] = useState<string[]>(initial?.clientIds ?? []);
-  const [clientSearch, setClientSearch] = useState("");
 
   function toggleGroup(id: string) {
     setGroupIds((prev) =>
-      prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id],
-    );
-  }
-  function toggleClient(id: string) {
-    setClientIds((prev) =>
       prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id],
     );
   }
@@ -500,23 +442,13 @@ function UserFormDialog({
     return out;
   }, [groupIds, groups]);
 
-  // Show active clients first; inactive ones already-attached to this user
-  // remain so admin can detach them. Pure inactive ones are hidden.
-  const visibleClients = useMemo(() => {
-    const term = clientSearch.trim().toLowerCase();
-    return clients
-      .filter((c) => c.active || clientIds.includes(c.id))
-      .filter((c) => !term || c.name.toLowerCase().includes(term) || (c.code ?? "").toLowerCase().includes(term))
-      .sort((a, b) => Number(b.active) - Number(a.active) || a.name.localeCompare(b.name));
-  }, [clients, clientIds, clientSearch]);
-
   return (
     <DialogShell title={title} onClose={onClose}>
       <form
         onSubmit={(e) => {
           e.preventDefault();
           if (allowEmail && !email.trim()) return;
-          onSubmit({ email: email.trim(), name: name.trim(), role, password, groupIds, clientIds });
+          onSubmit({ email: email.trim(), name: name.trim(), role, password, groupIds });
         }}
         className="space-y-4"
       >
@@ -588,44 +520,6 @@ function UserFormDialog({
         </Field>
 
         <EffectiveAccess modules={modules} permissions={effectivePerms} />
-        <Field label={`Clients · ${clientIds.length} assigned`}>
-          {clients.length === 0 ? (
-            <div className="rounded-[10px] border border-rule bg-warm/40 p-3 text-[12px] text-mute">
-              No clients yet — add some on{" "}
-              <a href="/admin/clients" className="font-semibold text-brand-violet hover:underline">Admin · Clients</a>.
-            </div>
-          ) : (
-            <div className="rounded-[10px] border border-rule bg-warm/40 p-2">
-              <input
-                type="text"
-                value={clientSearch}
-                onChange={(e) => setClientSearch(e.target.value)}
-                placeholder="Search clients…"
-                className="mb-2 w-full rounded-md border border-rule bg-paper px-2.5 py-1.5 text-[12.5px] focus:border-brand-violet focus:outline-none"
-              />
-              <div className="grid max-h-[180px] grid-cols-2 gap-1.5 overflow-y-auto pr-1">
-                {visibleClients.length === 0 ? (
-                  <div className="col-span-2 px-1 py-2 text-[12px] text-mute">No matches.</div>
-                ) : (
-                  visibleClients.map((c) => (
-                    <label key={c.id} className="flex items-center gap-2 rounded p-1 text-[12.5px] hover:bg-warm">
-                      <input
-                        type="checkbox"
-                        checked={clientIds.includes(c.id)}
-                        onChange={() => toggleClient(c.id)}
-                      />
-                      <span className={cn("min-w-0 flex-1 truncate", !c.active && "text-mute line-through")}>
-                        {c.name}
-                        {c.code && <span className="ml-1.5 font-mono text-[10px] text-mute">· {c.code}</span>}
-                        {!c.active && <span className="ml-1.5 mono-cap rounded bg-warm2 px-1.5 py-0.5 text-[8.5px] font-semibold text-mute">inactive</span>}
-                      </span>
-                    </label>
-                  ))
-                )}
-              </div>
-            </div>
-          )}
-        </Field>
         <div className="flex items-center justify-end gap-3 pt-2">
           <button type="button" onClick={onClose} className="btn">
             Cancel

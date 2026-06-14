@@ -6,7 +6,7 @@
 import type {
   AdminUser, AgentCard, AgentCatalogEntry, AgentMode, AgentRunRecord, Batch, BatchInput, BatchSession,
   CalendarEventDetail, CalendarEventSummary, CatalogResponse,
-  Client, ClientMember, Course, CourseInput, CreateLeadInput, CurrentUser,
+  Course, CourseInput, CreateLeadInput, CurrentUser,
   Case, CaseDashboard, CaseDetail, CaseResolutionCode,
   CreateCaseInput, DeletedLead, EdifyAnswer, EdifySessionSummary, EnrolmentStatus, EventRsvp, FeedItem,
   ForecastSnapshot, GroupsResponse, Lead, LeaveDay, LeaveHalfDay, LeaveKind, LearnerRecord, LearnerSummary,
@@ -567,14 +567,13 @@ export async function createUser(input: {
   role: string;
   password?: string;
   groupIds: string[];
-  clientIds?: string[];
 }): Promise<{ user: AdminUser }> {
   return await post<{ user: AdminUser }>("/users", input);
 }
 
 export async function updateUser(
   id: string,
-  patch: { name?: string; role?: string; active?: boolean; groupIds?: string[]; clientIds?: string[] },
+  patch: { name?: string; role?: string; active?: boolean; groupIds?: string[] },
 ): Promise<{ user: AdminUser }> {
   return await send<{ user: AdminUser }>("PATCH", `/users/${id}`, patch);
 }
@@ -834,55 +833,6 @@ export async function deleteEdifySession(sessionId: string): Promise<void> {
   await send<void>("DELETE", `/agents/edify/sessions/${encodeURIComponent(sessionId)}`);
 }
 
-// ── Clients ────────────────────────────────────────────────────────────────
-
-export async function getClients(): Promise<Client[]> {
-  try {
-    const { clients } = await get<{ clients: Client[] }>("/clients");
-    return clients;
-  } catch (err) {
-    if ((err as Error).message.includes("→ 401")) return [];
-    throw err;
-  }
-}
-
-export async function getMyClients(): Promise<Client[]> {
-  try {
-    const { clients } = await get<{ clients: Client[] }>("/me/clients");
-    return clients;
-  } catch (err) {
-    if ((err as Error).message.includes("→ 401")) return [];
-    throw err;
-  }
-}
-
-export async function createClient(input: { name: string; code?: string | null; description?: string | null }): Promise<Client> {
-  const { client } = await post<{ client: Client }>("/clients", input);
-  return client;
-}
-
-export async function updateClient(id: string, patch: { name?: string; code?: string | null; description?: string | null }): Promise<Client> {
-  const { client } = await send<{ client: Client }>("PATCH", `/clients/${id}`, patch);
-  return client;
-}
-
-export async function activateClient(id: string): Promise<void> {
-  await post<void>(`/clients/${id}/activate`, {});
-}
-
-export async function deactivateClient(id: string): Promise<void> {
-  await post<void>(`/clients/${id}/deactivate`, {});
-}
-
-export async function getClientAssignments(id: string): Promise<ClientMember[]> {
-  const { users } = await get<{ users: ClientMember[] }>(`/clients/${id}/assignments`);
-  return users;
-}
-
-export async function setClientAssignments(id: string, userIds: string[]): Promise<void> {
-  await post<void>(`/clients/${id}/assignments`, { userIds });
-}
-
 // ── Timesheets ─────────────────────────────────────────────────────────────
 
 export async function clockIn(): Promise<{ session: WorkSession }> {
@@ -917,7 +867,7 @@ export async function getTimesheetRange(
   }
 }
 
-export async function patchTimeBlock(id: string, patch: { clientId?: string | null; note?: string | null; billable?: boolean; startAt?: string; endAt?: string }): Promise<{ block: TimeBlock }> {
+export async function patchTimeBlock(id: string, patch: { note?: string | null; billable?: boolean; startAt?: string; endAt?: string }): Promise<{ block: TimeBlock }> {
   return await send<{ block: TimeBlock }>("PATCH", `/timesheets/blocks/${id}`, patch);
 }
 
@@ -929,7 +879,7 @@ export async function mergeTimeBlocks(ids: string[]): Promise<void> {
   await post<void>(`/timesheets/blocks/merge`, { ids });
 }
 
-export async function addTimeBlock(input: { startAt: string; endAt: string; clientId?: string | null; note?: string | null }): Promise<{ block: TimeBlock }> {
+export async function addTimeBlock(input: { startAt: string; endAt: string; note?: string | null }): Promise<{ block: TimeBlock }> {
   return await post<{ block: TimeBlock }>(`/timesheets/blocks`, input);
 }
 
@@ -940,11 +890,10 @@ export async function deleteTimeBlock(id: string): Promise<void> {
 export async function getTimesheetReport(
   from: string,
   to: string,
-  opts: { userIds?: string[]; clientIds?: string[] } = {},
+  opts: { userIds?: string[] } = {},
 ): Promise<TimesheetReportRow[]> {
   const qs = new URLSearchParams({ from, to });
-  if (opts.userIds?.length)   qs.set("userIds", opts.userIds.join(","));
-  if (opts.clientIds?.length) qs.set("clientIds", opts.clientIds.join(","));
+  if (opts.userIds?.length) qs.set("userIds", opts.userIds.join(","));
   try {
     const { rows } = await get<{ rows: TimesheetReportRow[] }>(`/timesheets/report?${qs}`);
     return rows;

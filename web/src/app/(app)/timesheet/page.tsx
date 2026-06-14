@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { Topbar } from "@/components/shell/Topbar";
-import { getMyClients, getTimesheetRange } from "@/lib/api";
+import { getTimesheetRange } from "@/lib/api";
 import { requirePagePermission } from "@/lib/guards";
 import { TimesheetView } from "@/components/timesheet/TimesheetView";
 
@@ -33,10 +33,7 @@ export default async function TimesheetPage() {
   await requirePagePermission("timesheets.read.self");
   const week = weekDatesIST();
   const todayISO = istDateString(istNow());
-  const [range, myClients] = await Promise.all([
-    getTimesheetRange(week[0]!, week[week.length - 1]!),
-    getMyClients(),
-  ]);
+  const range = await getTimesheetRange(week[0]!, week[week.length - 1]!);
 
   return (
     <>
@@ -52,12 +49,11 @@ export default async function TimesheetPage() {
         <div className="mb-[22px]">
           <h1 className="font-serif text-[40px] font-normal leading-none tracking-[-.01em]">Timesheet</h1>
           <p className="mt-2 max-w-[640px] text-[13.5px] text-mute">
-            Add time blocks for whatever you worked on — pick a client, set start &amp; end, jot a short note. Edit anytime.
+            Add time blocks for whatever you worked on — set start &amp; end, jot a short note. Edit anytime.
           </p>
         </div>
         <TimesheetView
           initialWeek={range}
-          myClients={myClients}
           weekDates={week}
           todayISO={todayISO}
         />

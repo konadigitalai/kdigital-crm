@@ -720,38 +720,9 @@ export const edifyChatMessage = pgTable(
   }),
 );
 
-// ─── Phase G — Time tracking, leaves, clients, calendar ──────────────────
-
-export const client = pgTable(
-  "client",
-  {
-    id: uuid("id").primaryKey().defaultRandom(),
-    tenantId: uuid("tenant_id").notNull().references(() => tenant.id),
-    name: text("name").notNull(),
-    code: text("code"),
-    description: text("description"),
-    active: boolean("active").notNull().default(true),
-    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-  },
-  (t) => ({
-    tenantNameKey: uniqueIndex("client_tenant_name_key").on(t.tenantId, sql`lower(${t.name})`),
-  }),
-);
-
-export const clientAssignment = pgTable(
-  "client_assignment",
-  {
-    id: uuid("id").primaryKey().defaultRandom(),
-    tenantId: uuid("tenant_id").notNull().references(() => tenant.id),
-    clientId: uuid("client_id").notNull().references(() => client.id, { onDelete: "cascade" }),
-    userId: uuid("user_id").notNull().references(() => appUser.id, { onDelete: "cascade" }),
-    addedAt: timestamp("added_at", { withTimezone: true }).notNull().defaultNow(),
-  },
-  (t) => ({
-    pk: uniqueIndex("client_assignment_pk").on(t.clientId, t.userId),
-    userIdx: index("client_assignment_user_idx").on(t.tenantId, t.userId),
-  }),
-);
+// ─── Phase G — Time tracking, leaves, calendar ───────────────────────────
+// (Client tables removed in post-0033; client_assignment + client are dropped
+// at deploy and the time_block.client_id column goes with them.)
 
 export const workSession = pgTable(
   "work_session",
@@ -781,14 +752,12 @@ export const timeBlock = pgTable(
     date: date("date").notNull(),
     startAt: timestamp("start_at", { withTimezone: true }).notNull(),
     endAt: timestamp("end_at", { withTimezone: true }).notNull(),
-    clientId: uuid("client_id").references(() => client.id),
     note: text("note"),
     billable: boolean("billable").notNull().default(true),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => ({
     userDateIdx: index("time_block_user_date_idx").on(t.tenantId, t.userId, t.date),
-    clientIdx: index("time_block_client_idx").on(t.tenantId, t.clientId, t.date),
     endGtStart: check("time_block_endgtstart", sql`${t.endAt} > ${t.startAt}`),
   }),
 );

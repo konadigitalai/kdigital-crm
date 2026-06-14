@@ -687,9 +687,9 @@ function BlockCard({ b }: { b: TimeBlock }) {
     <div
       className="pointer-events-none absolute left-1 right-1 rounded bg-ink/[.04] px-1 py-0.5"
       style={{ top, height: Math.max(8, height - 1) }}
-      title={`${b.clientName ?? "Time block"}`}
+      title={b.note ?? "Time block"}
     >
-      <div className="truncate text-[9px] text-mute">{b.clientName ?? "Logged"}</div>
+      <div className="truncate text-[9px] text-mute">{b.note ?? "Logged"}</div>
     </div>
   );
 }

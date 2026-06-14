@@ -102,16 +102,6 @@ function todayISTDate(): string {
   return ist.toISOString().slice(0, 10);
 }
 
-// ── shared UI atoms ───────────────────────────────────────────────────────
-function ClientPill({ name, mins }: { name: string; mins: number }) {
-  return (
-    <span className="inline-flex items-center gap-1.5 rounded-full bg-warm2 px-3 py-1 text-[12px]">
-      <span className="font-semibold text-ink">{name}</span>
-      <span className="font-mono text-ink2">{fmtDur(mins)}</span>
-    </span>
-  );
-}
-
 // ── component ────────────────────────────────────────────────────────────
 export function TimesheetGrid({
   users, initialAnchorISO, initialScope = "week",
@@ -177,23 +167,6 @@ export function TimesheetGrid({
 
   const reload = useCallback(() => router.refresh(), [router]);
 
-  // Aggregate billable hours by client, scoped to the visible window.
-  const visibleDates = useMemo(() => new Set(rangeFor(scope, anchor).dates), [scope, anchor]);
-  const billable = useMemo(() => {
-    const m = new Map<string, { name: string; mins: number }>();
-    for (const r of rows) {
-      for (const b of r.blocks) {
-        if (!visibleDates.has(b.date)) continue;
-        if (!b.billable) continue;
-        const key = b.clientId ?? "_unassigned";
-        const name = b.clientName ?? "(unassigned)";
-        const cur = m.get(key) ?? { name, mins: 0 };
-        cur.mins += durMins(b.startAt, b.endAt);
-        m.set(key, cur);
-      }
-    }
-    return Array.from(m.values()).sort((a, b) => b.mins - a.mins);
-  }, [rows, visibleDates]);
 
   function step(dir: -1 | 1) {
     if (scope === "day") setAnchor(addDaysISO(anchor, dir));
@@ -272,16 +245,6 @@ export function TimesheetGrid({
             </button>
           ))}
         </div>
-      </div>
-
-      {/* Billable strip */}
-      <div className="mb-5 flex flex-wrap items-center gap-2">
-        <span className="mono-cap text-[10px] font-semibold tracking-[.12em] text-mute">Billable hours by client</span>
-        {billable.length === 0 ? (
-          <span className="text-[12px] text-mute">No hours logged yet.</span>
-        ) : (
-          billable.map((c) => <ClientPill key={c.name} name={c.name} mins={c.mins} />)
-        )}
       </div>
 
       {error && (
@@ -704,12 +667,9 @@ function DayDrillDialog({ cell, onClose }: { cell: CellInfo; onClose: () => void
           <div className="overflow-hidden rounded-[10px] border border-rule">
             {cell.blocks.map((b) => (
               <div key={b.id} className="grid items-center gap-3 border-b border-rule px-3 py-2 last:border-b-0"
-                   style={{ gridTemplateColumns: "100px 160px 1fr" }}>
+                   style={{ gridTemplateColumns: "100px 1fr" }}>
                 <span className="font-mono text-[12px] text-ink">
                   {timeIST(b.startAt)}–{timeIST(b.endAt)}
-                </span>
-                <span className="text-[12.5px] font-semibold text-ink2">
-                  {b.clientName ?? <span className="text-mute">(unassigned)</span>}
                 </span>
                 <span className="text-[12px] text-ink2">{b.note ?? <span className="text-hint">—</span>}</span>
               </div>

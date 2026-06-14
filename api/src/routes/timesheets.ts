@@ -31,8 +31,6 @@ interface ConflictRow {
   id: string;
   startAt: string;
   endAt: string;
-  clientId: string | null;
-  clientName: string | null;
   note: string | null;
 }
 
@@ -170,10 +168,8 @@ timesheetsRouter.get("/today", requirePermission("timesheets.read.self"), async 
         SELECT
           b.id, b.session_id AS "sessionId", b.date,
           b.start_at AS "startAt", b.end_at AS "endAt",
-          b.client_id AS "clientId", c.name AS "clientName",
           b.note, b.billable
         FROM time_block b
-        LEFT JOIN client c ON c.id = b.client_id
         WHERE b.user_id = ${userId} AND b.date = ${today}
         ORDER BY b.start_at
       `);
@@ -217,10 +213,8 @@ timesheetsRouter.get(
           SELECT
             b.id, b.session_id AS "sessionId", b.user_id AS "userId", b.date,
             b.start_at AS "startAt", b.end_at AS "endAt",
-            b.client_id AS "clientId", c.name AS "clientName",
             b.note, b.billable
           FROM time_block b
-          LEFT JOIN client c ON c.id = b.client_id
           WHERE b.user_id = ${targetUserId} AND b.date BETWEEN ${from} AND ${to}
           ORDER BY b.date, b.start_at
         `);
@@ -245,8 +239,8 @@ timesheetsRouter.get(
 
 // ─── GET /timesheets/report ──────────────────────────────────────────────
 // Admin pivot view of every user's blocks in a date range. Returns:
-//   { rows:  [{ userId, userName, clientId, clientName, date, mins }], total }
-// Hours are summed per (user, client, date) — the UI pivots / drills further.
+//   { rows: [{ userId, userName, userEmail, date, mins, blocks }] }
+// Hours are summed per (user, date) — the UI pivots / drills further.
 timesheetsRouter.get("/report", requirePermission("timesheets.read.all"), async (req, res, next) => {
   try {
     const from = String(req.query.from ?? "");
@@ -255,33 +249,25 @@ timesheetsRouter.get("/report", requirePermission("timesheets.read.all"), async 
       return res.status(400).json({ error: "from/to must be YYYY-MM-DD" });
     }
     const userIds = parseIdList(req.query.userIds);
-    const clientIds = parseIdList(req.query.clientIds);
 
     const rows = await withTenant(req.tenantId!, async (db) => {
       const userFilter = userIds.length === 0
         ? sql``
         : sql`AND b.user_id = ANY(${uuidArrayLiteral(userIds)})`;
-      const clientFilter = clientIds.length === 0
-        ? sql``
-        : sql`AND b.client_id = ANY(${uuidArrayLiteral(clientIds)})`;
       const r = await db.execute(sql`
         SELECT
           b.user_id   AS "userId",
           u.name      AS "userName",
           u.email     AS "userEmail",
-          b.client_id AS "clientId",
-          c.name      AS "clientName",
           b.date,
           ROUND(SUM(EXTRACT(EPOCH FROM (b.end_at - b.start_at)) / 60))::int AS mins,
           COUNT(*)::int AS blocks
         FROM time_block b
         JOIN app_user u ON u.id = b.user_id
-        LEFT JOIN client c ON c.id = b.client_id
         WHERE b.date BETWEEN ${from}::date AND ${to}::date
           ${userFilter}
-          ${clientFilter}
-        GROUP BY b.user_id, u.name, u.email, b.client_id, c.name, b.date
-        ORDER BY u.name, b.date, c.name NULLS LAST
+        GROUP BY b.user_id, u.name, u.email, b.date
+        ORDER BY u.name, b.date
       `);
       return r.rows;
     });
@@ -326,14 +312,10 @@ timesheetsRouter.patch("/blocks/:id", requirePermission("timesheets.read.self"),
 
       // Build the patch. Only fields *present* on the body are touched —
       // explicit nulls clear them, undefined leaves them alone. (The previous
-      // COALESCE-everything approach made it impossible to clear a client or
-      // empty out a note from the UI.)
+      // COALESCE-everything approach made it impossible to empty out a note
+      // from the UI.)
       const sets: ReturnType<typeof sql>[] = [];
 
-      if ("clientId" in b) {
-        const cid = b.clientId ? String(b.clientId).trim() : null;
-        sets.push(sql`client_id = ${cid}`);
-      }
       if ("note" in b) {
         const note = b.note ? String(b.note) : null;
         sets.push(sql`note = ${note}`);
@@ -354,10 +336,8 @@ timesheetsRouter.patch("/blocks/:id", requirePermission("timesheets.read.self"),
           return { kind: "bad-times" as const };
         }
         const overlap = await db.execute(sql`
-          SELECT b.id, b.start_at AS "startAt", b.end_at AS "endAt",
-                 b.client_id AS "clientId", c.name AS "clientName", b.note
+          SELECT b.id, b.start_at AS "startAt", b.end_at AS "endAt", b.note
           FROM time_block b
-          LEFT JOIN client c ON c.id = b.client_id
           WHERE b.user_id = ${curRow.user_id}
             AND b.id <> ${id}
             AND b.start_at < ${nextEnd.toISOString()}
@@ -380,7 +360,7 @@ timesheetsRouter.patch("/blocks/:id", requirePermission("timesheets.read.self"),
       const r = await db.execute(sql`
         SELECT id, session_id AS "sessionId", date,
                start_at AS "startAt", end_at AS "endAt",
-               client_id AS "clientId", note, billable
+               note, billable
         FROM time_block WHERE id = ${id}
       `);
       return { kind: "ok" as const, block: r.rows[0] };
@@ -409,7 +389,7 @@ timesheetsRouter.post("/blocks/:id/split", requirePermission("timesheets.read.se
     if (!at || isNaN(at.getTime())) return res.status(400).json({ error: "atISO required" });
     const out = await withTenant(req.tenantId!, async (db) => {
       const r = await db.execute(sql`
-        SELECT id, tenant_id, user_id, session_id, date, start_at, end_at, client_id, note, billable
+        SELECT id, tenant_id, user_id, session_id, date, start_at, end_at, note, billable
         FROM time_block WHERE id = ${id}
       `);
       const orig = r.rows[0] as Record<string, unknown> | undefined;
@@ -421,9 +401,9 @@ timesheetsRouter.post("/blocks/:id/split", requirePermission("timesheets.read.se
       // Shorten original, insert second.
       await db.execute(sql`UPDATE time_block SET end_at = ${at.toISOString()} WHERE id = ${id}`);
       const ins = await db.execute(sql`
-        INSERT INTO time_block (tenant_id, user_id, session_id, date, start_at, end_at, client_id, note, billable)
+        INSERT INTO time_block (tenant_id, user_id, session_id, date, start_at, end_at, note, billable)
         VALUES (${orig.tenant_id}, ${orig.user_id}, ${orig.session_id}, ${orig.date},
-                ${at.toISOString()}, ${end.toISOString()}, ${orig.client_id}, ${orig.note}, ${orig.billable})
+                ${at.toISOString()}, ${end.toISOString()}, ${orig.note}, ${orig.billable})
         RETURNING id
       `);
       return { kind: "ok" as const, originalId: id, newId: (ins.rows[0] as { id: string }).id };
@@ -444,7 +424,7 @@ timesheetsRouter.post("/blocks/merge", requirePermission("timesheets.read.self")
     if (ids.length < 2) return res.status(400).json({ error: "Need at least 2 ids" });
     const out = await withTenant(req.tenantId!, async (db) => {
       const r = await db.execute(sql`
-        SELECT id, user_id, session_id, date, start_at, end_at, client_id, note, billable
+        SELECT id, user_id, session_id, date, start_at, end_at, note, billable
         FROM time_block
         WHERE id = ANY(${ids}::uuid[])
         ORDER BY start_at
@@ -487,22 +467,16 @@ timesheetsRouter.post("/blocks", requirePermission("timesheets.read.self"), asyn
   try {
     const startAt = req.body?.startAt ? new Date(String(req.body.startAt)) : null;
     const endAt   = req.body?.endAt   ? new Date(String(req.body.endAt))   : null;
-    const clientId = req.body?.clientId ? String(req.body.clientId) : null;
     const note = req.body?.note ? String(req.body.note) : null;
     if (!startAt || !endAt || isNaN(startAt.getTime()) || isNaN(endAt.getTime()) || endAt <= startAt) {
       return res.status(400).json({ error: "startAt and endAt required, end > start" });
-    }
-    if (!clientId) {
-      return res.status(400).json({ error: "Pick a client for this block." });
     }
     const date = istDateString(startAt);
     const inserted = await withTenant(req.tenantId!, async (db) => {
       // No-overlap check — return the conflicting row so we can describe it.
       const overlap = await db.execute(sql`
-        SELECT b.id, b.start_at AS "startAt", b.end_at AS "endAt",
-               b.client_id AS "clientId", c.name AS "clientName", b.note
+        SELECT b.id, b.start_at AS "startAt", b.end_at AS "endAt", b.note
         FROM time_block b
-        LEFT JOIN client c ON c.id = b.client_id
         WHERE b.user_id = ${req.userId}
           AND b.start_at < ${endAt.toISOString()}
           AND b.end_at   > ${startAt.toISOString()}
@@ -513,13 +487,13 @@ timesheetsRouter.post("/blocks", requirePermission("timesheets.read.self"), asyn
       }
       const r = await db.execute(sql`
         INSERT INTO time_block (
-          tenant_id, user_id, date, start_at, end_at, client_id, note, billable
+          tenant_id, user_id, date, start_at, end_at, note, billable
         ) VALUES (
           ${req.tenantId}, ${req.userId}, ${date},
           ${startAt.toISOString()}, ${endAt.toISOString()},
-          ${clientId}, ${note}, true
+          ${note}, true
         )
-        RETURNING id, date, start_at AS "startAt", end_at AS "endAt", client_id AS "clientId", note, billable
+        RETURNING id, date, start_at AS "startAt", end_at AS "endAt", note, billable
       `);
       return { kind: "ok" as const, block: r.rows[0] };
     });

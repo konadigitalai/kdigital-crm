@@ -1,17 +1,16 @@
 "use client";
 
-// Admin timesheet report — pivot grid (rows = users, cols = clients,
-// cells = hours) + filters (date range, users, clients) + CSV export.
+// Admin timesheet report — pivot grid (rows = users, cols = dates) +
+// filters (date range, users) + CSV export.
 
 import { useEffect, useMemo, useState } from "react";
 import { Icon } from "@/components/ui/Icon";
 import { cn } from "@/lib/cn";
 import { getTimesheetReport } from "@/lib/api";
-import type { AdminUser, Client, TimesheetReportRow } from "@/lib/types";
+import type { AdminUser, TimesheetReportRow } from "@/lib/types";
 
 interface Props {
   users: AdminUser[];
-  clients: Client[];
   initialFrom: string;
   initialTo: string;
   initialRows: TimesheetReportRow[];
@@ -26,47 +25,82 @@ function fmtDur(mins: number): string {
   return `${h}h ${m}m`;
 }
 
-export function TimesheetReport({ users, clients, initialFrom, initialTo, initialRows }: Props) {
+function csvCell(s: string): string {
+  if (s.includes(",") || s.includes("\"") || s.includes("\n")) {
+    return `"${s.replace(/"/g, '""')}"`;
+  }
+  return s;
+}
+
+function todayISO(): string {
+  return new Date(Date.now() + (5 * 60 + 30) * 60_000).toISOString().slice(0, 10);
+}
+function addDays(iso: string, n: number): string {
+  const d = new Date(`${iso}T12:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + n);
+  return d.toISOString().slice(0, 10);
+}
+
+const RANGE_PRESETS: { label: string; compute: () => { from: string; to: string } }[] = [
+  { label: "Today",      compute: () => { const t = todayISO(); return { from: t, to: t }; } },
+  { label: "This week",  compute: () => {
+    const t = todayISO(); const dow = new Date(`${t}T12:00:00Z`).getUTCDay();
+    const sinceMon = (dow + 6) % 7;
+    return { from: addDays(t, -sinceMon), to: addDays(t, 6 - sinceMon) };
+  } },
+  { label: "Last 7 days", compute: () => { const t = todayISO(); return { from: addDays(t, -6), to: t }; } },
+  { label: "Last 30",     compute: () => { const t = todayISO(); return { from: addDays(t, -29), to: t }; } },
+  { label: "This month",  compute: () => {
+    const t = todayISO(); const ym = t.slice(0, 7);
+    const last = new Date(`${ym}-01T12:00:00Z`); last.setUTCMonth(last.getUTCMonth() + 1); last.setUTCDate(0);
+    return { from: `${ym}-01`, to: last.toISOString().slice(0, 10) };
+  } },
+];
+
+function enumerateDates(from: string, to: string): string[] {
+  const out: string[] = [];
+  let cur = from;
+  while (cur <= to) {
+    out.push(cur);
+    cur = addDays(cur, 1);
+    if (out.length > 366) break; // hard guardrail
+  }
+  return out;
+}
+
+export function TimesheetReport({ users, initialFrom, initialTo, initialRows }: Props) {
   const [from, setFrom] = useState(initialFrom);
   const [to, setTo]     = useState(initialTo);
-  const [pickedUsers,   setPickedUsers]   = useState<Set<string>>(new Set());
-  const [pickedClients, setPickedClients] = useState<Set<string>>(new Set());
+  const [pickedUsers, setPickedUsers] = useState<Set<string>>(new Set());
   const [rows, setRows] = useState<TimesheetReportRow[]>(initialRows);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  async function refetch(nextFrom: string, nextTo: string, uIds: Set<string>, cIds: Set<string>) {
+  async function refetch(nextFrom: string, nextTo: string, uIds: Set<string>) {
     setBusy(true); setError(null);
     try {
-      const out = await getTimesheetReport(nextFrom, nextTo, {
-        userIds: Array.from(uIds),
-        clientIds: Array.from(cIds),
-      });
+      const out = await getTimesheetReport(nextFrom, nextTo, { userIds: Array.from(uIds) });
       setRows(out);
     } catch (err) { setError((err as Error).message); }
     finally { setBusy(false); }
   }
-  // Refetch when range changes; filter chip toggles refetch too so the user
-  // sees only matching rows in the pivot (we could also slice client-side,
-  // but going to the server keeps user/client lists honest if data shifts).
+
   useEffect(() => {
     if (from !== initialFrom || to !== initialTo) {
-      refetch(from, to, pickedUsers, pickedClients);
+      refetch(from, to, pickedUsers);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [from, to]);
 
-  function toggle(set: Set<string>, id: string, setter: (s: Set<string>) => void) {
-    const next = new Set(set);
+  function toggleUser(id: string) {
+    const next = new Set(pickedUsers);
     if (next.has(id)) next.delete(id);
     else next.add(id);
-    setter(next);
-    refetch(from, to, set === pickedUsers ? next : pickedUsers, set === pickedClients ? next : pickedClients);
+    setPickedUsers(next);
+    refetch(from, to, next);
   }
 
-  // ── Aggregations for the pivot grid ───────────────────────────────────
-  // Visible users: any user with at least one row in the result, plus any
-  // user explicitly picked even if they have nothing this range.
+  // ── Aggregations ──────────────────────────────────────────────────────
   const userIdsInResult = useMemo(() => {
     const s = new Set<string>();
     for (const r of rows) s.add(r.userId);
@@ -75,29 +109,18 @@ export function TimesheetReport({ users, clients, initialFrom, initialTo, initia
   }, [rows, pickedUsers]);
 
   const visibleUsers = useMemo(
-    () => users.filter((u) => userIdsInResult.has(u.id)).sort((a, b) => (a.name ?? a.email).localeCompare(b.name ?? b.email)),
+    () => users
+      .filter((u) => userIdsInResult.has(u.id))
+      .sort((a, b) => (a.name ?? a.email).localeCompare(b.name ?? b.email)),
     [users, userIdsInResult],
   );
 
-  const clientIdsInResult = useMemo(() => {
-    const s = new Set<string>();
-    for (const r of rows) if (r.clientId) s.add(r.clientId);
-    pickedClients.forEach((id) => s.add(id));
-    return s;
-  }, [rows, pickedClients]);
+  const dateCols = useMemo(() => enumerateDates(from, to), [from, to]);
 
-  const visibleClients = useMemo(
-    () => clients.filter((c) => clientIdsInResult.has(c.id)).sort((a, b) => a.name.localeCompare(b.name)),
-    [clients, clientIdsInResult],
-  );
-
-  // (userId, clientId|"_unassigned") → mins
+  // (userId, date) → mins
   const cellMins = useMemo(() => {
     const m = new Map<string, number>();
-    for (const r of rows) {
-      const k = `${r.userId}::${r.clientId ?? "_unassigned"}`;
-      m.set(k, (m.get(k) ?? 0) + r.mins);
-    }
+    for (const r of rows) m.set(`${r.userId}::${r.date}`, (m.get(`${r.userId}::${r.date}`) ?? 0) + r.mins);
     return m;
   }, [rows]);
 
@@ -107,29 +130,24 @@ export function TimesheetReport({ users, clients, initialFrom, initialTo, initia
     return m;
   }, [rows]);
 
-  const totalsByClient = useMemo(() => {
+  const totalsByDate = useMemo(() => {
     const m = new Map<string, number>();
-    for (const r of rows) {
-      const k = r.clientId ?? "_unassigned";
-      m.set(k, (m.get(k) ?? 0) + r.mins);
-    }
+    for (const r of rows) m.set(r.date, (m.get(r.date) ?? 0) + r.mins);
     return m;
   }, [rows]);
 
   const grandTotalMins = useMemo(() => rows.reduce((s, r) => s + r.mins, 0), [rows]);
   const totalBlocks    = useMemo(() => rows.reduce((s, r) => s + r.blocks, 0), [rows]);
-  const hasUnassignedAnywhere = useMemo(() => rows.some((r) => !r.clientId), [rows]);
 
-  // CSV: flat (date, user, client, hours, blocks) so it's easy to feed downstream tools.
+  // CSV: flat (date, user, hours, blocks).
   function downloadCsv() {
-    const header = ["date", "user", "email", "client", "hours", "blocks"];
+    const header = ["date", "user", "email", "hours", "blocks"];
     const lines = [header.join(",")];
     for (const r of rows) {
       lines.push([
         r.date,
         csvCell(r.userName ?? ""),
         csvCell(r.userEmail),
-        csvCell(r.clientName ?? "(unassigned)"),
         (r.mins / 60).toFixed(2),
         String(r.blocks),
       ].join(","));
@@ -173,8 +191,12 @@ export function TimesheetReport({ users, clients, initialFrom, initialTo, initia
           </button>
         </div>
 
-        <div className="mt-3 grid gap-3 lg:grid-cols-2">
-          <FilterSection title="Users" total={users.length}>
+        <div className="mt-3 rounded-[12px] border border-rule bg-warm/30 p-2.5">
+          <div className="mb-2 flex items-center justify-between">
+            <span className="mono-cap text-[9.5px] font-semibold tracking-[.12em] text-mute">Users</span>
+            <span className="text-[10.5px] text-mute">{users.length} total</span>
+          </div>
+          <div className="flex max-h-[120px] flex-wrap gap-1 overflow-y-auto">
             {users
               .filter((u) => u.active)
               .sort((a, b) => (a.name ?? a.email).localeCompare(b.name ?? b.email))
@@ -182,40 +204,28 @@ export function TimesheetReport({ users, clients, initialFrom, initialTo, initia
                 <Chip
                   key={u.id}
                   on={pickedUsers.has(u.id)}
-                  onClick={() => toggle(pickedUsers, u.id, setPickedUsers)}
+                  onClick={() => toggleUser(u.id)}
                   label={u.name ?? u.email}
                 />
               ))}
-          </FilterSection>
-          <FilterSection title="Clients" total={clients.length}>
-            {clients.map((c) => (
-              <Chip
-                key={c.id}
-                on={pickedClients.has(c.id)}
-                onClick={() => toggle(pickedClients, c.id, setPickedClients)}
-                label={c.name}
-                dim={!c.active}
-              />
-            ))}
-          </FilterSection>
+          </div>
         </div>
       </div>
 
       {/* Totals strip */}
-      <div className="mb-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
+      <div className="mb-4 grid grid-cols-3 gap-3">
         <Stat label="Hours" value={fmtDur(grandTotalMins)} />
         <Stat label="Blocks" value={String(totalBlocks)} />
         <Stat label="Users" value={String(visibleUsers.length)} />
-        <Stat label="Clients" value={String(visibleClients.length)} />
       </div>
 
       {error && (
         <div className="mb-3 rounded-md border border-state-warn/30 bg-state-warn/10 px-3 py-2 text-[12.5px] text-state-warn">{error}</div>
       )}
 
-      {/* Pivot grid */}
+      {/* Pivot grid: users × dates */}
       <div className="mb-6 overflow-x-auto rounded-2xl border border-rule bg-paper">
-        {visibleUsers.length === 0 || visibleClients.length === 0 ? (
+        {visibleUsers.length === 0 ? (
           <div className="px-5 py-12 text-center text-[13px] text-mute">
             {rows.length === 0
               ? "No hours logged in this range yet."
@@ -228,16 +238,11 @@ export function TimesheetReport({ users, clients, initialFrom, initialTo, initia
                 <th className="sticky left-0 z-10 bg-warm px-4 py-2.5 text-left mono-cap text-[9.5px] font-semibold tracking-[.12em] text-mute">
                   User
                 </th>
-                {visibleClients.map((c) => (
-                  <th key={c.id} className="px-3 py-2.5 text-right mono-cap text-[9.5px] font-semibold tracking-[.12em] text-mute">
-                    {c.name}
+                {dateCols.map((d) => (
+                  <th key={d} className="px-3 py-2.5 text-right mono-cap text-[9.5px] font-semibold tracking-[.12em] text-mute">
+                    {new Date(`${d}T12:00:00Z`).toLocaleDateString("en-IN", { day: "numeric", month: "short", timeZone: "Asia/Kolkata" })}
                   </th>
                 ))}
-                {hasUnassignedAnywhere && (
-                  <th className="px-3 py-2.5 text-right mono-cap text-[9.5px] font-semibold tracking-[.12em] text-state-warn">
-                    Unassigned
-                  </th>
-                )}
                 <th className="px-3 py-2.5 text-right mono-cap text-[9.5px] font-semibold tracking-[.12em] text-ink">
                   Total
                 </th>
@@ -252,24 +257,14 @@ export function TimesheetReport({ users, clients, initialFrom, initialTo, initia
                       <div className="text-[13px] font-semibold">{u.name ?? u.email}</div>
                       <div className="mono-cap text-[9px] tracking-[.04em] text-mute">{u.role}</div>
                     </td>
-                    {visibleClients.map((c) => {
-                      const v = cellMins.get(`${u.id}::${c.id}`) ?? 0;
+                    {dateCols.map((d) => {
+                      const v = cellMins.get(`${u.id}::${d}`) ?? 0;
                       return (
-                        <td key={c.id} className={cn("px-3 py-2 text-right font-mono", v ? "text-ink" : "text-hint")}>
+                        <td key={d} className={cn("px-3 py-2 text-right font-mono", v ? "text-ink" : "text-hint")}>
                           {fmtDur(v)}
                         </td>
                       );
                     })}
-                    {hasUnassignedAnywhere && (
-                      (() => {
-                        const v = cellMins.get(`${u.id}::_unassigned`) ?? 0;
-                        return (
-                          <td className={cn("px-3 py-2 text-right font-mono", v ? "text-state-warn" : "text-hint")}>
-                            {fmtDur(v)}
-                          </td>
-                        );
-                      })()
-                    )}
                     <td className="px-3 py-2 text-right font-mono font-semibold text-ink">
                       {fmtDur(userTotal)}
                     </td>
@@ -278,16 +273,11 @@ export function TimesheetReport({ users, clients, initialFrom, initialTo, initia
               })}
               <tr className="border-t-2 border-rule2 bg-warm font-semibold">
                 <td className="sticky left-0 z-[5] bg-warm px-4 py-2.5 text-ink mono-cap text-[10px] tracking-[.12em]">Total</td>
-                {visibleClients.map((c) => (
-                  <td key={c.id} className="px-3 py-2.5 text-right font-mono text-ink">
-                    {fmtDur(totalsByClient.get(c.id) ?? 0)}
+                {dateCols.map((d) => (
+                  <td key={d} className="px-3 py-2.5 text-right font-mono text-ink">
+                    {fmtDur(totalsByDate.get(d) ?? 0)}
                   </td>
                 ))}
-                {hasUnassignedAnywhere && (
-                  <td className="px-3 py-2.5 text-right font-mono text-state-warn">
-                    {fmtDur(totalsByClient.get("_unassigned") ?? 0)}
-                  </td>
-                )}
                 <td className="px-3 py-2.5 text-right font-mono text-ink">{fmtDur(grandTotalMins)}</td>
               </tr>
             </tbody>
@@ -309,7 +299,6 @@ export function TimesheetReport({ users, clients, initialFrom, initialTo, initia
                 <tr className="border-b border-rule bg-warm/40">
                   <Th>Date</Th>
                   <Th>User</Th>
-                  <Th>Client</Th>
                   <Th align="right">Hours</Th>
                   <Th align="right">Blocks</Th>
                 </tr>
@@ -319,7 +308,7 @@ export function TimesheetReport({ users, clients, initialFrom, initialTo, initia
                   .sort((a, b) => b.date.localeCompare(a.date) ||
                     (a.userName ?? "").localeCompare(b.userName ?? ""))
                   .map((r, i) => (
-                    <tr key={`${r.userId}-${r.clientId ?? "x"}-${r.date}-${i}`} className="border-b border-rule last:border-b-0 hover:bg-warm/20">
+                    <tr key={`${r.userId}-${r.date}-${i}`} className="border-b border-rule last:border-b-0 hover:bg-warm/20">
                       <Td>
                         {new Date(`${r.date}T12:00:00Z`).toLocaleDateString("en-IN", {
                           day: "numeric", month: "short", year: "numeric", timeZone: "Asia/Kolkata",
@@ -328,10 +317,6 @@ export function TimesheetReport({ users, clients, initialFrom, initialTo, initia
                       <Td>
                         <div className="font-semibold text-ink">{r.userName ?? r.userEmail}</div>
                         <div className="mono-cap text-[9px] tracking-[.04em] text-mute">{r.userEmail}</div>
-                      </Td>
-                      <Td>
-                        {r.clientName ? <span className="text-ink">{r.clientName}</span>
-                          : <span className="font-semibold text-state-warn">(unassigned)</span>}
                       </Td>
                       <Td align="right" mono>{(r.mins / 60).toFixed(2)}</Td>
                       <Td align="right" mono>{r.blocks}</Td>
@@ -357,21 +342,7 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
   );
 }
 
-function FilterSection({ title, total, children }: { title: string; total: number; children: React.ReactNode }) {
-  return (
-    <div className="rounded-[12px] border border-rule bg-warm/30 p-2.5">
-      <div className="mb-2 flex items-center justify-between">
-        <span className="mono-cap text-[9.5px] font-semibold tracking-[.12em] text-mute">{title}</span>
-        <span className="text-[10.5px] text-mute">{total} total</span>
-      </div>
-      <div className="flex max-h-[120px] flex-wrap gap-1 overflow-y-auto">
-        {children}
-      </div>
-    </div>
-  );
-}
-
-function Chip({ on, onClick, label, dim }: { on: boolean; onClick: () => void; label: string; dim?: boolean }) {
+function Chip({ on, onClick, label }: { on: boolean; onClick: () => void; label: string }) {
   return (
     <button
       onClick={onClick}
@@ -379,8 +350,6 @@ function Chip({ on, onClick, label, dim }: { on: boolean; onClick: () => void; l
         "rounded-full border px-2.5 py-0.5 text-[11.5px] font-semibold transition",
         on
           ? "border-brand-violet bg-brand-violet text-white"
-          : dim
-          ? "border-rule bg-paper text-mute hover:border-brand-violet hover:text-brand-violet"
           : "border-rule bg-paper text-ink2 hover:border-brand-violet hover:text-brand-violet",
       )}
     >
@@ -412,32 +381,3 @@ function Td({ children, align = "left", mono = false }: { children: React.ReactN
     </td>
   );
 }
-
-function csvCell(s: string): string {
-  if (s.includes(",") || s.includes("\"") || s.includes("\n")) {
-    return `"${s.replace(/"/g, "\"\"")}"`;
-  }
-  return s;
-}
-
-// IST date helpers for the presets — server takes YYYY-MM-DD strings.
-function istToday(): string {
-  const ist = new Date(Date.now() + (5 * 60 + 30) * 60_000);
-  return ist.toISOString().slice(0, 10);
-}
-function istShift(days: number): string {
-  const ist = new Date(Date.now() + (5 * 60 + 30) * 60_000);
-  ist.setUTCDate(ist.getUTCDate() + days);
-  return ist.toISOString().slice(0, 10);
-}
-function istMonthStart(): string {
-  const ist = new Date(Date.now() + (5 * 60 + 30) * 60_000);
-  ist.setUTCDate(1);
-  return ist.toISOString().slice(0, 10);
-}
-
-const RANGE_PRESETS: { label: string; compute: () => { from: string; to: string } }[] = [
-  { label: "This week", compute: () => ({ from: istShift(-6), to: istToday() }) },
-  { label: "Last 30 days", compute: () => ({ from: istShift(-29), to: istToday() }) },
-  { label: "MTD", compute: () => ({ from: istMonthStart(), to: istToday() }) },
-];

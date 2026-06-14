@@ -127,7 +127,6 @@ export interface AdminUser {
   active: boolean;
   has_password: boolean;
   groups: { id: string; name: string }[];
-  clients: { id: string; name: string; active: boolean }[];
 }
 
 export interface UserGroupSummary {
@@ -293,25 +292,7 @@ export interface EdifySessionSummary {
   preview: string | null;
 }
 
-// ─── Phase G: Time tracking, leaves, clients, calendar ─────────────────────
-
-export interface Client {
-  id: string;
-  name: string;
-  code: string | null;
-  description: string | null;
-  active: boolean;
-  createdAt: string;
-  memberCount?: number;
-}
-
-export interface ClientMember {
-  id: string;
-  name: string | null;
-  email: string;
-  role: string;
-  active: boolean;
-}
+// ─── Phase G: Time tracking, leaves, calendar ──────────────────────────────
 
 export interface WorkSession {
   id: string;
@@ -329,8 +310,6 @@ export interface TimeBlock {
   date: string;
   startAt: string;
   endAt: string;
-  clientId: string | null;
-  clientName: string | null;
   note: string | null;
   billable: boolean;
 }
@@ -348,13 +327,11 @@ export interface LeaveDay {
   createdAt?: string;
 }
 
-// One row of the admin timesheet report — pre-aggregated by user × client × day.
+// One row of the admin timesheet report — pre-aggregated by user × day.
 export interface TimesheetReportRow {
   userId: string;
   userName: string | null;
   userEmail: string;
-  clientId: string | null;
-  clientName: string | null;
   date: string;
   mins: number;
   blocks: number;
@@ -366,8 +343,6 @@ export interface TimeBlockConflict {
   id: string;
   startAt: string;
   endAt: string;
-  clientId: string | null;
-  clientName: string | null;
   note: string | null;
 }
 

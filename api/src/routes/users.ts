@@ -27,16 +27,7 @@ usersRouter.get("/", async (req, res, next) => {
               WHERE m.user_id = u.id
             ),
             '[]'::json
-          ) AS groups,
-          COALESCE(
-            (
-              SELECT json_agg(json_build_object('id', c.id, 'name', c.name, 'active', c.active) ORDER BY lower(c.name))
-              FROM client_assignment ca
-              JOIN client c ON c.id = ca.client_id
-              WHERE ca.user_id = u.id
-            ),
-            '[]'::json
-          ) AS clients
+          ) AS groups
         FROM app_user u
         ORDER BY u.created_at
       `);
@@ -48,7 +39,7 @@ usersRouter.get("/", async (req, res, next) => {
   }
 });
 
-// POST /users — create a new user. Body: { email, name, role, password, groupIds[], clientIds[] }
+// POST /users — create a new user. Body: { email, name, role, password, groupIds[] }
 usersRouter.post("/", async (req, res, next) => {
   try {
     const email = String(req.body?.email ?? "").trim().toLowerCase();
@@ -56,7 +47,6 @@ usersRouter.post("/", async (req, res, next) => {
     const role = String(req.body?.role ?? "advisor");
     const password = req.body?.password ? String(req.body.password) : null;
     const groupIds: string[] = Array.isArray(req.body?.groupIds) ? req.body.groupIds : [];
-    const clientIds: string[] = Array.isArray(req.body?.clientIds) ? req.body.clientIds : [];
 
     if (!email || !email.includes("@")) {
       return res.status(400).json({ error: "Valid email is required." });
@@ -76,13 +66,6 @@ usersRouter.post("/", async (req, res, next) => {
       for (const gid of groupIds) {
         await db.execute(sql`
           INSERT INTO user_group_member (user_id, group_id) VALUES (${user.id}, ${gid})
-          ON CONFLICT DO NOTHING
-        `);
-      }
-      for (const cid of clientIds) {
-        await db.execute(sql`
-          INSERT INTO client_assignment (tenant_id, client_id, user_id)
-          VALUES (${req.tenantId}, ${cid}, ${user.id})
           ON CONFLICT DO NOTHING
         `);
       }
@@ -108,7 +91,6 @@ usersRouter.patch("/:id", async (req, res, next) => {
     const newRole: string | undefined = patch.role;
     const newActive: boolean | undefined = patch.active;
     const newGroupIds: string[] | undefined = Array.isArray(patch.groupIds) ? patch.groupIds : undefined;
-    const newClientIds: string[] | undefined = Array.isArray(patch.clientIds) ? patch.clientIds : undefined;
 
     if (newRole !== undefined && !ROLES.has(newRole)) {
       return res.status(400).json({ error: "Invalid role." });
@@ -133,16 +115,6 @@ usersRouter.patch("/:id", async (req, res, next) => {
         for (const gid of newGroupIds) {
           await db.execute(sql`
             INSERT INTO user_group_member (user_id, group_id) VALUES (${id}, ${gid})
-            ON CONFLICT DO NOTHING
-          `);
-        }
-      }
-      if (newClientIds !== undefined) {
-        await db.execute(sql`DELETE FROM client_assignment WHERE user_id = ${id}`);
-        for (const cid of newClientIds) {
-          await db.execute(sql`
-            INSERT INTO client_assignment (tenant_id, client_id, user_id)
-            VALUES (${req.tenantId}, ${cid}, ${id})
             ON CONFLICT DO NOTHING
           `);
         }
