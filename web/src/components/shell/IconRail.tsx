@@ -12,7 +12,7 @@ import { Icon } from "@/components/ui/Icon";
 import { cn } from "@/lib/cn";
 import { logout } from "@/lib/api";
 import type { CurrentUser, SummaryResponse } from "@/lib/types";
-import { buildNavItems, isActive } from "./navItems";
+import { buildNavItems, filterNavItems, isActive } from "./navItems";
 
 export function IconRail({
   currentUser,
@@ -28,10 +28,7 @@ export function IconRail({
 }) {
   const pathname = usePathname();
   const router = useRouter();
-  const perms = new Set(currentUser?.permissions ?? []);
-  const items = buildNavItems(summary).filter(
-    (it) => !it.requires || perms.has(it.requires),
-  );
+  const items = filterNavItems(buildNavItems(summary), currentUser);
   const [menuOpen, setMenuOpen] = useState(false);
 
   async function onSignOut() {
@@ -49,8 +46,8 @@ export function IconRail({
     <nav className="relative z-[2] flex h-full flex-col items-center bg-ink py-3.5">
       {/* Pinned top: brand mark + (when sidebar collapsed) expand button */}
       <div className="flex flex-shrink-0 flex-col items-center gap-1.5">
-        <Link href="/" className="mb-1 flex h-10 w-10 items-center justify-center rounded-xl bg-grad shadow-rail">
-          <span className="text-white"><Icon name="stamp" size={20} strokeWidth={1.9} /></span>
+        <Link href="/" className="mb-1 flex h-10 w-10 items-center justify-center rounded-xl bg-grad shadow-rail" aria-label="Edify home">
+          <span className="font-serif text-[22px] font-semibold leading-none text-white">E</span>
         </Link>
         {sidebarCollapsed && onExpandSidebar && (
           <RailTooltip label="Expand sidebar">
@@ -97,17 +94,10 @@ export function IconRail({
         })}
       </div>
 
-      {/* Pinned bottom: settings + account avatar. */}
+      {/* Pinned bottom: account avatar. (Settings is rendered above as part
+          of the shared nav registry; we used to have a hardcoded copy here
+          which produced a duplicate gear icon.) */}
       <div className="flex flex-shrink-0 flex-col items-center gap-1.5">
-        <RailTooltip label="Settings">
-          <Link
-            href="/settings"
-            className="flex h-[42px] w-[42px] items-center justify-center rounded-xl text-white/55 transition hover:bg-white/[.07] hover:text-white"
-          >
-            <Icon name="settings" size={19} />
-          </Link>
-        </RailTooltip>
-
         <div className="relative mt-1">
           <RailTooltip label={currentUser ? `${currentUser.name} · ${currentUser.email}` : "Account"}>
             <button
@@ -201,19 +191,36 @@ function RailTooltip({ label, children }: { label: string; children: ReactNode }
   );
 }
 
+// Claude-style sidebar-panel-toggle glyph. Crisp rectangle outline with a
+// solid filled bar on one side representing the sidebar.
+//
+//   dir="right"  rail → sidebar (expand): filled bar on the LEFT
+//   dir="left"   sidebar → rail (collapse): filled bar on the RIGHT
+//
+// Sharp 1px-rounded corners, ~1.5 stroke, fill on the active side. Matches
+// Claude/VSCode panel-toggle iconography.
 function ChevronGlyph({ dir }: { dir: "left" | "right" }) {
   return (
     <svg
       viewBox="0 0 16 16"
-      className="h-3.5 w-3.5"
+      className="h-4 w-4"
       fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
       aria-hidden
     >
-      {dir === "left" ? <path d="M10 4l-4 4 4 4" /> : <path d="M6 4l4 4-4 4" />}
+      {/* Outer rounded rectangle */}
+      <rect
+        x="1.5" y="3.25"
+        width="13" height="9.5"
+        rx="1.25"
+        stroke="currentColor"
+        strokeWidth="1.5"
+      />
+      {/* Filled side panel */}
+      {dir === "right" ? (
+        <rect x="1.5" y="3.25" width="3.75" height="9.5" rx="1.25" fill="currentColor" />
+      ) : (
+        <rect x="10.75" y="3.25" width="3.75" height="9.5" rx="1.25" fill="currentColor" />
+      )}
     </svg>
   );
 }

@@ -12,7 +12,10 @@ export type IconName =
   | "bars" | "settings" | "search" | "send" | "mail" | "star"
   | "check" | "info" | "money" | "filter" | "arrow-right" | "plus"
   | "chevron-down" | "chat" | "agents-grid" | "build" | "globe"
-  | "doc" | "stamp" | "burst";
+  | "doc" | "stamp" | "burst"
+  // Sidebar-friendly nav glyphs (added so labels and shapes match)
+  | "message-square" | "user-plus" | "graduation-cap" | "pipeline"
+  | "life-ring" | "calendar" | "tag" | "robot";
 
 export function Icon({ name, size = 16, strokeWidth = 1.7, className, ...rest }: IconProps) {
   const props = {
@@ -92,5 +95,29 @@ export function Icon({ name, size = 16, strokeWidth = 1.7, className, ...rest }:
           </g>
         </svg>
       );
+    case "message-square":
+      // Square chat bubble — Inbox / messaging
+      return (<svg {...props}><path d="M21 15a2 2 0 01-2 2H8l-5 4V5a2 2 0 012-2h14a2 2 0 012 2z" /></svg>);
+    case "user-plus":
+      // Person silhouette with a '+' — Leads (new people coming in)
+      return (<svg {...props}><path d="M16 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2" /><circle cx="8.5" cy="7" r="4" /><path d="M20 8v6M23 11h-6" /></svg>);
+    case "graduation-cap":
+      // Mortarboard — Learners
+      return (<svg {...props}><path d="M22 10L12 5 2 10l10 5 10-5z" /><path d="M6 12v5a6 6 0 0012 0v-5" /></svg>);
+    case "pipeline":
+      // Kanban-style 3-column board — Pipeline
+      return (<svg {...props}><rect x="3" y="4" width="5" height="16" rx="1" /><rect x="9.5" y="4" width="5" height="11" rx="1" /><rect x="16" y="4" width="5" height="7" rx="1" /></svg>);
+    case "life-ring":
+      // Life-buoy — Cases / support
+      return (<svg {...props}><circle cx="12" cy="12" r="9" /><circle cx="12" cy="12" r="3.5" /><path d="M4.93 4.93l4.62 4.62M14.45 14.45l4.62 4.62M19.07 4.93l-4.62 4.62M9.55 14.45l-4.62 4.62" /></svg>);
+    case "calendar":
+      // Calendar grid — Calendar
+      return (<svg {...props}><rect x="3" y="4" width="18" height="17" rx="2" /><path d="M3 9h18M8 2v4M16 2v4" /></svg>);
+    case "tag":
+      // Pricing/tag glyph — Tags
+      return (<svg {...props}><path d="M20.6 13.4L13 21l-9-9V4h8z" /><circle cx="8" cy="8" r="1.5" /></svg>);
+    case "robot":
+      // Bot face — AI agents
+      return (<svg {...props}><rect x="4" y="7" width="16" height="13" rx="3" /><circle cx="9" cy="13.5" r="1.2" /><circle cx="15" cy="13.5" r="1.2" /><path d="M12 4v3M9 17h6" /></svg>);
   }
 }

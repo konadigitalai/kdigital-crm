@@ -2,9 +2,15 @@
 // the Sidebar (labeled column) read from this list so the two panels can't
 // drift out of sync. Permission gates apply identically — anything that's
 // hidden from one panel is hidden from the other.
+//
+// Admin / configuration entries (users, groups, programs, integrations,
+// WhatsApp broadcasts/automations, etc.) live behind a single Settings
+// link. /settings is a hub page that lists the sections the user has
+// access to. Keeps the sidebar lean as the surface grows.
 
 import type { IconName } from "@/components/ui/Icon";
 import type { SummaryResponse } from "@/lib/types";
+import type { CurrentUser } from "@/lib/types";
 
 export interface NavItem {
   href: string;
@@ -16,40 +22,54 @@ export interface NavItem {
   /** Optional "Beta" pill on the Sidebar. */
   pillBeta?: boolean;
   /** Permission gate (matches lib/permissions.ts). Items with no `requires`
-   *  show for everyone. */
+   *  show for everyone. Items in `requiresAny` show if the user has ANY of
+   *  the listed permissions — useful for hub entries (Settings) that
+   *  surface different sections per role. */
   requires?: string;
+  requiresAny?: string[];
 }
+
+/** Permissions that surface ANY admin/config section in the Settings hub.
+ *  If a user has any of these, the Settings sidebar entry is visible. */
+export const SETTINGS_ANY_PERMISSIONS = [
+  "users.manage",
+  "groups.manage",
+  "admin.programs.manage",
+  "admin.courses.manage",
+  "admin.batches.manage",
+  "timesheets.read.self",  // own timesheet (relocated under Settings)
+  "timesheets.read.all",
+  "integrations.read",
+  "whatsapp.read",
+  "leads.delete",
+];
 
 export function buildNavItems(summary: SummaryResponse): NavItem[] {
   const caseBadge = summary.cases?.open ? String(summary.cases.open) : undefined;
   const leadBadge = summary.overall.total ? String(summary.overall.total) : undefined;
   return [
-    { href: "/",                          icon: "home",  label: "Agent Home" },
-    { href: "/leads",                     icon: "users", label: "Leads",       badge: leadBadge, requires: "leads.read" },
-    { href: "/pipeline",                  icon: "chart", label: "Pipeline",                       requires: "pipeline.read" },
-    { href: "/inbox",                     icon: "chat",  label: "Inbox",                          requires: "whatsapp.read" },
-    { href: "/learners",                  icon: "stamp", label: "Learners",                       requires: "learners.read" },
-    { href: "/cases",                     icon: "inbox", label: "Cases",       badge: caseBadge, requires: "cases.read" },
-    { href: "/timesheet",                 icon: "clock", label: "Timesheet",                      requires: "timesheets.read.self" },
-    { href: "/calendar",                  icon: "spark", label: "Calendar",                       requires: "events.manage.self" },
-    { href: "/agents",                    icon: "spark", label: "Agents",                         requires: "agents.read" },
-    { href: "/scheduled",                 icon: "clock", label: "Scheduled" },
-    { href: "/live-artifacts",            icon: "globe", label: "Live artifacts" },
-    { href: "/dispatch",                  icon: "doc",   label: "Dispatch", pillBeta: true },
-    { href: "/customize",                 icon: "star",  label: "Customize" },
-    { href: "/admin/users",               icon: "users", label: "Admin · Users",      requires: "users.manage" },
-    { href: "/admin/groups",              icon: "users", label: "Admin · Groups",     requires: "groups.manage" },
-    { href: "/admin/programs",            icon: "doc",   label: "Admin · Programs",   requires: "admin.programs.manage" },
-    { href: "/admin/courses",             icon: "doc",   label: "Admin · Courses",    requires: "admin.courses.manage" },
-    { href: "/admin/cohorts",             icon: "build", label: "Admin · Batches",    requires: "admin.batches.manage" },
-    { href: "/admin/timesheets",          icon: "clock", label: "Admin · Timesheets", requires: "timesheets.read.all" },
-    { href: "/admin/reports/timesheets",  icon: "chart", label: "Admin · Reports",    requires: "timesheets.read.all" },
-    { href: "/admin/integrations/slack",  icon: "globe", label: "Admin · Integrations", requires: "integrations.read" },
-    { href: "/admin/integrations/whatsapp", icon: "chat", label: "Admin · WhatsApp",    requires: "whatsapp.read" },
-    { href: "/whatsapp/broadcasts",       icon: "send",  label: "WA Broadcasts",         requires: "whatsapp.read" },
-    { href: "/whatsapp/automations",      icon: "spark", label: "WA Automations",        requires: "whatsapp.read" },
-    { href: "/admin/leads/deleted",       icon: "inbox", label: "Admin · Deleted leads", requires: "leads.delete" },
+    { href: "/",                          icon: "home",            label: "Agent Home" },
+    { href: "/inbox",                     icon: "message-square",  label: "Inbox",                          requires: "whatsapp.read" },
+    { href: "/leads",                     icon: "user-plus",       label: "Leads",       badge: leadBadge, requires: "leads.read" },
+    { href: "/learners",                  icon: "graduation-cap",  label: "Learners",                       requires: "learners.read" },
+    { href: "/pipeline",                  icon: "pipeline",        label: "Pipeline",                       requires: "pipeline.read" },
+    { href: "/cases",                     icon: "life-ring",       label: "Cases",       badge: caseBadge, requires: "cases.read" },
+    { href: "/calendar",                  icon: "calendar",        label: "Calendar",                       requires: "events.manage.self" },
+    { href: "/agents",                    icon: "robot",           label: "Agents",                         requires: "agents.read" },
+    { href: "/settings",                  icon: "settings",        label: "Settings", requiresAny: SETTINGS_ANY_PERMISSIONS },
   ];
+}
+
+/** Filter nav items by the current user's permissions. Items with `requires`
+ *  must match exactly; items with `requiresAny` match if the user has at
+ *  least one of the listed permissions. */
+export function filterNavItems(items: NavItem[], user: CurrentUser | null): NavItem[] {
+  const perms = new Set(user?.permissions ?? []);
+  return items.filter((it) => {
+    if (it.requires && !perms.has(it.requires)) return false;
+    if (it.requiresAny && !it.requiresAny.some((p) => perms.has(p))) return false;
+    return true;
+  });
 }
 
 export function isActive(pathname: string, href: string): boolean {
@@ -57,7 +77,12 @@ export function isActive(pathname: string, href: string): boolean {
   if (href === "/leads") return pathname.startsWith("/leads") || pathname.startsWith("/records");
   if (href === "/learners") return pathname.startsWith("/learners");
   if (href === "/cases") return pathname.startsWith("/cases");
-  if (href === "/whatsapp/broadcasts") return pathname.startsWith("/whatsapp/broadcasts");
-  if (href === "/whatsapp/automations") return pathname.startsWith("/whatsapp/automations");
+  // Settings is the new home for admin + integrations + WA broadcasts/automations.
+  if (href === "/settings") {
+    return pathname.startsWith("/settings")
+        || pathname.startsWith("/admin")
+        || pathname.startsWith("/whatsapp/broadcasts")
+        || pathname.startsWith("/whatsapp/automations");
+  }
   return pathname.startsWith(href);
 }

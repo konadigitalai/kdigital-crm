@@ -9,7 +9,7 @@ import { Icon, type IconName } from "@/components/ui/Icon";
 import { cn } from "@/lib/cn";
 import { logout } from "@/lib/api";
 import type { CurrentUser, RecentRun, SummaryResponse } from "@/lib/types";
-import { buildNavItems, isActive } from "./navItems";
+import { buildNavItems, filterNavItems, isActive } from "./navItems";
 
 export function Sidebar({
   recentRuns,
@@ -26,10 +26,7 @@ export function Sidebar({
 }) {
   const pathname = usePathname();
   const router = useRouter();
-  const perms = new Set(currentUser?.permissions ?? []);
-  const navItems = buildNavItems(summary).filter(
-    (it) => !it.requires || perms.has(it.requires),
-  );
+  const navItems = filterNavItems(buildNavItems(summary), currentUser);
 
   async function onSignOut() {
     try {
@@ -133,7 +130,7 @@ export function Sidebar({
       <div className="mt-3 flex-shrink-0 border-t border-rule pt-3.5">
         <div className="mb-3 flex items-center gap-3 rounded-[12px] border border-rule bg-warm2 p-3">
           <div className="grid h-[34px] w-[34px] flex-shrink-0 place-items-center rounded-[9px] bg-grad text-white">
-            <Icon name="stamp" size={18} strokeWidth={1.8} />
+            <span className="font-serif text-[18px] font-semibold leading-none">E</span>
           </div>
           <div className="flex-1">
             <div className="text-[13px] font-bold tracking-tight">Edify Agent OS</div>
@@ -176,19 +173,21 @@ function SideTab({ icon, label, on }: { icon: IconName; label: string; on?: bool
   );
 }
 
+// Claude-style sidebar-panel-toggle glyph. See IconRail.tsx for rationale.
 function ChevronGlyph({ dir }: { dir: "left" | "right" }) {
   return (
     <svg
       viewBox="0 0 16 16"
-      className="h-3.5 w-3.5"
+      className="h-4 w-4"
       fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
       aria-hidden
     >
-      {dir === "left" ? <path d="M10 4l-4 4 4 4" /> : <path d="M6 4l4 4-4 4" />}
+      <rect x="1.5" y="3.25" width="13" height="9.5" rx="1.25" stroke="currentColor" strokeWidth="1.5" />
+      {dir === "right" ? (
+        <rect x="1.5" y="3.25" width="3.75" height="9.5" rx="1.25" fill="currentColor" />
+      ) : (
+        <rect x="10.75" y="3.25" width="3.75" height="9.5" rx="1.25" fill="currentColor" />
+      )}
     </svg>
   );
 }
