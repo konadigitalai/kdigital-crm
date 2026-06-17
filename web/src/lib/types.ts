@@ -1,5 +1,204 @@
 // Types shared between API responses and components. Kept narrow.
 
+// ── WhatsApp ──────────────────────────────────────────────────────────────
+
+export type WaConversationStatus = "open" | "pending" | "closed";
+export type WaMessageStatus = "queued" | "sent" | "delivered" | "read" | "failed";
+export type WaMessageDirection = "inbound" | "outbound";
+export type WaSenderType = "customer" | "agent" | "bot" | "system";
+export type WaContentType =
+  | "text" | "image" | "audio" | "video" | "document"
+  | "template" | "interactive" | "reaction" | "location" | "unsupported";
+export type WaTemplateCategory = "UTILITY" | "MARKETING" | "AUTHENTICATION";
+export type WaTemplateStatus = "approved" | "pending" | "rejected" | "paused";
+
+export interface WaConfig {
+  configured: boolean;
+  status: "connected" | "disconnected";
+  connectedAt: string | null;
+  registeredAt: string | null;
+  subscribedAt: string | null;
+  credentials: {
+    phone_number_id: string;
+    waba_id: string;
+    app_id: string;
+    app_secret: string;          // masked tail-only
+    system_user_token: string;   // masked tail-only
+    webhook_verify_token: string; // masked tail-only
+  } | null;
+  displayPhoneNumber: string | null;
+  verifiedName: string | null;
+  qualityRating: string | null;
+}
+
+export interface WaTemplate {
+  id: string;
+  templateName: string;
+  language: string;
+  category: WaTemplateCategory;
+  headerType: "text" | "image" | "video" | "document" | null;
+  headerContent: string | null;
+  bodyText: string;
+  footerText: string | null;
+  buttons: unknown[] | null;
+  variableCount: number;
+  status: WaTemplateStatus;
+  lastSyncedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface WaTag {
+  id: string;
+  name: string;
+  color: string;
+  createdAt: string;
+}
+
+export interface WaConversationListItem {
+  id: string;
+  partyId: string;
+  status: WaConversationStatus;
+  assignedUserId: string | null;
+  assignedUserName: string | null;
+  lastMessageText: string | null;
+  lastMessageAt: string | null;
+  lastInboundAt: string | null;
+  unreadCount: number;
+  labels: string[];
+  updatedAt: string;
+  partyName: string;
+  partyPhone: string | null;
+  partyPhoneCc: string | null;
+  leadNumber: string | null;
+  isLearner: boolean;
+}
+
+export interface WaMessage {
+  id: string;
+  direction: WaMessageDirection;
+  senderType: WaSenderType;
+  senderUserId: string | null;
+  contentType: WaContentType;
+  body: string | null;
+  mediaUrl: string | null;
+  mediaMime: string | null;
+  templateName: string | null;
+  templateVariables: Record<string, string> | null;
+  providerMessageId: string | null;
+  status: WaMessageStatus;
+  errorCode: string | null;
+  errorMessage: string | null;
+  inReplyToProviderId: string | null;
+  sentAt: string;
+  deliveredAt: string | null;
+  readAt: string | null;
+}
+
+export interface WaConversationDetail {
+  conversation: WaConversationListItem & {
+    partyEmail: string | null;
+    partyCity: string | null;
+    createdAt: string;
+  };
+  messages: WaMessage[];
+  tags: WaTag[];
+}
+
+// ─── Broadcasts (Phase 3) ────────────────────────────────────────────────
+
+export type WaBroadcastStatus = "draft" | "scheduled" | "sending" | "completed" | "cancelled" | "failed";
+export type WaBroadcastRecipientStatus = "pending" | "sent" | "delivered" | "read" | "failed" | "cancelled";
+
+export interface WaBroadcastListItem {
+  id: string;
+  name: string;
+  status: WaBroadcastStatus;
+  templateId: string;
+  templateName: string | null;
+  templateLanguage: string | null;
+  scheduledAt: string | null;
+  startedAt: string | null;
+  finishedAt: string | null;
+  totalRecipients: number;
+  sentCount: number;
+  deliveredCount: number;
+  readCount: number;
+  failedCount: number;
+  createdAt: string;
+  createdBy: string | null;
+  createdByName: string | null;
+}
+
+export interface WaBroadcastDetail {
+  broadcast: WaBroadcastListItem & {
+    templateBodyText: string | null;
+    templateVariableCount: number | null;
+    defaultVariables: Record<string, string>;
+    updatedAt: string;
+  };
+  recipients: WaBroadcastRecipient[];
+}
+
+export interface WaBroadcastRecipient {
+  id: string;
+  partyId: string | null;
+  partyName: string | null;
+  toPhone: string;
+  variables: Record<string, string>;
+  status: WaBroadcastRecipientStatus;
+  providerMessageId: string | null;
+  errorCode: string | null;
+  errorMessage: string | null;
+  queuedAt: string;
+  sentAt: string | null;
+  deliveredAt: string | null;
+  readAt: string | null;
+}
+
+// ─── Automations (Phase 4) ──────────────────────────────────────────────
+
+export type WaTriggerType = "inbound_message_keyword" | "new_contact" | "lead_created";
+export type WaActionType = "send_template" | "send_text" | "add_tag" | "assign_user" | "set_status";
+export type WaAutomationRunStatus = "running" | "completed" | "failed" | "skipped";
+
+export interface WaAutomationTrigger {
+  type: WaTriggerType;
+  config?: Record<string, unknown>;
+}
+
+export interface WaAutomationAction {
+  type: WaActionType;
+  config: Record<string, unknown>;
+}
+
+export interface WaAutomationListItem {
+  id: string;
+  name: string;
+  description: string | null;
+  trigger: WaAutomationTrigger;
+  actions: WaAutomationAction[];
+  enabled: boolean;
+  createdBy: string | null;
+  createdByName: string | null;
+  createdAt: string;
+  updatedAt: string;
+  runCount: number;
+}
+
+export interface WaAutomationRunItem {
+  id: string;
+  partyId: string | null;
+  partyName: string | null;
+  conversationId: string | null;
+  status: WaAutomationRunStatus;
+  context: Record<string, unknown>;
+  actionsLog: Array<{ type: WaActionType; ok: boolean; error?: string }>;
+  errorMessage: string | null;
+  startedAt: string;
+  completedAt: string | null;
+}
+
 export type Stage = "new" | "qual" | "demo" | "neg" | "won";
 export type Heat = "hot" | "warm" | "cold";
 // Human-set lead rating. Replaces the auto-derived `heat` for UI purposes.
@@ -909,3 +1108,4 @@ export interface TimelineRow {
   };
   ts: string;
 }
+

@@ -32,8 +32,26 @@ import { batchesRouter } from "./routes/batches.js";
 import { viewsRouter } from "./routes/views.js";
 import { integrationsRouter } from "./routes/integrations.js";
 import { shareRouter } from "./routes/share.js";
+import { whatsappRouter } from "./routes/whatsapp.js";
+import { whatsappWebhookRouter } from "./routes/whatsapp-webhook.js";
+import { startBroadcastWorker } from "./lib/whatsapp/broadcasts.js";
 
 const app = express();
+
+// Mount the WhatsApp webhook FIRST with raw-body parsing — Meta signs the
+// raw bytes with HMAC-SHA256, so any re-stringified JSON would break
+// signature verification. We can't use the app-wide express.json() before
+// this, hence the per-route ordering.
+//
+// CORS doesn't apply to webhook (Meta isn't a browser); cookieParser
+// doesn't either. So this mount runs against a bare app — fine for one
+// route, weird if it grew.
+app.use(
+  "/webhooks/whatsapp",
+  express.raw({ type: "application/json", limit: "1mb" }),
+  whatsappWebhookRouter,
+);
+
 app.use(express.json());
 app.use(cookieParser());
 
@@ -131,6 +149,9 @@ app.use("/views",       requirePermission("pipeline.read"), viewsRouter);
 app.use("/integrations", readWrite("integrations.read", "integrations.manage"), integrationsRouter);
 // Manual "Share to Slack" — gated per-handler by the surface's read perm.
 app.use("/share", shareRouter);
+// WhatsApp — config in Phase 1; conversations/messages/broadcasts in
+// Phase 2+. Permission gates are enforced per-handler inside the router.
+app.use("/whatsapp", whatsappRouter);
 
 // JSON error envelope
 app.use((err: Error, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
@@ -139,4 +160,7 @@ app.use((err: Error, _req: express.Request, res: express.Response, _next: expres
 });
 
 const port = Number(process.env.PORT ?? 4000);
-app.listen(port, () => console.log(`api listening on http://localhost:${port}`));
+app.listen(port, () => {
+  console.log(`api listening on http://localhost:${port}`);
+  startBroadcastWorker();
+});

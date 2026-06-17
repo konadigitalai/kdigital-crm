@@ -6,7 +6,10 @@
 // The contract: emitEvent NEVER throws. The originating write path has
 // already committed; a notification failure must not 500 the request.
 
+import { sql } from "drizzle-orm";
 import { dispatchSlack } from "./slack.js";
+import { withTenant } from "../db/app.js";
+import { runAutomations } from "./whatsapp/automations.js";
 
 export type DomainEventType = "lead.created" | "case.opened" | "case.closed";
 
@@ -68,4 +71,36 @@ export async function emitEvent(e: DomainEvent): Promise<void> {
     // the originating request returns its happy-path response.
     console.error("[events] dispatch failure (swallowed):", (err as Error).message);
   }
+
+  // Fan out to WhatsApp automations. Same swallow-errors contract.
+  try {
+    await dispatchWhatsAppAutomations(e);
+  } catch (err) {
+    console.error("[events] wa-automation dispatch failure (swallowed):", (err as Error).message);
+  }
+}
+
+async function dispatchWhatsAppAutomations(e: DomainEvent): Promise<void> {
+  if (e.type !== "lead.created") return;  // v1 only handles lead.created
+  const ctx = e.context as LeadCreatedContext;
+
+  await withTenant(e.tenantId, async (db) => {
+    // Look up the party + WhatsApp conversation for this lead.
+    const r = await db.execute(sql`
+      SELECT l.party_id AS "partyId", c.id AS "conversationId"
+      FROM lead l
+      LEFT JOIN wa_conversation c ON c.party_id = l.party_id
+      WHERE l.id = ${ctx.leadId}
+    `);
+    const row = r.rows[0] as { partyId: string | null; conversationId: string | null } | undefined;
+    if (!row?.partyId) return;
+
+    await runAutomations(db, {
+      kind: "lead_created",
+      partyId: row.partyId,
+      conversationId: row.conversationId,
+      source: ctx.source,
+      number: ctx.number,
+    });
+  });
 }

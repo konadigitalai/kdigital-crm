@@ -36,6 +36,11 @@ export const PERMISSIONS = [
 
   "integrations.read",
   "integrations.manage",
+
+  "whatsapp.read",
+  "whatsapp.send",
+  "whatsapp.broadcast",
+  "whatsapp.manage",
 ] as const;
 
 export type Permission = (typeof PERMISSIONS)[number];
@@ -179,6 +184,17 @@ export const MODULE_CATALOG: ModuleAccess[] = [
       { key: "manage", label: "Manage", permission: "integrations.manage" },
     ],
   },
+  {
+    key: "whatsapp",
+    label: "WhatsApp",
+    description: "Inbox, send messages, broadcasts, and Meta config.",
+    levels: [
+      { key: "read",      label: "Read",      permission: "whatsapp.read" },
+      { key: "send",      label: "Send",      permission: "whatsapp.send" },
+      { key: "broadcast", label: "Broadcast", permission: "whatsapp.broadcast" },
+      { key: "manage",    label: "Manage",    permission: "whatsapp.manage" },
+    ],
+  },
 ];
 
 // Quick-fill presets shown above the checkbox grid in the group editor.
@@ -197,6 +213,7 @@ const ADVISOR_PERMS: Permission[] = [
   "events.manage.self",
   "timesheets.read.self",
   "reports.read",
+  "whatsapp.read", "whatsapp.send",
 ];
 
 const SUPPORT_PERMS: Permission[] = [
@@ -204,6 +221,7 @@ const SUPPORT_PERMS: Permission[] = [
   "learners.read", "learners.write",
   "events.manage.self",
   "timesheets.read.self",
+  "whatsapp.read", "whatsapp.send",
 ];
 
 const TRAINER_PERMS: Permission[] = [
@@ -267,6 +285,7 @@ export const SYSTEM_GROUPS: Array<{ name: string; description: string; permissio
       "reports.read",
       "timesheets.read.self",
       "events.manage.self",
+      "whatsapp.read", "whatsapp.send",
     ],
   },
   {
