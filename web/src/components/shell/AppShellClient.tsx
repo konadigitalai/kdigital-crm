@@ -59,11 +59,17 @@ export function AppShellClient({
     });
   }
 
+  // Two layout modes:
+  //   collapsed → IconRail (66px) only, Sidebar hidden
+  //   expanded  → Sidebar (280px) only, IconRail hidden
+  // We never show both at once — that's the design call. (Originally we
+  // showed both, then collapsed only the Sidebar; now we keep just one
+  // panel visible at a time so the chrome stays minimal.)
   return (
     <div
       className="relative z-[1] grid h-screen"
       style={{
-        gridTemplateColumns: collapsed ? "66px 0px 1fr" : "66px 280px 1fr",
+        gridTemplateColumns: collapsed ? "66px 0px 1fr" : "0px 280px 1fr",
         // Constrain the single grid row to exactly the viewport height.
         // Without this, a long `<main>` would push grid row height to its
         // content size — the `overflow-y-auto` on <main> never kicks in
@@ -72,12 +78,19 @@ export function AppShellClient({
         transition: "grid-template-columns 200ms ease",
       }}
     >
-      <IconRail
-        currentUser={currentUser}
-        summary={summary}
-        sidebarCollapsed={collapsed}
-        onExpandSidebar={() => setCollapsed(false)}
-      />
+      {/* Rail's parent column shrinks to 0 when Sidebar is open. We also
+          conditionally render so it stops being interactive (no stray
+          tooltips, no tab-stops) when hidden. */}
+      <div className="overflow-hidden">
+        {collapsed && (
+          <IconRail
+            currentUser={currentUser}
+            summary={summary}
+            sidebarCollapsed={collapsed}
+            onExpandSidebar={() => setCollapsed(false)}
+          />
+        )}
+      </div>
       {/* The sidebar's parent column collapses to 0 width; the aside itself
           adds overflow-hidden so contents don't spill out mid-animation. */}
       <div className="overflow-hidden">
