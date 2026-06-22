@@ -37,8 +37,6 @@ export const SETTINGS_ANY_PERMISSIONS = [
   "admin.programs.manage",
   "admin.courses.manage",
   "admin.batches.manage",
-  "timesheets.read.self",  // own timesheet (relocated under Settings)
-  "timesheets.read.all",
   "integrations.read",
   "whatsapp.read",
   "leads.delete",

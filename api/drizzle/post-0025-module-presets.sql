@@ -28,24 +28,24 @@ BEGIN
       SELECT * FROM (VALUES
         (
           'Sales advisor',
-          'Lead pipeline + agents + own calendar / timesheet.',
+          'Lead pipeline + agents + own calendar / leaves.',
           ARRAY[
             'leads.read','leads.write',
             'pipeline.read','pipeline.write',
             'agents.read','agents.run',
             'events.manage.self',
-            'timesheets.read.self',
+            'leaves.read.self',
             'reports.read'
           ]::text[]
         ),
         (
           'Support rep',
-          'Cases + learners + own calendar / timesheet.',
+          'Cases + learners + own calendar / leaves.',
           ARRAY[
             'cases.read','cases.write',
             'learners.read','learners.write',
             'events.manage.self',
-            'timesheets.read.self'
+            'leaves.read.self'
           ]::text[]
         ),
         (
@@ -54,7 +54,7 @@ BEGIN
           ARRAY[
             'learners.read',
             'events.manage.self',
-            'timesheets.read.self'
+            'leaves.read.self'
           ]::text[]
         ),
         (
@@ -66,7 +66,7 @@ BEGIN
             'cases.read',
             'learners.read',
             'reports.read',
-            'timesheets.read.self'
+            'leaves.read.self'
           ]::text[]
         )
       ) AS v(name, description, perms)

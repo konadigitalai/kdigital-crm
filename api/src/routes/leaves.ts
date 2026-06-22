@@ -1,4 +1,4 @@
-// Leaves — self-marked. Admin (timesheets.read.all) can read everyone's.
+// Leaves — self-marked. Admin (leaves.read.all) can read everyone's.
 
 import { Router } from "express";
 import { sql } from "drizzle-orm";
@@ -10,12 +10,12 @@ export const leavesRouter = Router();
 const KINDS = new Set(["sick", "personal", "vacation", "wfh", "holiday"]);
 const HALF = new Set(["full", "am", "pm"]);
 
-leavesRouter.get("/", requirePermission("timesheets.read.self"), async (req, res, next) => {
+leavesRouter.get("/", requirePermission("leaves.read.self"), async (req, res, next) => {
   try {
     const targetUserId = req.query.userId ? String(req.query.userId) : req.userId!;
     const from = req.query.from ? String(req.query.from) : null;
     const to = req.query.to ? String(req.query.to) : null;
-    if (targetUserId !== req.userId && !req.permissions?.has("timesheets.read.all")) {
+    if (targetUserId !== req.userId && !req.permissions?.has("leaves.read.all")) {
       return res.status(403).json({ error: "Cannot read another user's leaves" });
     }
     const rows = await withTenant(req.tenantId!, async (db) => {
@@ -43,7 +43,7 @@ leavesRouter.get("/", requirePermission("timesheets.read.self"), async (req, res
   }
 });
 
-leavesRouter.post("/", requirePermission("timesheets.read.self"), async (req, res, next) => {
+leavesRouter.post("/", requirePermission("leaves.read.self"), async (req, res, next) => {
   try {
     const date = String(req.body?.date ?? "").trim();
     const kind = String(req.body?.kind ?? "").trim();
@@ -68,7 +68,7 @@ leavesRouter.post("/", requirePermission("timesheets.read.self"), async (req, re
   }
 });
 
-leavesRouter.patch("/:id", requirePermission("timesheets.read.self"), async (req, res, next) => {
+leavesRouter.patch("/:id", requirePermission("leaves.read.self"), async (req, res, next) => {
   try {
     const id = String(req.params.id);
     const b = req.body ?? {};
@@ -97,7 +97,7 @@ leavesRouter.patch("/:id", requirePermission("timesheets.read.self"), async (req
   }
 });
 
-leavesRouter.delete("/:id", requirePermission("timesheets.read.self"), async (req, res, next) => {
+leavesRouter.delete("/:id", requirePermission("leaves.read.self"), async (req, res, next) => {
   try {
     const id = String(req.params.id);
     const out = await withTenant(req.tenantId!, async (db) => {

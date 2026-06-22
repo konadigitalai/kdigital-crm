@@ -6,7 +6,7 @@ import {
   getCatalog,
   getCurrentUser,
   getEvents,
-  getTimesheetRange,
+  getLeaves,
 } from "@/lib/api";
 import { requirePagePermission } from "@/lib/guards";
 import { CalendarShell } from "@/components/calendar/CalendarShell";
@@ -41,9 +41,9 @@ export default async function CalendarPage() {
   const from = week[0]!;
   const to = week[week.length - 1]!;
 
-  const [events, range, catalog, sessions] = await Promise.all([
+  const [events, leaves, catalog, sessions] = await Promise.all([
     getEvents(from, to),
-    getTimesheetRange(from, to),
+    getLeaves({ from, to }),
     getCatalog(),
     getBatchSessions(from, to),
   ]);
@@ -62,7 +62,7 @@ export default async function CalendarPage() {
         <div className="mb-[22px]">
           <h1 className="font-serif text-[40px] font-normal leading-none tracking-[-.01em]">Calendar</h1>
           <p className="mt-2 max-w-[640px] text-[13.5px] text-mute">
-            Day, week, and month views of your meetings, batch sessions, and time blocks. Click any slot to schedule — invitees see it the moment they refresh.
+            Day, week, and month views of your meetings, batch sessions, and leaves. Click any slot to schedule — invitees see it the moment they refresh.
           </p>
         </div>
         <CalendarShell
@@ -71,8 +71,7 @@ export default async function CalendarPage() {
           initialAnchorISO={todayISO}
           initialView="week"
           initialEvents={events}
-          initialBlocks={range.blocks}
-          initialLeaves={range.leaves}
+          initialLeaves={leaves}
           initialSessions={sessions}
           initialFrom={from}
           initialTo={to}
