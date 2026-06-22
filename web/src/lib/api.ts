@@ -16,7 +16,6 @@ import type {
   SlackDelivery, SlackRule, SlackRuleInput,
   SlackSharePreview, SlackShareTarget, SlackShareTargetInput, SlackShareTargetsResponse,
   SummaryResponse,
-  TimeBlock, TimesheetReportRow, WorkSession,
 } from "./types";
 
 // URL resolution differs between server- and client-side fetches.
@@ -831,77 +830,6 @@ export async function renameEdifySession(sessionId: string, title: string): Prom
 
 export async function deleteEdifySession(sessionId: string): Promise<void> {
   await send<void>("DELETE", `/agents/edify/sessions/${encodeURIComponent(sessionId)}`);
-}
-
-// ── Timesheets ─────────────────────────────────────────────────────────────
-
-export async function clockIn(): Promise<{ session: WorkSession }> {
-  return await post<{ session: WorkSession }>("/timesheets/clock-in", {});
-}
-
-export async function clockOut(notes?: string): Promise<{ ok: boolean; sessionId: string; blocks: TimeBlock[] }> {
-  return await post("/timesheets/clock-out", { notes: notes ?? null });
-}
-
-export async function getTodayTimesheet(): Promise<{ session: WorkSession | null; blocks: TimeBlock[] }> {
-  try {
-    return await get("/timesheets/today");
-  } catch (err) {
-    if ((err as Error).message.includes("→ 401")) return { session: null, blocks: [] };
-    throw err;
-  }
-}
-
-export async function getTimesheetRange(
-  from: string,
-  to: string,
-  userId?: string,
-): Promise<{ sessions: WorkSession[]; blocks: TimeBlock[]; leaves: LeaveDay[] }> {
-  const qs = new URLSearchParams({ from, to });
-  if (userId) qs.set("userId", userId);
-  try {
-    return await get(`/timesheets/range?${qs}`);
-  } catch (err) {
-    if ((err as Error).message.includes("→ 401")) return { sessions: [], blocks: [], leaves: [] };
-    throw err;
-  }
-}
-
-export async function patchTimeBlock(id: string, patch: { note?: string | null; billable?: boolean; startAt?: string; endAt?: string }): Promise<{ block: TimeBlock }> {
-  return await send<{ block: TimeBlock }>("PATCH", `/timesheets/blocks/${id}`, patch);
-}
-
-export async function splitTimeBlock(id: string, atISO: string): Promise<void> {
-  await post<void>(`/timesheets/blocks/${id}/split`, { atISO });
-}
-
-export async function mergeTimeBlocks(ids: string[]): Promise<void> {
-  await post<void>(`/timesheets/blocks/merge`, { ids });
-}
-
-export async function addTimeBlock(input: { startAt: string; endAt: string; note?: string | null }): Promise<{ block: TimeBlock }> {
-  return await post<{ block: TimeBlock }>(`/timesheets/blocks`, input);
-}
-
-export async function deleteTimeBlock(id: string): Promise<void> {
-  await send<void>("DELETE", `/timesheets/blocks/${id}`);
-}
-
-export async function getTimesheetReport(
-  from: string,
-  to: string,
-  opts: { userIds?: string[] } = {},
-): Promise<TimesheetReportRow[]> {
-  const qs = new URLSearchParams({ from, to });
-  if (opts.userIds?.length) qs.set("userIds", opts.userIds.join(","));
-  try {
-    const { rows } = await get<{ rows: TimesheetReportRow[] }>(`/timesheets/report?${qs}`);
-    return rows;
-  } catch (err) {
-    if ((err as Error).message.includes("→ 401")) return [];
-    if ((err as Error).message.includes("→ 403")) return [];
-    throw err;
-  }
 }
 
 // ── Leaves ─────────────────────────────────────────────────────────────────

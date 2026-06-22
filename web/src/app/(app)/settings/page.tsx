@@ -39,15 +39,6 @@ const ALL_CARDS: SettingsCard[] = [
   { section: "Operations", href: "/admin/courses",  icon: "graduation-cap", title: "Courses",
     blurb: "Courses inside each program.",
     requires: "admin.courses.manage" },
-  { section: "Operations", href: "/timesheet",                icon: "clock", title: "My timesheet",
-    blurb: "Log your own time entries by project and category.",
-    requires: "timesheets.read.self" },
-  { section: "Operations", href: "/admin/timesheets",         icon: "clock", title: "All timesheets",
-    blurb: "Org-wide timesheet entries across all advisors.",
-    requires: "timesheets.read.all" },
-  { section: "Operations", href: "/admin/reports/timesheets", icon: "chart", title: "Timesheet reports",
-    blurb: "Aggregated time-utilisation reports.",
-    requires: "timesheets.read.all" },
 
   // Channels — third-party integrations
   { section: "Channels", href: "/admin/integrations/slack",    icon: "globe",          title: "Slack",

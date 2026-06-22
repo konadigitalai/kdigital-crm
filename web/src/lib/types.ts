@@ -491,27 +491,7 @@ export interface EdifySessionSummary {
   preview: string | null;
 }
 
-// ─── Phase G: Time tracking, leaves, calendar ──────────────────────────────
-
-export interface WorkSession {
-  id: string;
-  userId?: string;
-  date: string;            // YYYY-MM-DD
-  clockIn: string;
-  clockOut: string | null;
-  notes: string | null;
-}
-
-export interface TimeBlock {
-  id: string;
-  sessionId: string | null;
-  userId?: string;
-  date: string;
-  startAt: string;
-  endAt: string;
-  note: string | null;
-  billable: boolean;
-}
+// ─── Phase G: Leaves + calendar (timesheets removed) ──────────────────────
 
 export type LeaveKind = "sick" | "personal" | "vacation" | "wfh" | "holiday";
 export type LeaveHalfDay = "full" | "am" | "pm";
@@ -524,25 +504,6 @@ export interface LeaveDay {
   halfDay: LeaveHalfDay;
   note: string | null;
   createdAt?: string;
-}
-
-// One row of the admin timesheet report — pre-aggregated by user × day.
-export interface TimesheetReportRow {
-  userId: string;
-  userName: string | null;
-  userEmail: string;
-  date: string;
-  mins: number;
-  blocks: number;
-}
-
-// Returned in 409 bodies from POST / PATCH /timesheets/blocks so the UI can
-// show the conflicting block inline.
-export interface TimeBlockConflict {
-  id: string;
-  startAt: string;
-  endAt: string;
-  note: string | null;
 }
 
 export type EventRsvp = "pending" | "accepted" | "declined" | "tentative";

@@ -1,8 +1,8 @@
 "use client";
 
 // Outlook-style calendar shell. Owns the active view (day / week / month) and
-// the date anchor; re-fetches events / blocks / leaves / batch sessions when
-// either changes. Three view bodies live below.
+// the date anchor; re-fetches events / leaves / batch sessions when either
+// changes. Three view bodies live below.
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
@@ -11,7 +11,7 @@ import { cn } from "@/lib/cn";
 import {
   getBatchSessions,
   getEvents,
-  getTimesheetRange,
+  getLeaves,
 } from "@/lib/api";
 import type {
   BatchSession,
@@ -19,7 +19,6 @@ import type {
   EventRsvp,
   LeaveDay,
   LeaveKind,
-  TimeBlock,
 } from "@/lib/types";
 import { EventDialog } from "./EventDialog";
 import { BatchSessionPopover } from "./BatchSessionPopover";
@@ -32,7 +31,6 @@ interface Props {
   initialAnchorISO: string;          // a date in the initial week (today's IST date)
   initialView?: View;
   initialEvents: CalendarEventSummary[];
-  initialBlocks: TimeBlock[];
   initialLeaves: LeaveDay[];
   initialSessions: BatchSession[];
   initialFrom: string;                // ISO date corresponding to initial range start
@@ -145,14 +143,13 @@ function rangeFor(view: View, anchorISO: string): { from: string; to: string; da
 export function CalendarShell({
   meId, people,
   initialAnchorISO, initialView = "week",
-  initialEvents, initialBlocks, initialLeaves, initialSessions,
+  initialEvents, initialLeaves, initialSessions,
   initialFrom, initialTo,
 }: Props) {
   const router = useRouter();
   const [view, setView] = useState<View>(initialView);
   const [anchor, setAnchor] = useState<string>(initialAnchorISO);
   const [events, setEvents] = useState(initialEvents);
-  const [blocks, setBlocks] = useState(initialBlocks);
   const [leaves, setLeaves] = useState(initialLeaves);
   const [sessions, setSessions] = useState(initialSessions);
   const [busy, setBusy] = useState(false);
@@ -174,14 +171,13 @@ export function CalendarShell({
     setError(null);
     Promise.all([
       getEvents(from, to),
-      getTimesheetRange(from, to),
+      getLeaves({ from, to }),
       getBatchSessions(from, to),
     ])
-      .then(([ev, tr, sess]) => {
+      .then(([ev, lv, sess]) => {
         if (cancelled) return;
         setEvents(ev);
-        setBlocks(tr.blocks);
-        setLeaves(tr.leaves);
+        setLeaves(lv);
         setSessions(sess);
         setLoadedRange({ from, to });
       })
@@ -196,13 +192,12 @@ export function CalendarShell({
     setBusy(true);
     Promise.all([
       getEvents(from, to),
-      getTimesheetRange(from, to),
+      getLeaves({ from, to }),
       getBatchSessions(from, to),
     ])
-      .then(([ev, tr, sess]) => {
+      .then(([ev, lv, sess]) => {
         setEvents(ev);
-        setBlocks(tr.blocks);
-        setLeaves(tr.leaves);
+        setLeaves(lv);
         setSessions(sess);
         setLoadedRange({ from, to });
       })
@@ -305,7 +300,6 @@ export function CalendarShell({
           date={anchor}
           todayISO={todayISTDate()}
           events={events}
-          blocks={blocks}
           leaves={leaves}
           sessions={sessions}
           onNewAt={(hour) => newEventAt(anchor, hour)}
@@ -318,7 +312,6 @@ export function CalendarShell({
           weekDates={weekDatesIST(anchor)}
           todayISO={todayISTDate()}
           events={events}
-          blocks={blocks}
           leaves={leaves}
           sessions={sessions}
           onNewAt={newEventAt}
@@ -369,13 +362,12 @@ export function CalendarShell({
 
 // ── DayView ────────────────────────────────────────────────────────────────
 function DayView({
-  date, todayISO, events, blocks, leaves, sessions,
+  date, todayISO, events, leaves, sessions,
   onNewAt, onOpenEvent, onOpenSession,
 }: {
   date: string;
   todayISO: string;
   events: CalendarEventSummary[];
-  blocks: TimeBlock[];
   leaves: LeaveDay[];
   sessions: BatchSession[];
   onNewAt: (hour: number) => void;
@@ -384,7 +376,6 @@ function DayView({
 }) {
   const isToday = date === todayISO;
   const dayEvents = events.filter((e) => istDate(e.startAt) === date);
-  const dayBlocks = blocks.filter((b) => b.date === date);
   const daySessions = sessions.filter((s) => istDate(s.startAt) === date);
   const leave = leaves.find((l) => l.date === date);
 
@@ -417,7 +408,6 @@ function DayView({
               title={`Add event at ${fmtHour(h)}`}
             />
           ))}
-          {dayBlocks.map((b) => <BlockCard key={b.id} b={b} />)}
           {daySessions.map((s) => <SessionCard key={`sess-${s.cohortId}-${s.startAt}`} s={s} onClick={() => onOpenSession(s)} />)}
           {dayEvents.map((e) => <EventCard key={e.id} e={e} onClick={() => onOpenEvent(e.id)} />)}
         </div>
@@ -428,13 +418,12 @@ function DayView({
 
 // ── WeekView ───────────────────────────────────────────────────────────────
 function WeekView({
-  weekDates, todayISO, events, blocks, leaves, sessions,
+  weekDates, todayISO, events, leaves, sessions,
   onNewAt, onOpenEvent, onOpenSession,
 }: {
   weekDates: string[];
   todayISO: string;
   events: CalendarEventSummary[];
-  blocks: TimeBlock[];
   leaves: LeaveDay[];
   sessions: BatchSession[];
   onNewAt: (date: string, hour: number) => void;
@@ -452,16 +441,6 @@ function WeekView({
     }
     return m;
   }, [events, weekDates]);
-
-  const blocksByDay = useMemo(() => {
-    const m = new Map<string, TimeBlock[]>();
-    for (const b of blocks) {
-      const list = m.get(b.date) ?? [];
-      list.push(b);
-      m.set(b.date, list);
-    }
-    return m;
-  }, [blocks]);
 
   const sessionsByDay = useMemo(() => {
     const m = new Map<string, BatchSession[]>();
@@ -519,7 +498,6 @@ function WeekView({
                   title={`Add event at ${fmtHour(h)}`}
                 />
               ))}
-              {(blocksByDay.get(iso) ?? []).map((b) => <BlockCard key={b.id} b={b} />)}
               {(sessionsByDay.get(iso) ?? []).map((s) => (
                 <SessionCard key={`sess-${s.cohortId}-${s.startAt}`} s={s} onClick={() => onOpenSession(s)} />
               ))}
@@ -675,21 +653,6 @@ function HourRail() {
           <span className="mono-cap text-[9px] font-semibold tracking-[.04em] text-mute">{fmtHour(h)}</span>
         </div>
       ))}
-    </div>
-  );
-}
-
-function BlockCard({ b }: { b: TimeBlock }) {
-  const top = (istHour(b.startAt) - HOUR_START) * PX_PER_HOUR;
-  const height = (istHour(b.endAt) - istHour(b.startAt)) * PX_PER_HOUR;
-  if (top + height < 0 || top > HOURS.length * PX_PER_HOUR) return null;
-  return (
-    <div
-      className="pointer-events-none absolute left-1 right-1 rounded bg-ink/[.04] px-1 py-0.5"
-      style={{ top, height: Math.max(8, height - 1) }}
-      title={b.note ?? "Time block"}
-    >
-      <div className="truncate text-[9px] text-mute">{b.note ?? "Logged"}</div>
     </div>
   );
 }

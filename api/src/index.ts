@@ -25,7 +25,6 @@ import { approvalsRouter } from "./routes/approvals.js";
 import { casesRouter } from "./routes/cases.js";
 import { usersRouter } from "./routes/users.js";
 import { groupsRouter } from "./routes/groups.js";
-import { timesheetsRouter } from "./routes/timesheets.js";
 import { leavesRouter } from "./routes/leaves.js";
 import { eventsRouter } from "./routes/events.js";
 import { batchesRouter } from "./routes/batches.js";
@@ -137,7 +136,6 @@ app.use("/courses",  writeOnly("admin.courses.manage"),  coursesRouter);
 app.use("/users",    requirePermission("users.manage"),  usersRouter);
 app.use("/groups",   requirePermission("groups.manage"), groupsRouter);
 // Phase G — every route gates per-handler so we can mix self/admin permissions.
-app.use("/timesheets",  timesheetsRouter);
 app.use("/leaves",      leavesRouter);
 app.use("/events",      eventsRouter);
 app.use("/batches",     batchesRouter);

@@ -30,8 +30,8 @@ export const PERMISSIONS = [
 
   "reports.read",
 
-  "timesheets.read.self",
-  "timesheets.read.all",
+  "leaves.read.self",
+  "leaves.read.all",
   "events.manage.self",
 
   "integrations.read",
@@ -117,12 +117,12 @@ export const MODULE_CATALOG: ModuleAccess[] = [
     ],
   },
   {
-    key: "timesheets",
-    label: "Timesheets & leaves",
-    description: "Time blocks, leave marking. 'All' grants the team-wide pivot.",
+    key: "leaves",
+    label: "Leaves",
+    description: "Leave marking. 'All' grants visibility into other users' leaves.",
     levels: [
-      { key: "self", label: "Own",       permission: "timesheets.read.self" },
-      { key: "all",  label: "Team",      permission: "timesheets.read.all" },
+      { key: "self", label: "Own",       permission: "leaves.read.self" },
+      { key: "all",  label: "Team",      permission: "leaves.read.all" },
     ],
   },
   {
@@ -211,7 +211,7 @@ const ADVISOR_PERMS: Permission[] = [
   "pipeline.read", "pipeline.write",
   "agents.read", "agents.run",
   "events.manage.self",
-  "timesheets.read.self",
+  "leaves.read.self",
   "reports.read",
   "whatsapp.read", "whatsapp.send",
 ];
@@ -220,14 +220,14 @@ const SUPPORT_PERMS: Permission[] = [
   "cases.read", "cases.write",
   "learners.read", "learners.write",
   "events.manage.self",
-  "timesheets.read.self",
+  "leaves.read.self",
   "whatsapp.read", "whatsapp.send",
 ];
 
 const TRAINER_PERMS: Permission[] = [
   "learners.read",
   "events.manage.self",
-  "timesheets.read.self",
+  "leaves.read.self",
 ];
 
 const REPORTS_ONLY_PERMS: Permission[] = [
@@ -236,20 +236,20 @@ const REPORTS_ONLY_PERMS: Permission[] = [
   "cases.read",
   "learners.read",
   "reports.read",
-  "timesheets.read.self",
+  "leaves.read.self",
 ];
 
 export const PRESETS: PermissionPreset[] = [
   {
     key: "sales_advisor",
     name: "Sales advisor",
-    description: "Lead pipeline + agents + own calendar / timesheet.",
+    description: "Lead pipeline + agents + own calendar / leaves.",
     permissions: ADVISOR_PERMS,
   },
   {
     key: "support_rep",
     name: "Support rep",
-    description: "Cases + learners + own calendar / timesheet.",
+    description: "Cases + learners + own calendar / leaves.",
     permissions: SUPPORT_PERMS,
   },
   {
@@ -283,7 +283,7 @@ export const SYSTEM_GROUPS: Array<{ name: string; description: string; permissio
       "learners.read", "learners.write",
       "agents.read", "agents.run",
       "reports.read",
-      "timesheets.read.self",
+      "leaves.read.self",
       "events.manage.self",
       "whatsapp.read", "whatsapp.send",
     ],

@@ -720,47 +720,7 @@ export const edifyChatMessage = pgTable(
   }),
 );
 
-// ─── Phase G — Time tracking, leaves, calendar ───────────────────────────
-// (Client tables removed in post-0033; client_assignment + client are dropped
-// at deploy and the time_block.client_id column goes with them.)
-
-export const workSession = pgTable(
-  "work_session",
-  {
-    id: uuid("id").primaryKey().defaultRandom(),
-    tenantId: uuid("tenant_id").notNull().references(() => tenant.id),
-    userId: uuid("user_id").notNull().references(() => appUser.id, { onDelete: "cascade" }),
-    date: date("date").notNull(),
-    clockIn: timestamp("clock_in", { withTimezone: true }).notNull(),
-    clockOut: timestamp("clock_out", { withTimezone: true }),
-    notes: text("notes"),
-  },
-  (t) => ({
-    userDateIdx: index("work_session_user_date_idx").on(t.tenantId, t.userId, t.date),
-    openOnePerUser: uniqueIndex("work_session_open_one_per_user")
-      .on(t.userId).where(sql`clock_out IS NULL`),
-  }),
-);
-
-export const timeBlock = pgTable(
-  "time_block",
-  {
-    id: uuid("id").primaryKey().defaultRandom(),
-    tenantId: uuid("tenant_id").notNull().references(() => tenant.id),
-    userId: uuid("user_id").notNull().references(() => appUser.id, { onDelete: "cascade" }),
-    sessionId: uuid("session_id").references(() => workSession.id, { onDelete: "cascade" }),
-    date: date("date").notNull(),
-    startAt: timestamp("start_at", { withTimezone: true }).notNull(),
-    endAt: timestamp("end_at", { withTimezone: true }).notNull(),
-    note: text("note"),
-    billable: boolean("billable").notNull().default(true),
-    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-  },
-  (t) => ({
-    userDateIdx: index("time_block_user_date_idx").on(t.tenantId, t.userId, t.date),
-    endGtStart: check("time_block_endgtstart", sql`${t.endAt} > ${t.startAt}`),
-  }),
-);
+// ─── Phase G — Leaves + calendar (timesheets dropped in post-0037) ───────
 
 export const leaveDay = pgTable(
   "leave_day",
