@@ -26,6 +26,12 @@ export function makeChatModel(opts: MakeChatModelOpts = {}): ChatAnthropic {
     ...(anthropicApiUrl ? { anthropicApiUrl } : {}),
     // Modest backoff; LangChain handles 429/5xx retry logic internally.
     maxRetries: 3,
+    // ChatAnthropic defaults topP/topK to -1 and only allows the constructor
+    // to clear them for models whose names contain opus-4-1/sonnet-4-5/haiku-4-5.
+    // The NVIDIA-hosted Bedrock gateway rejects `top_p: -1`, so override via
+    // invocationKwargs — these are spread after the defaults and undefined keys
+    // are dropped by JSON.stringify before the request leaves the SDK.
+    invocationKwargs: { top_p: undefined, top_k: undefined },
   });
 }
 
