@@ -13,7 +13,6 @@ export default async function LearnersPage() {
     <>
       <Topbar
         crumb={<>Edify CRM <span className="text-hint">/</span> <b className="font-semibold text-ink">Learners</b></>}
-        search="Search learners…"
         status={`${activeCount} active`}
       />
 

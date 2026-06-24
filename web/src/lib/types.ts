@@ -303,6 +303,9 @@ export interface FeedItem {
 
 export interface RecentRun {
   id?: string;
+  /** Key of the agent this run came from (e.g. "outreach", "scoring") —
+   *  used by the sidebar to link each row to its agent page. */
+  agentKey?: string;
   label: string;
   status: "run" | "done" | "wait";
 }
@@ -716,6 +719,10 @@ export interface CourseAssignment {
   courseId: string;
   courseName: string;
   courseCode: string | null;
+  /** Whether the underlying course is enabled. Drives the learner page's
+   *  static active/inactive badge — the lifecycle of the assignment itself
+   *  (active/dropped/etc.) isn't exposed in the learner UI any more. */
+  courseEnabled: boolean;
   programId: string;
   programName: string;
 }
@@ -767,7 +774,7 @@ export interface LearnerRecord {
   courseAssignments: CourseAssignment[];
   assignments: BatchAssignment[];
   timeline: TimelineRow[];
-  originLead: { number: string; workItemId: string; score: number; heat: Heat } | null;
+  originLead: { number: string; workItemId: string; score: number; heat: Heat; description: string | null } | null;
 }
 
 export interface BatchInput {
@@ -1065,7 +1072,7 @@ export interface TimelineRow {
     when?: string;
     quote?: string | null;
     kind?: string;
-    edits?: { at: string; previous: string }[];
+    edits?: { at: string; previous: string; by?: string; byUserId?: string | null }[];
   };
   ts: string;
 }

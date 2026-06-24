@@ -14,7 +14,6 @@ export default async function CasesDashboardPage() {
     <>
       <Topbar
         crumb={<>Edify CRM <span className="text-hint">/</span> <b className="font-semibold text-ink">Cases</b></>}
-        search="Search cases…"
         status={data.counts.open > 0 ? `${data.counts.open} open` : "all clear"}
       />
 

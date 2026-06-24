@@ -453,6 +453,40 @@ export async function updateCourseAssignmentStatus(
   );
 }
 
+// Hard-delete a course_assignment. Any batch_assignments under it cascade
+// away server-side.
+export async function unassignLearnerCourse(
+  partyId: string,
+  courseAssignmentId: string,
+): Promise<{ ok: true; courseName: string; removedBatches: number }> {
+  const headers = await authHeaders();
+  const r = await fetch(
+    `${API_URL}/learners/${encodeURIComponent(partyId)}/courses/${encodeURIComponent(courseAssignmentId)}`,
+    { method: "DELETE", headers, cache: "no-store", credentials: "include" },
+  );
+  if (!r.ok) {
+    throw new Error(`DELETE /learners/${partyId}/courses/${courseAssignmentId} → ${r.status}: ${await r.text()}`);
+  }
+  return (await r.json()) as { ok: true; courseName: string; removedBatches: number };
+}
+
+// Hard-delete a single batch_assignment. Leaves the parent course_assignment
+// intact, so the learner is just removed from this one cohort.
+export async function unassignLearnerBatch(
+  partyId: string,
+  assignmentId: string,
+): Promise<{ ok: true; cohortName: string }> {
+  const headers = await authHeaders();
+  const r = await fetch(
+    `${API_URL}/learners/${encodeURIComponent(partyId)}/batches/${encodeURIComponent(assignmentId)}`,
+    { method: "DELETE", headers, cache: "no-store", credentials: "include" },
+  );
+  if (!r.ok) {
+    throw new Error(`DELETE /learners/${partyId}/batches/${assignmentId} → ${r.status}: ${await r.text()}`);
+  }
+  return (await r.json()) as { ok: true; cohortName: string };
+}
+
 export async function updateEnrolmentStatus(
   partyId: string,
   enrolmentId: string,

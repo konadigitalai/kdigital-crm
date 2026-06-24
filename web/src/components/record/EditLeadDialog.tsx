@@ -138,19 +138,25 @@ function Dialog({ leadNumber, lead, onClose }: { leadNumber: string; lead: LeadE
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/40 p-6 backdrop-blur-sm"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-6 backdrop-blur-sm"
       onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
     >
-      <div className="my-12 w-full max-w-[680px] rounded-2xl border border-rule bg-paper p-7 shadow-card" onClick={(e) => e.stopPropagation()}>
-        <div className="mb-6 flex items-start justify-between gap-4">
+      {/* Panel is height-bounded; header + footer stay pinned, the form body
+          becomes the only scrollable region. */}
+      <form
+        onSubmit={submit}
+        onClick={(e) => e.stopPropagation()}
+        className="flex max-h-[calc(100vh-3rem)] w-full max-w-[680px] flex-col rounded-2xl border border-rule bg-paper shadow-card"
+      >
+        <div className="flex flex-shrink-0 items-start justify-between gap-4 border-b border-rule p-7 pb-5">
           <div>
             <h2 className="font-serif text-[26px] font-normal leading-tight tracking-[-.01em]">Edit lead</h2>
             <p className="mt-1 text-[13px] text-mute">{leadNumber} · changes are recorded in the timeline.</p>
           </div>
-          <button onClick={onClose} className="text-mute hover:text-ink"><Icon name="plus" size={18} strokeWidth={2} className="rotate-45" /></button>
+          <button type="button" onClick={onClose} className="text-mute hover:text-ink"><Icon name="plus" size={18} strokeWidth={2} className="rotate-45" /></button>
         </div>
 
-        <form onSubmit={submit} className="space-y-5">
+        <div className="flex-1 space-y-5 overflow-y-auto p-7">
           <Section title="Contact">
             <Field label="Full name" required>
               <input className={inputCls} value={name} onChange={(e) => setName(e.target.value)} autoFocus />
@@ -337,18 +343,20 @@ function Dialog({ leadNumber, lead, onClose }: { leadNumber: string; lead: LeadE
             </Field>
           </Section>
 
+        </div>
+
+        <div className="flex flex-shrink-0 flex-col gap-3 border-t border-rule p-5">
           {error && (
             <div className="rounded-lg border border-state-warn/30 bg-state-warn/10 px-3 py-2 text-[12px] text-state-warn">{error}</div>
           )}
-
-          <div className="flex items-center justify-end gap-3 pt-1">
+          <div className="flex items-center justify-end gap-3">
             <button type="button" onClick={onClose} className="btn">Cancel</button>
             <button type="submit" disabled={busy} className="btn-grad disabled:opacity-60">
               {busy ? "Saving…" : "Save changes"}
             </button>
           </div>
-        </form>
-      </div>
+        </div>
+      </form>
     </div>
   );
 }

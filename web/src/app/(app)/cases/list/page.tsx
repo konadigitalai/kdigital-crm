@@ -21,7 +21,6 @@ export default async function CasesListPage() {
             <b className="font-semibold text-ink">All cases</b>
           </>
         }
-        search={`Search ${cases.length} case${cases.length === 1 ? "" : "s"}…`}
       />
 
       <div className="px-9 pb-[60px] pt-7">

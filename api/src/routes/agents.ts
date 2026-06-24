@@ -118,7 +118,9 @@ agentsRouter.get("/recent", requirePermission("agents.read"), async (req, res, n
   try {
     const rows = await withTenant(req.tenantId!, async (db) => {
       const r = await db.execute(sql`
-        SELECT ar.work_item_id AS "id", a.name AS "agentName",
+        SELECT ar.work_item_id AS "id",
+               ar.agent_key    AS "agentKey",
+               a.name          AS "agentName",
                ar.target, ar.status, ar.live, ar.started_at AS "startedAt"
         FROM agent_run ar
         JOIN agent a ON a.tenant_id = ar.tenant_id AND a.key = ar.agent_key
@@ -127,13 +129,15 @@ agentsRouter.get("/recent", requirePermission("agents.read"), async (req, res, n
         LIMIT 12
       `);
       return r.rows as Array<{
-        id: string; agentName: string; target: string | null; status: string;
+        id: string; agentKey: string; agentName: string;
+        target: string | null; status: string;
         live: boolean; startedAt: Date;
       }>;
     });
 
     const recent = rows.map((row) => ({
       id: row.id,
+      agentKey: row.agentKey,
       label: `${row.agentName}${row.target ? ` · ${row.target}` : ""}`,
       status:
         row.live && row.status === "running"
