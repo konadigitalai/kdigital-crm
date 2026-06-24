@@ -5,11 +5,17 @@
 // Rating is human-set (`lead.rating`) and is NOT updated by this agent — it's
 // passed in as evidence so the model knows the human's read. The legacy
 // `heat` column is auto-derived from rating via a DB trigger.
+//
+// Implemented as a 4-node LangGraph: plan → retrieve_context → score → write_back.
 
 import { sql } from "drizzle-orm";
+import { z } from "zod";
+import { Annotation, StateGraph, START, END } from "@langchain/langgraph";
+import { HumanMessage, SystemMessage } from "@langchain/core/messages";
+import type { RunnableConfig } from "@langchain/core/runnables";
 import { withTenant } from "../db/app.js";
-import { callClaude } from "../lib/llm.js";
-import { runAgent } from "./run.js";
+import { makeChatModel } from "../lib/llm.js";
+import { runWithGraph, getCheckpointer, configurable } from "./runtime.js";
 import { loadLeadContext, renderLeadContextBlock, type LeadContext } from "./lead-context.js";
 
 const SYSTEM_PROMPT = `You are a sales lead scoring assistant for an EdTech CRM (Digital Edify).
@@ -50,16 +56,23 @@ Hard rules:
 A human-set "rating" field accompanies each lead (one of: inbound, cold, warm,
 hot, superhot, enrolled). Treat that as a strong prior — humans see things the
 data doesn't. If your score wildly disagrees with the rating, surface that
-disagreement as a signal but do NOT override the rating; humans manage that.
+disagreement as a signal but do NOT override the rating; humans manage that.`;
 
-Output JSON: {"score": int, "scoreLabel": string, "scoreDesc": string, "signals": [{"text": string, "weight": string, "kind": string}]}`;
-
-interface ScoreOutput {
-  score: number;
-  scoreLabel: string;
-  scoreDesc: string;
-  signals: { text: string; weight: string; kind: string }[];
-}
+const ScoreSchema = z.object({
+  score: z.number().int().min(0).max(100),
+  scoreLabel: z.string().min(1),
+  scoreDesc: z.string().min(1),
+  signals: z
+    .array(
+      z.object({
+        text: z.string().min(1),
+        weight: z.string().min(1),
+        kind: z.enum(["pos", "neg", "neu"]),
+      }),
+    )
+    .min(1),
+});
+export type ScoreOutput = z.infer<typeof ScoreSchema>;
 
 function buildUserPrompt(c: LeadContext): string {
   return `${renderLeadContextBlock(c)}
@@ -72,28 +85,122 @@ days, fade the score down. Do NOT just nudge the previous score by a small
 delta — recompute fresh from the evidence.`;
 }
 
-function validate(o: unknown): ScoreOutput {
-  const x = o as Record<string, unknown>;
-  if (!x || typeof x !== "object") throw new Error("Score output not an object");
-  const score = Number(x.score);
-  if (!Number.isFinite(score) || score < 0 || score > 100) throw new Error("score must be 0-100");
-  const scoreLabel = String(x.scoreLabel ?? "").trim();
-  const scoreDesc = String(x.scoreDesc ?? "").trim();
-  if (!scoreLabel || !scoreDesc) throw new Error("scoreLabel/scoreDesc empty");
-  const rawSig = Array.isArray(x.signals) ? (x.signals as unknown[]) : [];
-  const signals = rawSig
-    .map((s) => {
-      const r = s as Record<string, unknown>;
-      const text = String(r.text ?? "").trim();
-      const weight = String(r.weight ?? "").trim();
-      const kind = String(r.kind ?? "").trim();
-      if (!text || !weight || !["pos", "neg", "neu"].includes(kind)) return null;
-      return { text, weight, kind };
-    })
-    .filter((s): s is { text: string; weight: string; kind: string } => s !== null);
-  if (signals.length < 1) throw new Error("need at least one signal");
-  return { score: Math.round(score), scoreLabel, scoreDesc, signals };
+// ─── Graph state ─────────────────────────────────────────────────────────────
+
+const ScoringState = Annotation.Root({
+  ctx: Annotation<LeadContext>(),
+  scoreOut: Annotation<ScoreOutput | null>({
+    reducer: (_x, y) => y,
+    default: () => null,
+  }),
+  llmModel: Annotation<string | null>({
+    reducer: (_x, y) => y,
+    default: () => null,
+  }),
+  tokensIn: Annotation<number>({ reducer: (_x, y) => y, default: () => 0 }),
+  tokensOut: Annotation<number>({ reducer: (_x, y) => y, default: () => 0 }),
+});
+type ScoringStateT = typeof ScoringState.State;
+
+// ─── Nodes ───────────────────────────────────────────────────────────────────
+
+async function planNode(_state: ScoringStateT) {
+  // Bookkeeping-only step; runtime captures the detail string from
+  // formatStepDetail. Returning {} doesn't change state.
+  return {};
 }
+
+async function retrieveContextNode(_state: ScoringStateT) {
+  // The full context was loaded outside the graph (so the run's `target`
+  // string can include the lead name); this node is a placeholder for the
+  // step pill.
+  return {};
+}
+
+async function scoreNode(state: ScoringStateT) {
+  const model = makeChatModel({ maxTokens: 1200 }).withStructuredOutput(ScoreSchema, {
+    name: "lead_score",
+  });
+  const result = await model.invoke([
+    new SystemMessage(SYSTEM_PROMPT),
+    new HumanMessage(buildUserPrompt(state.ctx)),
+  ]);
+  // withStructuredOutput returns the parsed object directly. Token usage and
+  // resolved model id aren't surfaced through this path — fall back to env.
+  return {
+    scoreOut: result,
+    llmModel: process.env.ANTHROPIC_MODEL ?? null,
+  };
+}
+
+async function writeBackNode(state: ScoringStateT, config: RunnableConfig) {
+  const { db, tenantId } = configurable(config);
+  const score = state.scoreOut!;
+  const ctx = state.ctx;
+
+  await db.execute(sql`
+    UPDATE lead SET
+      score = ${score.score},
+      score_label = ${score.scoreLabel},
+      score_desc  = ${score.scoreDesc},
+      score_reason = ${score.scoreDesc}
+    WHERE work_item_id = ${ctx.workItemId}
+  `);
+
+  await db.execute(sql`DELETE FROM lead_score_signal WHERE work_item_id = ${ctx.workItemId}`);
+  for (let i = 0; i < score.signals.length; i++) {
+    const s = score.signals[i]!;
+    await db.execute(sql`
+      INSERT INTO lead_score_signal (tenant_id, work_item_id, text, weight, kind, rank)
+      VALUES (${tenantId}, ${ctx.workItemId}, ${s.text}, ${s.weight}, ${s.kind}, ${i})
+    `);
+  }
+
+  const delta =
+    ctx.prevScore != null ? `${ctx.prevScore} → ${score.score}` : `→ ${score.score}`;
+  await db.execute(sql`
+    INSERT INTO activity (
+      tenant_id, work_item_id, party_id, actor_type, actor_name,
+      verb, detail, tag, icon_key, icon_bg, icon_stroke, payload, ts
+    ) VALUES (
+      ${tenantId}, ${ctx.workItemId}, ${ctx.partyId},
+      'agent', 'Lead Scoring Agent',
+      're-scored', ${`Score ${delta} (rating: ${ctx.rating}). ${score.scoreDesc}`},
+      'auto', 'star',
+      'rgba(107,31,184,.1)', '#6B1FB8',
+      ${JSON.stringify({ subject: ctx.name, before: ctx.prevScore, after: score.score, rating: ctx.rating })}::jsonb,
+      NOW()
+    )
+  `);
+
+  await db.execute(sql`
+    INSERT INTO audit_log (tenant_id, actor_type, action, target_type, target_id, context)
+    VALUES (
+      ${tenantId}, 'agent', 'lead_rescored', 'work_item', ${ctx.workItemId},
+      ${JSON.stringify({ before: ctx.prevScore, after: score.score, rating: ctx.rating, model: state.llmModel })}::jsonb
+    )
+  `);
+
+  return {};
+}
+
+// ─── Compiled graph ──────────────────────────────────────────────────────────
+
+const NODE_ORDER = ["plan", "retrieve_context", "score", "write_back"] as const;
+
+const scoringGraph = new StateGraph(ScoringState)
+  .addNode("plan", planNode)
+  .addNode("retrieve_context", retrieveContextNode)
+  .addNode("score", scoreNode)
+  .addNode("write_back", writeBackNode)
+  .addEdge(START, "plan")
+  .addEdge("plan", "retrieve_context")
+  .addEdge("retrieve_context", "score")
+  .addEdge("score", "write_back")
+  .addEdge("write_back", END)
+  .compile({ checkpointer: getCheckpointer() });
+
+// ─── Public entry ────────────────────────────────────────────────────────────
 
 export async function scoreLead(
   tenantId: string,
@@ -102,92 +209,35 @@ export async function scoreLead(
   const ctx = await loadLeadContext(tenantId, idOrNumber);
   if (!ctx) throw new Error("Lead not found");
 
-  const { result, runWorkItemId } = await runAgent({
+  const { result, runWorkItemId } = await runWithGraph<ScoringStateT, { after: ScoreOutput }>({
     tenantId,
     agentKey: "scoring",
     target: `re-scoring ${ctx.name}`,
-    steps: [
-      { label: "plan", state: "queued" },
-      { label: "retrieve_context", state: "queued" },
-      { label: "score", state: "queued" },
-      { label: "write_back", state: "queued" },
-    ],
-    body: async ({ beginStep, endStep, db }) => {
-      beginStep("plan");
-      endStep(`Lead ${ctx.number} · prev ${ctx.prevScore ?? "?"}`);
-
-      beginStep("retrieve_context");
-      endStep(`${ctx.prevSignals.length} signals, ${ctx.recentActivity.length} activities`);
-
-      beginStep("score");
-      const out = await callClaude({
-        system: SYSTEM_PROMPT,
-        user: buildUserPrompt(ctx),
-        expectJson: true,
-        maxTokens: 1200,
-      });
-      const score = validate(out.jsonValue);
-      endStep(`${out.usage.in}+${out.usage.out} tokens · score → ${score.score}`);
-
-      beginStep("write_back");
-      // Update the lead row. Note: rating is human-set and not touched here.
-      // The legacy `heat` column is auto-derived from rating by a DB trigger.
-      await db.execute(sql`
-        UPDATE lead SET
-          score = ${score.score},
-          score_label = ${score.scoreLabel},
-          score_desc  = ${score.scoreDesc},
-          score_reason = ${score.scoreDesc}
-        WHERE work_item_id = ${ctx.workItemId}
-      `);
-
-      // Replace signals in one go.
-      await db.execute(sql`DELETE FROM lead_score_signal WHERE work_item_id = ${ctx.workItemId}`);
-      for (let i = 0; i < score.signals.length; i++) {
-        const s = score.signals[i]!;
-        await db.execute(sql`
-          INSERT INTO lead_score_signal (tenant_id, work_item_id, text, weight, kind, rank)
-          VALUES (${tenantId}, ${ctx.workItemId}, ${s.text}, ${s.weight}, ${s.kind}, ${i})
-        `);
-      }
-
-      // Activity row capturing the move. Rating is shown for context only.
-      const delta =
-        ctx.prevScore != null
-          ? `${ctx.prevScore} → ${score.score}`
-          : `→ ${score.score}`;
-      await db.execute(sql`
-        INSERT INTO activity (
-          tenant_id, work_item_id, party_id, actor_type, actor_name,
-          verb, detail, tag, icon_key, icon_bg, icon_stroke, payload, ts
-        ) VALUES (
-          ${tenantId}, ${ctx.workItemId}, ${ctx.partyId},
-          'agent', 'Lead Scoring Agent',
-          're-scored', ${`Score ${delta} (rating: ${ctx.rating}). ${score.scoreDesc}`},
-          'auto', 'star',
-          'rgba(107,31,184,.1)', '#6B1FB8',
-          ${JSON.stringify({ subject: ctx.name, before: ctx.prevScore, after: score.score, rating: ctx.rating })}::jsonb,
-          NOW()
-        )
-      `);
-
-      await db.execute(sql`
-        INSERT INTO audit_log (tenant_id, actor_type, action, target_type, target_id, context)
-        VALUES (
-          ${tenantId}, 'agent', 'lead_rescored', 'work_item', ${ctx.workItemId},
-          ${JSON.stringify({ before: ctx.prevScore, after: score.score, rating: ctx.rating, model: out.model, tokensIn: out.usage.in, tokensOut: out.usage.out })}::jsonb
-        )
-      `);
-
-      endStep("done");
-      return {
-        before: { score: ctx.prevScore, rating: ctx.rating },
-        after: score,
-      };
+    nodeOrder: [...NODE_ORDER],
+    graph: scoringGraph,
+    initialState: {
+      ctx,
+      scoreOut: null,
+      llmModel: null,
+      tokensIn: 0,
+      tokensOut: 0,
     },
+    formatStepDetail: (node, update) => {
+      if (node === "plan") return `Lead ${ctx.number} · prev ${ctx.prevScore ?? "?"}`;
+      if (node === "retrieve_context")
+        return `${ctx.prevSignals.length} signals, ${ctx.recentActivity.length} activities`;
+      if (node === "score" && update.scoreOut) return `score → ${update.scoreOut.score}`;
+      if (node === "write_back") return "done";
+      return undefined;
+    },
+    project: (state) => ({ after: state.scoreOut! }),
   });
 
-  return { ...result, runWorkItemId };
+  return {
+    before: { score: ctx.prevScore, rating: ctx.rating },
+    after: result.after,
+    runWorkItemId,
+  };
 }
 
 // Bulk pass — open leads only. Runs sequentially to be gentle on the gateway.

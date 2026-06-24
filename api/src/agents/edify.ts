@@ -12,8 +12,10 @@
 //      per-user log so the home box can show recent history.
 
 import { sql } from "drizzle-orm";
+import { z } from "zod";
+import { HumanMessage, SystemMessage } from "@langchain/core/messages";
 import { withTenant } from "../db/app.js";
-import { callClaude } from "../lib/llm.js";
+import { makeChatModel } from "../lib/llm.js";
 import { loadLeadContext, renderLeadContextBlock } from "./lead-context.js";
 
 const VALID_ACTIONS = [
@@ -487,6 +489,29 @@ Output JSON:
   }
 }`;
 
+const EdifySchema = z.object({
+  answer: z.string().min(1),
+  citations: z
+    .array(
+      z.object({
+        kind: z.enum(VALID_CITATION_KINDS),
+        ref: z.string().min(1),
+        label: z.string().min(1),
+      }),
+    )
+    .default([]),
+  suggestedAction: z
+    .object({
+      action: z.enum(VALID_ACTIONS),
+      leadNumber: z.string().nullable().optional(),
+      label: z.string().min(1),
+      rationale: z.string().min(1),
+    })
+    .nullable()
+    .default(null),
+});
+type RawEdifyOutput = z.input<typeof EdifySchema>;
+
 function buildUserPrompt(question: string, snapshot: CrmSnapshot): string {
   // Snapshot is serialised compactly. The deep-lead block is appended last
   // since it can be the longest single section.
@@ -503,17 +528,14 @@ ${snapshotJson}${deepBlock}`;
 
 // ── Output validator ────────────────────────────────────────────────────
 
-function validate(o: unknown, snapshot: CrmSnapshot): {
+function trimAgainstSnapshot(
+  raw: RawEdifyOutput,
+  snapshot: CrmSnapshot,
+): {
   answer: string;
   citations: EdifyCitation[];
   suggestedAction: EdifySuggestedAction | null;
 } {
-  const x = o as Record<string, unknown>;
-  if (!x || typeof x !== "object") throw new Error("Edify output not an object");
-  const answer = String(x.answer ?? "").trim();
-  if (!answer) throw new Error("answer empty");
-
-  // Build the set of valid refs by kind so the validator can drop fabricated ones.
   const validLeadNumbers = new Set(snapshot.topLeads.map((l) => l.number));
   const validLearnerIds = new Set(snapshot.recentLearners.map((l) => l.partyId));
   const validCaseNumbers = new Set(snapshot.casesSummary.recent.map((t) => t.number));
@@ -521,48 +543,42 @@ function validate(o: unknown, snapshot: CrmSnapshot): {
   const validUserIds = new Set(snapshot.users.map((u) => u.id));
   const validAgentKeys = new Set(snapshot.recentAgentRuns.map((r) => r.agentKey));
 
-  const rawCit = Array.isArray(x.citations) ? (x.citations as unknown[]) : [];
-  const citations = rawCit
-    .map((c) => {
-      const cc = c as Record<string, unknown>;
-      const kind = String(cc.kind ?? "").trim() as CitationKind;
-      const ref = String(cc.ref ?? "").trim();
-      const label = String(cc.label ?? "").trim() || ref;
-      if (!(VALID_CITATION_KINDS as readonly string[]).includes(kind)) return null;
-      if (!ref || !label) return null;
-      // Validate ref against the snapshot.
-      if (kind === "lead" && !validLeadNumbers.has(ref)) return null;
-      if (kind === "learner" && !validLearnerIds.has(ref)) return null;
-      if (kind === "case" && !validCaseNumbers.has(ref)) return null;
-      if (kind === "program" && !validProgramIds.has(ref)) return null;
-      if (kind === "user" && !validUserIds.has(ref)) return null;
-      if (kind === "agent" && !validAgentKeys.has(ref) && !["outreach", "scoring", "nba", "forecast", "scheduler", "triage", "onboarding", "edify"].includes(ref)) return null;
-      // Cohort refs: cohorts in the snapshot don't have ids exposed — skip.
-      return { kind, ref, label } as EdifyCitation;
+  const citations = (raw.citations ?? [])
+    .filter((c) => {
+      if (!c.label) return false;
+      if (c.kind === "lead") return validLeadNumbers.has(c.ref);
+      if (c.kind === "learner") return validLearnerIds.has(c.ref);
+      if (c.kind === "case") return validCaseNumbers.has(c.ref);
+      if (c.kind === "program") return validProgramIds.has(c.ref);
+      if (c.kind === "user") return validUserIds.has(c.ref);
+      if (c.kind === "agent")
+        return (
+          validAgentKeys.has(c.ref) ||
+          ["outreach", "scoring", "nba", "forecast", "scheduler", "triage", "onboarding", "edify"].includes(c.ref)
+        );
+      // cohort refs: not exposed in snapshot
+      return false;
     })
-    .filter((c): c is EdifyCitation => c !== null)
-    .slice(0, 8);
+    .slice(0, 8) as EdifyCitation[];
 
   let suggestedAction: EdifySuggestedAction | null = null;
-  if (x.suggestedAction && typeof x.suggestedAction === "object") {
-    const sa = x.suggestedAction as Record<string, unknown>;
-    const action = String(sa.action ?? "").trim() as SuggestedActionKind;
-    const leadNumber = sa.leadNumber == null ? undefined : String(sa.leadNumber).trim();
-    const label = String(sa.label ?? "").trim();
-    const rationale = String(sa.rationale ?? "").trim();
-    if ((VALID_ACTIONS as readonly string[]).includes(action) && label && rationale) {
-      // Per-lead actions must reference a real lead.
-      if (action === "draft_outreach" || action === "rescore_lead" || action === "refresh_nba") {
-        if (leadNumber && validLeadNumbers.has(leadNumber)) {
-          suggestedAction = { action, leadNumber, label, rationale };
-        }
-      } else {
-        suggestedAction = { action, label, rationale };
+  const sa = raw.suggestedAction ?? null;
+  if (sa) {
+    if (sa.action === "draft_outreach" || sa.action === "rescore_lead" || sa.action === "refresh_nba") {
+      if (sa.leadNumber && validLeadNumbers.has(sa.leadNumber)) {
+        suggestedAction = {
+          action: sa.action,
+          leadNumber: sa.leadNumber,
+          label: sa.label,
+          rationale: sa.rationale,
+        };
       }
+    } else {
+      suggestedAction = { action: sa.action, label: sa.label, rationale: sa.rationale };
     }
   }
 
-  return { answer, citations, suggestedAction };
+  return { answer: raw.answer, citations, suggestedAction };
 }
 
 // ── Main entry ──────────────────────────────────────────────────────────
@@ -581,14 +597,17 @@ export async function askEdify(
 
   const snapshot = await buildSnapshot(tenantId, userId, cleanQ);
 
-  const out = await callClaude({
-    system: SYSTEM_PROMPT,
-    user: buildUserPrompt(cleanQ, snapshot),
-    expectJson: true,
-    maxTokens: 1500,
+  const model = makeChatModel({ maxTokens: 1500 }).withStructuredOutput(EdifySchema, {
+    name: "edify_answer",
   });
-
-  const validated = validate(out.jsonValue, snapshot);
+  const raw = await model.invoke([
+    new SystemMessage(SYSTEM_PROMPT),
+    new HumanMessage(buildUserPrompt(cleanQ, snapshot)),
+  ]);
+  const validated = trimAgainstSnapshot(raw, snapshot);
+  const resolvedModel = process.env.ANTHROPIC_MODEL ?? null;
+  // Token usage isn't surfaced through withStructuredOutput; persist nulls.
+  const usage = { in: 0, out: 0 };
 
   // Resolve session — verify ownership if one was supplied; otherwise create.
   const persisted = await withTenant(tenantId, async (db) => {
@@ -622,7 +641,7 @@ export async function askEdify(
         ${tenantId}, ${userId}, ${resolvedSessionId}, ${cleanQ}, ${validated.answer},
         ${JSON.stringify(validated.citations)}::jsonb,
         ${validated.suggestedAction ? JSON.stringify(validated.suggestedAction) : null}::jsonb,
-        ${out.model}, ${out.usage.in}, ${out.usage.out}
+        ${resolvedModel}, ${usage.in}, ${usage.out}
       )
       RETURNING id, asked_at
     `);
@@ -636,7 +655,7 @@ export async function askEdify(
       INSERT INTO audit_log (tenant_id, actor_type, action, target_type, target_id, context)
       VALUES (
         ${tenantId}, 'user', 'edify_asked', 'edify_chat_message', ${persisted.messageId},
-        ${JSON.stringify({ question: cleanQ.slice(0, 200), sessionId: persisted.sessionId, suggestedAction: validated.suggestedAction?.action ?? null, model: out.model, tokensIn: out.usage.in, tokensOut: out.usage.out })}::jsonb
+        ${JSON.stringify({ question: cleanQ.slice(0, 200), sessionId: persisted.sessionId, suggestedAction: validated.suggestedAction?.action ?? null, model: resolvedModel, tokensIn: usage.in, tokensOut: usage.out })}::jsonb
       )
     `);
   });

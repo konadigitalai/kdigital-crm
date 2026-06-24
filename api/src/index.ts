@@ -34,6 +34,7 @@ import { shareRouter } from "./routes/share.js";
 import { whatsappRouter } from "./routes/whatsapp.js";
 import { whatsappWebhookRouter } from "./routes/whatsapp-webhook.js";
 import { startBroadcastWorker } from "./lib/whatsapp/broadcasts.js";
+import { ensureCheckpointerSetup } from "./agents/runtime.js";
 
 const app = express();
 
@@ -158,7 +159,13 @@ app.use((err: Error, _req: express.Request, res: express.Response, _next: expres
 });
 
 const port = Number(process.env.PORT ?? 4000);
-app.listen(port, () => {
+app.listen(port, async () => {
   console.log(`api listening on http://localhost:${port}`);
   startBroadcastWorker();
+  // Idempotent: creates the LangGraph checkpoint tables on first boot.
+  try {
+    await ensureCheckpointerSetup();
+  } catch (err) {
+    console.error("[api] LangGraph checkpointer setup failed:", err);
+  }
 });
