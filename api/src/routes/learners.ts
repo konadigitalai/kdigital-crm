@@ -74,16 +74,21 @@ learnersRouter.get("/:partyId", async (req, res, next) => {
         ORDER BY e.created_at DESC
       `);
 
-      // Course assignments — the gate
+      // Course assignments — the gate. Includes co.enabled so the learner
+      // page can render a static active/inactive badge for each course.
+      // The course-assignment status (active|dropped|deferred|completed) is
+      // not surfaced to the learner UI any more — that lifecycle is managed
+      // on the Courses module.
       const courseAssignments = await db.execute(sql`
         SELECT
           ca.id, ca.status, ca.created_at AS "assignedAt",
           ca.enrolment_id AS "enrolmentId",
-          co.id   AS "courseId",
-          co.name AS "courseName",
-          co.code AS "courseCode",
-          pg.id   AS "programId",
-          pg.name AS "programName"
+          co.id      AS "courseId",
+          co.name    AS "courseName",
+          co.code    AS "courseCode",
+          co.enabled AS "courseEnabled",
+          pg.id      AS "programId",
+          pg.name    AS "programName"
         FROM course_assignment ca
         JOIN course  co ON co.id = ca.course_id
         LEFT JOIN program pg ON pg.id = co.program_id
@@ -132,7 +137,11 @@ learnersRouter.get("/:partyId", async (req, res, next) => {
       `);
 
       const originLead = await db.execute(sql`
-        SELECT wi.number, wi.id AS "workItemId", l.score, l.heat
+        SELECT wi.number,
+               wi.id          AS "workItemId",
+               l.score,
+               l.heat,
+               l.description  AS "description"
         FROM lead l
         JOIN work_item wi ON wi.id = l.work_item_id
         WHERE wi.party_id = ${partyId}
@@ -288,6 +297,54 @@ learnersRouter.patch("/:partyId/courses/:courseAssignmentId", async (req, res, n
   }
 });
 
+// DELETE /learners/:partyId/courses/:courseAssignmentId
+//   Hard-delete a course_assignment. Any batch_assignment rows that point at
+//   it are cascade-deleted by the schema (course_assignment_id has ON DELETE
+//   CASCADE). We log a single activity row capturing the course name + how
+//   many batches were dropped so the timeline tells the full story.
+learnersRouter.delete("/:partyId/courses/:courseAssignmentId", async (req, res, next) => {
+  try {
+    const partyId = String(req.params.partyId);
+    const id      = String(req.params.courseAssignmentId);
+
+    const result = await withTenant(req.tenantId!, async (db) => {
+      // Capture context before the cascade so we can describe what got removed.
+      const ctxR = await db.execute(sql`
+        SELECT co.name AS "courseName",
+               (SELECT COUNT(*)::int FROM batch_assignment ba WHERE ba.course_assignment_id = ca.id) AS "batchCount"
+        FROM course_assignment ca
+        JOIN course co ON co.id = ca.course_id
+        WHERE ca.id = ${id} AND ca.party_id = ${partyId}
+      `);
+      const ctx = ctxR.rows[0] as { courseName: string; batchCount: number } | undefined;
+      if (!ctx) return { kind: "missing" as const };
+
+      const del = await db.execute(sql`
+        DELETE FROM course_assignment
+        WHERE id = ${id} AND party_id = ${partyId}
+        RETURNING id
+      `);
+      if (del.rows.length === 0) return { kind: "missing" as const };
+
+      const batchPart = Number(ctx.batchCount) > 0
+        ? ` (also dropped ${ctx.batchCount} batch assignment${ctx.batchCount === 1 ? "" : "s"})`
+        : "";
+      await db.execute(sql`
+        INSERT INTO activity (tenant_id, party_id, actor_type, actor_name, verb, detail, tag, payload, ts)
+        VALUES (current_tenant(), ${partyId}, 'user', 'You', 'Course removed',
+                ${`Unassigned course: ${ctx.courseName}${batchPart}`}, 'you',
+                ${JSON.stringify({ when: "Just now", quote: null, courseAssignmentId: id })}::jsonb, NOW())
+      `);
+      return { kind: "ok" as const, courseName: ctx.courseName, removedBatches: Number(ctx.batchCount) };
+    });
+
+    if (result.kind === "missing") return res.status(404).json({ error: "Course assignment not found" });
+    res.json({ ok: true, courseName: result.courseName, removedBatches: result.removedBatches });
+  } catch (err) {
+    next(err);
+  }
+});
+
 // POST /learners/:partyId/batches  { cohortId }
 //   Gate: the batch's course MUST already have a course_assignment for this
 //   learner. If not, 409 with a helpful error.
@@ -387,6 +444,56 @@ learnersRouter.patch("/:partyId/batches/:assignmentId", async (req, res, next) =
     });
     if (!updated) return res.status(404).json({ error: "Assignment not found" });
     res.json({ ok: true, assignment: updated });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// DELETE /learners/:partyId/batches/:assignmentId
+//   Hard-delete a batch_assignment. Mirrors the unassign-course route but at
+//   batch granularity — removes the learner from one cohort without touching
+//   the parent course assignment or other batches under it. Logs one
+//   activity row so the timeline tells the story.
+learnersRouter.delete("/:partyId/batches/:assignmentId", async (req, res, next) => {
+  try {
+    const partyId      = String(req.params.partyId);
+    const assignmentId = String(req.params.assignmentId);
+
+    const actorName = req.user?.name?.trim() || "You";
+
+    const result = await withTenant(req.tenantId!, async (db) => {
+      const ctxR = await db.execute(sql`
+        SELECT c.name AS "cohortName",
+               co.name AS "courseName"
+        FROM batch_assignment ba
+        JOIN cohort c ON c.id = ba.cohort_id
+        LEFT JOIN course co ON co.id = c.course_id
+        WHERE ba.id = ${assignmentId} AND ba.party_id = ${partyId}
+      `);
+      const ctx = ctxR.rows[0] as { cohortName: string; courseName: string | null } | undefined;
+      if (!ctx) return { kind: "missing" as const };
+
+      const del = await db.execute(sql`
+        DELETE FROM batch_assignment
+        WHERE id = ${assignmentId} AND party_id = ${partyId}
+        RETURNING id
+      `);
+      if (del.rows.length === 0) return { kind: "missing" as const };
+
+      const detail = ctx.courseName
+        ? `Unassigned batch: ${ctx.cohortName} (course: ${ctx.courseName})`
+        : `Unassigned batch: ${ctx.cohortName}`;
+      await db.execute(sql`
+        INSERT INTO activity (tenant_id, party_id, actor_type, actor_name, verb, detail, tag, payload, ts)
+        VALUES (current_tenant(), ${partyId}, 'user', ${actorName}, 'Batch removed',
+                ${detail}, 'you',
+                ${JSON.stringify({ when: "Just now", quote: null, batchAssignmentId: assignmentId })}::jsonb, NOW())
+      `);
+      return { kind: "ok" as const, cohortName: ctx.cohortName };
+    });
+
+    if (result.kind === "missing") return res.status(404).json({ error: "Assignment not found" });
+    res.json({ ok: true, cohortName: result.cohortName });
   } catch (err) {
     next(err);
   }

@@ -22,7 +22,6 @@ export default async function LeadsPage() {
     <>
       <Topbar
         crumb={<>Edify CRM <span className="text-hint">/</span> <b className="font-semibold text-ink">Leads</b></>}
-        search={`Search ${o.total} lead${o.total === 1 ? "" : "s"}…`}
         status="Scoring live"
       />
 

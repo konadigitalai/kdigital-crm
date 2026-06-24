@@ -366,15 +366,26 @@ leadsRouter.get("/", async (req, res, next) => {
       // A person is a "lead" only while their lead party_role is current
       // (valid_to IS NULL). Once converted to learner, the lead role gets
       // end-dated and they disappear from this list.
+      //
+      // SELECT mirrors GET /pipeline so the /leads grid (which reuses the
+      // same column registry) can render every editable column. Previously
+      // this endpoint returned a slim shape and contact fields like phone,
+      // email, advisor, source rendered as "—" in the grid.
       const r = await db.execute(sql`
         SELECT
           wi.id              AS id,
           wi.number          AS number,
+          wi.created_at      AS "createdAt",
           p.name             AS name,
+          p.email            AS email,
+          p.phone            AS phone,
+          p.phone_country_code AS "phoneCountryCode",
           l.initials         AS initials,
           l.city             AS city,
           l.program          AS program,
+          l.program_id       AS "programId",
           l.value            AS value,
+          l.description      AS description,
           l.stage            AS stage,
           l.stage_label      AS "stageLabel",
           l.score            AS score,
@@ -384,15 +395,22 @@ leadsRouter.get("/", async (req, res, next) => {
           l.nba_icon         AS "nbaIcon",
           l.nba_label        AS "nbaLabel",
           l.nba_ghost        AS "nbaGhost",
+          l.next_followup_at AS "nextFollowupAt",
+          l.demo_attended_at AS "demoAttendedAt",
+          l.delivery_mode    AS "deliveryMode",
+          l.time_zone        AS "timeZone",
           l.fee_paid         AS "feePaid",
           l.fee_due          AS "feeDue",
           l.due_date         AS "dueDate",
           l.registered_date  AS "registeredDate",
-          l.next_followup_at AS "nextFollowupAt",
-          l.demo_attended_at AS "demoAttendedAt"
+          l.source           AS source,
+          l.source_label     AS "sourceLabel",
+          l.advisor_id       AS "advisorId",
+          au.name            AS "advisorName"
         FROM lead l
         JOIN work_item wi ON wi.id = l.work_item_id
         JOIN party p      ON p.id  = wi.party_id
+        LEFT JOIN app_user au ON au.id = l.advisor_id
         WHERE EXISTS (
           SELECT 1 FROM party_role pr
           WHERE pr.party_id = p.id AND pr.role = 'lead' AND pr.valid_to IS NULL
@@ -425,6 +443,9 @@ leadsRouter.patch("/:idOrNumber", async (req, res, next) => {
     if (b.rating !== undefined && !["new lead","attempted","cold","warm","hot","superhot","enrolled"].includes(String(b.rating))) {
       return res.status(400).json({ error: "rating invalid" });
     }
+
+    const actorName = req.user?.name?.trim() || "You";
+    const actorId   = req.userId ?? null;
 
     const updated = await withTenant(req.tenantId!, async (db) => {
       // Resolve work_item by id or number AND fetch current values so we can
@@ -713,8 +734,24 @@ leadsRouter.patch("/:idOrNumber", async (req, res, next) => {
             const d = (v: unknown) => v ? new Date(String(v)).toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" }) : "—";
             return `${label}: ${d(c.from)} → ${d(c.to)}`;
           }
-          if (c.field === "description" || c.field === "paymentProofUrl") {
-            // long text — just say "set" / "cleared" / "updated"
+          if (c.field === "description") {
+            // Long-form text — show a truncated "from → to" so the timeline
+            // tells the story without bloating the activity row. Newlines
+            // are flattened so the one-line diff stays readable.
+            const trim = (v: unknown): string => {
+              if (v == null || v === "") return "—";
+              const oneLine = String(v).replace(/\s+/g, " ").trim();
+              return oneLine.length > 80
+                ? `"${oneLine.slice(0, 80)}…"`
+                : `"${oneLine}"`;
+            };
+            const had = c.from != null && c.from !== "";
+            const has = c.to   != null && c.to   !== "";
+            if (!had && has) return `${label}: added — ${trim(c.to)}`;
+            if ( had && !has) return `${label}: cleared (was ${trim(c.from)})`;
+            return `${label}: ${trim(c.from)} → ${trim(c.to)}`;
+          }
+          if (c.field === "paymentProofUrl") {
             const had = c.from != null && c.from !== "";
             const has = c.to   != null && c.to   !== "";
             if (!had && has) return `${label}: added`;
@@ -728,9 +765,9 @@ leadsRouter.patch("/:idOrNumber", async (req, res, next) => {
 
         await db.execute(sql`
           INSERT INTO activity (tenant_id, work_item_id, party_id, actor_type, actor_name, verb, detail, tag, payload, ts)
-          VALUES (current_tenant(), ${wiId}, ${partyId}, 'user', 'You', 'Edit',
+          VALUES (current_tenant(), ${wiId}, ${partyId}, 'user', ${actorName}, 'Edit',
                   ${detail}, 'you',
-                  ${JSON.stringify({ when: "Just now", quote: null, fields: summaryFields, changes })}::jsonb,
+                  ${JSON.stringify({ when: "Just now", quote: null, fields: summaryFields, changes, byUserId: actorId })}::jsonb,
                   NOW())
         `);
       }
@@ -763,6 +800,9 @@ leadsRouter.post("/:idOrNumber/notes", async (req, res, next) => {
     const text = String(req.body?.text ?? "").trim();
     if (!text) return res.status(400).json({ error: "text required" });
 
+    const actorName = req.user?.name?.trim() || "You";
+    const actorId   = req.userId ?? null;
+
     const result = await withTenant(req.tenantId!, async (db) => {
       const wiRow = await db.execute(
         isUuid
@@ -774,9 +814,9 @@ leadsRouter.post("/:idOrNumber/notes", async (req, res, next) => {
       const partyId = (wiRow.rows[0] as { party_id: string }).party_id;
       const r = await db.execute(sql`
         INSERT INTO activity (tenant_id, work_item_id, party_id, actor_type, actor_name, verb, detail, tag, payload, ts)
-        VALUES (current_tenant(), ${wiId}, ${partyId}, 'user', 'You', 'Note',
+        VALUES (current_tenant(), ${wiId}, ${partyId}, 'user', ${actorName}, 'Note',
                 ${text}, 'you',
-                ${JSON.stringify({ when: "Just now", quote: null, kind: "note" })}::jsonb, NOW())
+                ${JSON.stringify({ when: "Just now", quote: null, kind: "note", byUserId: actorId })}::jsonb, NOW())
         RETURNING id
       `);
       return r.rows[0];
@@ -803,15 +843,19 @@ leadsRouter.patch("/:idOrNumber/notes/:activityId", async (req, res, next) => {
     const text = String(req.body?.text ?? "").trim();
     if (!text) return res.status(400).json({ error: "text required" });
 
+    const actorName = req.user?.name?.trim() || "You";
+    const actorId   = req.userId ?? null;
+
     const result = await withTenant(req.tenantId!, async (db) => {
       // Resolve work_item to scope the search (and reject cross-lead edits)
       const wiRow = await db.execute(
         isUuid
-          ? sql`SELECT id FROM work_item WHERE id = ${idOrNumber} AND type = 'lead'`
-          : sql`SELECT id FROM work_item WHERE number = ${idOrNumber} AND type = 'lead'`,
+          ? sql`SELECT id, party_id FROM work_item WHERE id = ${idOrNumber} AND type = 'lead'`
+          : sql`SELECT id, party_id FROM work_item WHERE number = ${idOrNumber} AND type = 'lead'`,
       );
       if (!wiRow.rows[0]) return { kind: "lead-missing" as const };
-      const wiId = (wiRow.rows[0] as { id: string }).id;
+      const wiId    = (wiRow.rows[0] as { id: string }).id;
+      const partyId = (wiRow.rows[0] as { party_id: string }).party_id;
 
       // Load the note. Must be a note row attached to this lead.
       const cur = await db.execute(sql`
@@ -822,7 +866,7 @@ leadsRouter.patch("/:idOrNumber/notes/:activityId", async (req, res, next) => {
       if (!cur.rows[0]) return { kind: "not-found" as const };
       const row = cur.rows[0] as {
         id: string; detail: string;
-        payload: { kind?: string; edits?: Array<{ at: string; previous: string }> };
+        payload: { kind?: string; edits?: Array<{ at: string; previous: string; by?: string; byUserId?: string | null }> };
         ts: string; verb: string;
       };
       // Only allow editing rows that originated as notes.
@@ -832,12 +876,18 @@ leadsRouter.patch("/:idOrNumber/notes/:activityId", async (req, res, next) => {
       // No-op if text didn't change
       if (text === row.detail) return { kind: "noop" as const };
 
-      // Append-only edit history kept inside the same payload.
+      // Append-only edit history kept inside the same payload. We now record
+      // who made each edit so the note's "edited" tooltip can show the
+      // attribution alongside timestamps.
+      const editedAt = new Date().toISOString();
       const edits = Array.isArray(row.payload?.edits) ? row.payload.edits : [];
       const nextPayload = {
         ...row.payload,
         kind: "note",
-        edits: [...edits, { at: new Date().toISOString(), previous: row.detail }],
+        edits: [
+          ...edits,
+          { at: editedAt, previous: row.detail, by: actorName, byUserId: actorId },
+        ],
       };
 
       await db.execute(sql`
@@ -845,6 +895,36 @@ leadsRouter.patch("/:idOrNumber/notes/:activityId", async (req, res, next) => {
         SET detail = ${text},
             payload = ${JSON.stringify(nextPayload)}::jsonb
         WHERE id = ${activityId}
+      `);
+
+      // Drop a separate activity row so the timeline shows the edit as its
+      // own event with the actor's name. Detail is a one-line "from → to"
+      // diff with both sides truncated so a long note doesn't bloat the
+      // feed; the original note row still holds the full prior text in
+      // payload.edits for anyone who wants the receipt.
+      const trim = (s: string) => {
+        const oneLine = s.replace(/\s+/g, " ").trim();
+        return oneLine.length > 80 ? `${oneLine.slice(0, 80)}…` : oneLine;
+      };
+      const detail = `Edited a note: "${trim(row.detail)}" → "${trim(text)}"`;
+      await db.execute(sql`
+        INSERT INTO activity (
+          tenant_id, work_item_id, party_id, actor_type, actor_name,
+          verb, detail, tag, payload, ts
+        ) VALUES (
+          current_tenant(), ${wiId}, ${partyId}, 'user', ${actorName},
+          'Note edited', ${detail}, 'you',
+          ${JSON.stringify({
+            when: "Just now",
+            quote: null,
+            kind: "note_edit",
+            noteId: activityId,
+            previous: trim(row.detail),
+            next: trim(text),
+            byUserId: actorId,
+          })}::jsonb,
+          NOW()
+        )
       `);
 
       return { kind: "ok" as const };

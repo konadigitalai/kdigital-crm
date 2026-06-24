@@ -3,6 +3,7 @@
 // Labeled sidebar — the 280px column to the right of the IconRail. Reads
 // from the shared navItems registry so it always agrees with the rail.
 
+import { useState } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { Icon, type IconName } from "@/components/ui/Icon";
@@ -10,6 +11,8 @@ import { cn } from "@/lib/cn";
 import { logout } from "@/lib/api";
 import type { CurrentUser, RecentRun, SummaryResponse } from "@/lib/types";
 import { buildNavItems, filterNavItems, isActive } from "./navItems";
+
+type SideTabKey = "chat" | "agents" | "build";
 
 export function Sidebar({
   recentRuns,
@@ -27,6 +30,7 @@ export function Sidebar({
   const pathname = usePathname();
   const router = useRouter();
   const navItems = filterNavItems(buildNavItems(summary), currentUser);
+  const [activeTab, setActiveTab] = useState<SideTabKey>("agents");
 
   async function onSignOut() {
     try {
@@ -44,9 +48,9 @@ export function Sidebar({
           collapse button, which sits at the far right. */}
       <div className="mb-[18px] flex flex-shrink-0 items-center gap-2">
         <div className="flex flex-1 gap-[3px] rounded-[12px] border border-rule bg-warm2 p-1">
-          <SideTab icon="chat" label="Chat" />
-          <SideTab icon="agents-grid" label="Agents" on />
-          <SideTab icon="build" label="Build" />
+          <SideTab icon="chat"        label="Chat"   on={activeTab === "chat"}   onClick={() => setActiveTab("chat")} />
+          <SideTab icon="agents-grid" label="Agents" on={activeTab === "agents"} onClick={() => setActiveTab("agents")} />
+          <SideTab icon="build"       label="Build"  on={activeTab === "build"}  onClick={() => setActiveTab("build")} />
         </div>
         {onCollapse && (
           <button
@@ -61,14 +65,10 @@ export function Sidebar({
         )}
       </div>
 
-      <Link
-        href="/"
-        className="mb-2 flex w-full flex-shrink-0 items-center gap-3 rounded-[11px] border border-rule bg-warm2 px-[14px] py-[11px] text-sm font-semibold text-ink transition hover:border-rule2 hover:bg-paper"
-      >
-        <span className="grid h-[18px] w-[18px] place-items-center rounded-md bg-grad text-sm font-medium leading-none text-white">+</span>
-        New agent task
-      </Link>
+      {activeTab === "chat" && <SideTabPlaceholder kind="chat" />}
+      {activeTab === "build" && <SideTabPlaceholder kind="build" />}
 
+      {activeTab === "agents" && <>
       {/* Scrollable middle: nav + recent runs share one scroll region so the
           full nav is reachable when there are many entries. */}
       <div className="-mx-[14px] flex flex-1 flex-col overflow-y-auto px-[14px]">
@@ -107,24 +107,35 @@ export function Sidebar({
           Recent agent runs
         </div>
         <div className="flex flex-col gap-px">
-          {recentRuns.map((r, i) => (
-            <div
-              key={r.id ?? `${r.label}#${i}`}
-              className="flex items-center gap-[11px] rounded-[9px] px-[14px] py-2 text-[13px] font-medium leading-tight text-ink2 hover:bg-warm2"
-            >
-              <span
-                className={cn(
-                  "h-[7px] w-[7px] flex-shrink-0 rounded-full",
-                  r.status === "run"  && "bg-brand-blue shadow-[0_0_8px_rgba(31,63,207,.5)]",
-                  r.status === "done" && "bg-state-ok",
-                  r.status === "wait" && "border-[1.5px] border-hint",
-                )}
-              />
-              <span className="truncate">{r.label}</span>
-            </div>
-          ))}
+          {recentRuns.map((r, i) => {
+            const href = r.agentKey ? `/agents/${r.agentKey}` : null;
+            const body = (
+              <>
+                <span
+                  className={cn(
+                    "h-[7px] w-[7px] flex-shrink-0 rounded-full",
+                    r.status === "run"  && "bg-brand-blue shadow-[0_0_8px_rgba(31,63,207,.5)]",
+                    r.status === "done" && "bg-state-ok",
+                    r.status === "wait" && "border-[1.5px] border-hint",
+                  )}
+                />
+                <span className="truncate">{r.label}</span>
+              </>
+            );
+            const cls = "flex items-center gap-[11px] rounded-[9px] px-[14px] py-2 text-[13px] font-medium leading-tight text-ink2 hover:bg-warm2";
+            return href ? (
+              <Link key={r.id ?? `${r.label}#${i}`} href={href} className={cls}>
+                {body}
+              </Link>
+            ) : (
+              <div key={r.id ?? `${r.label}#${i}`} className={cls}>
+                {body}
+              </div>
+            );
+          })}
         </div>
       </div>
+      </>}
 
       {/* Pinned footer: app switcher + signed-in user */}
       <div className="mt-3 flex-shrink-0 border-t border-rule pt-3.5">
@@ -135,7 +146,6 @@ export function Sidebar({
           <div className="flex-1">
             <div className="text-[13px] font-bold tracking-tight">Edify Agent OS</div>
           </div>
-          <span className="text-mute">→</span>
         </div>
         <div className="flex items-center gap-2.5 px-1.5 py-1">
           <div className="grid h-[30px] w-[30px] place-items-center rounded-full bg-ink text-[12px] font-bold text-white">
@@ -159,17 +169,56 @@ export function Sidebar({
   );
 }
 
-function SideTab({ icon, label, on }: { icon: IconName; label: string; on?: boolean }) {
+function SideTab({
+  icon,
+  label,
+  on,
+  onClick,
+}: {
+  icon: IconName;
+  label: string;
+  on?: boolean;
+  onClick?: () => void;
+}) {
   return (
     <button
+      type="button"
+      onClick={onClick}
+      aria-pressed={!!on}
       className={cn(
         "flex flex-1 items-center justify-center gap-[7px] rounded-lg px-[6px] py-2 text-[12.5px] font-semibold transition",
-        on ? "bg-paper text-ink shadow-[0_1px_3px_rgba(14,10,20,.08)]" : "bg-transparent text-mute",
+        on
+          ? "bg-paper text-ink shadow-[0_1px_3px_rgba(14,10,20,.08)]"
+          : "bg-transparent text-mute hover:text-ink",
       )}
     >
       <Icon name={icon} size={14} strokeWidth={1.8} />
       {label}
     </button>
+  );
+}
+
+function SideTabPlaceholder({ kind }: { kind: "chat" | "build" }) {
+  const copy =
+    kind === "chat"
+      ? {
+          icon: "chat" as IconName,
+          title: "Chat",
+          body: "Conversations with your agents will live here. Coming soon.",
+        }
+      : {
+          icon: "build" as IconName,
+          title: "Build",
+          body: "Compose new agents and tools from this panel. Coming soon.",
+        };
+  return (
+    <div className="flex flex-1 flex-col items-center justify-center gap-3 px-4 py-10 text-center">
+      <div className="grid h-10 w-10 place-items-center rounded-[11px] border border-rule bg-warm2 text-mute">
+        <Icon name={copy.icon} size={18} strokeWidth={1.8} />
+      </div>
+      <div className="text-[14px] font-semibold text-ink">{copy.title}</div>
+      <div className="max-w-[220px] text-[12.5px] leading-snug text-mute">{copy.body}</div>
+    </div>
   );
 }
 

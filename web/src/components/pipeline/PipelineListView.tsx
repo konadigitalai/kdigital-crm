@@ -12,6 +12,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Icon } from "@/components/ui/Icon";
 import { ScoreRing } from "@/components/ui/ScoreRing";
+import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 import { cn } from "@/lib/cn";
 import { bulkDeleteLeads, bulkUpdateLeads, deleteLead, updateLead, type BulkLeadPatch } from "@/lib/api";
 import { avatarGradClass, ratingStyles } from "@/lib/ui";
@@ -358,6 +359,14 @@ export function PipelineListView({
   // the sticky bulk action bar above the table.
   const [selected, setSelected] = useState<Set<string>>(() => new Set());
   const [bulkDialogOpen, setBulkDialogOpen] = useState(false);
+  // Confirm-delete state — describes which delete the modal will run when
+  // confirmed. `null` = closed. Single drives row-level delete; bulk drives
+  // the toolbar action; both fall through one shared <ConfirmDialog>.
+  const [pendingDelete, setPendingDelete] = useState<
+    | { kind: "single"; lead: Lead }
+    | { kind: "bulk"; ids: string[] }
+    | null
+  >(null);
 
   // Column source-of-truth:
   //   - When `viewColumns` is provided (a saved view is active), it wins.
@@ -568,12 +577,13 @@ export function PipelineListView({
     }
   }
 
-  // ─── delete (single) ──────────────────────────────────────────────────
-  async function deleteOne(lead: Lead) {
+  // ─── delete (single) — open the in-app confirm modal ──────────────────
+  function deleteOne(lead: Lead) {
     if (!canDelete) return;
-    const confirmMsg = `Delete lead ${lead.number}: "${lead.name}"?\n\nThis hides the lead from the pipeline but keeps the activity history. An admin can restore it later.`;
-    if (!confirm(confirmMsg)) return;
+    setPendingDelete({ kind: "single", lead });
+  }
 
+  async function runDeleteOne(lead: Lead) {
     // Optimistic — drop the row immediately.
     onLocalDelete?.([lead.id]);
     setBusy(true);
@@ -589,17 +599,19 @@ export function PipelineListView({
       router.refresh();
     } finally {
       setBusy(false);
+      setPendingDelete(null);
     }
   }
 
-  // ─── delete (bulk) ────────────────────────────────────────────────────
-  async function deleteSelected() {
+  // ─── delete (bulk) — open the in-app confirm modal ────────────────────
+  function deleteSelected() {
     if (!canDelete) return;
     const ids = Array.from(selected);
     if (!ids.length) return;
-    const confirmMsg = `Delete ${ids.length} lead${ids.length === 1 ? "" : "s"}?\n\nThis hides them from the pipeline but keeps activity history. An admin can restore later.`;
-    if (!confirm(confirmMsg)) return;
+    setPendingDelete({ kind: "bulk", ids });
+  }
 
+  async function runDeleteBulk(ids: string[]) {
     onLocalDelete?.(ids);
     setBusy(true);
     setError(null);
@@ -619,6 +631,7 @@ export function PipelineListView({
       router.refresh();
     } finally {
       setBusy(false);
+      setPendingDelete(null);
     }
   }
 
@@ -630,8 +643,43 @@ export function PipelineListView({
     );
   }
 
+  const confirmDialog = pendingDelete ? (
+    <ConfirmDialog
+      open
+      title={
+        pendingDelete.kind === "single"
+          ? `Delete lead ${pendingDelete.lead.number}?`
+          : `Delete ${pendingDelete.ids.length} lead${pendingDelete.ids.length === 1 ? "" : "s"}?`
+      }
+      body={
+        pendingDelete.kind === "single" ? (
+          <>
+            <p className="mb-1.5">
+              <span className="font-semibold text-ink">{pendingDelete.lead.name}</span> will be hidden from the pipeline.
+            </p>
+            <p className="text-mute">
+              Activity history is preserved — an admin can restore it later.
+            </p>
+          </>
+        ) : (
+          <p className="text-mute">
+            These leads will be hidden from the pipeline. Activity history is preserved — an admin can restore them later.
+          </p>
+        )
+      }
+      confirmLabel={pendingDelete.kind === "single" ? "Delete lead" : `Delete ${pendingDelete.ids.length}`}
+      variant="danger"
+      onConfirm={async () => {
+        if (pendingDelete.kind === "single") await runDeleteOne(pendingDelete.lead);
+        else await runDeleteBulk(pendingDelete.ids);
+      }}
+      onCancel={() => setPendingDelete(null)}
+    />
+  ) : null;
+
   return (
     <div className="space-y-3">
+      {confirmDialog}
       <div className="flex items-center justify-between">
         <div className="text-[12.5px] text-mute">
           {leads.length} lead{leads.length === 1 ? "" : "s"} ·{" "}

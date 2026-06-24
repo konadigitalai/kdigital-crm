@@ -52,7 +52,10 @@ export function defaultValue(op: OperatorKey, type: FilterFieldType): unknown {
 
 function toLowerStr(v: unknown): string {
   if (v == null) return "";
-  return String(v).toLowerCase();
+  // Normalize for case-insensitive matching: trim leading/trailing
+  // whitespace so a stray space in the filter input doesn't quietly
+  // make a row look "different".
+  return String(v).trim().toLowerCase();
 }
 
 function toNum(v: unknown): number | null {
@@ -74,9 +77,18 @@ function matchOne(rule: FilterRule, row: unknown, field: FilterField): boolean {
   // Bail if the row's value is missing — every other op requires presence.
   if (left == null) return false;
 
+  // Text equality is case-insensitive across the app — users shouldn't have
+  // to match the stored casing of a name/city to find a row. Numbers, dates,
+  // and booleans stay strict.
+  const textEq = field.type === "text" || field.type === "enum";
+
   switch (op) {
-    case "is":           return field.type === "number" ? toNum(left) === toNum(v) : String(left) === String(v);
-    case "is_not":       return field.type === "number" ? toNum(left) !== toNum(v) : String(left) !== String(v);
+    case "is":
+      if (field.type === "number") return toNum(left) === toNum(v);
+      return textEq ? toLowerStr(left) === toLowerStr(v) : String(left) === String(v);
+    case "is_not":
+      if (field.type === "number") return toNum(left) !== toNum(v);
+      return textEq ? toLowerStr(left) !== toLowerStr(v) : String(left) !== String(v);
     case "contains":     return toLowerStr(left).includes(toLowerStr(v));
     case "not_contains": return !toLowerStr(left).includes(toLowerStr(v));
     case "starts_with":  return toLowerStr(left).startsWith(toLowerStr(v));
@@ -107,11 +119,19 @@ function matchOne(rule: FilterRule, row: unknown, field: FilterField): boolean {
     case "is_any_of": {
       const list = Array.isArray(v) ? v.map(String) : [];
       if (list.length === 0) return true; // empty multiselect → no constraint, pass
+      if (textEq) {
+        const needle = String(left).toLowerCase();
+        return list.some((x) => x.toLowerCase() === needle);
+      }
       return list.includes(String(left));
     }
     case "is_none_of": {
       const list = Array.isArray(v) ? v.map(String) : [];
       if (list.length === 0) return true;
+      if (textEq) {
+        const needle = String(left).toLowerCase();
+        return !list.some((x) => x.toLowerCase() === needle);
+      }
       return !list.includes(String(left));
     }
   }
