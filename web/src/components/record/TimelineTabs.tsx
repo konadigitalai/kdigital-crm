@@ -189,7 +189,9 @@ function NoteCard({ note, leadNumber }: { note: TimelineRow; leadNumber: string 
   const [error, setError] = useState<string | null>(null);
 
   const editHistory = note.payload?.edits ?? [];
-  const lastEdited = editHistory.length > 0 ? editHistory[editHistory.length - 1]!.at : null;
+  const lastEdit = editHistory.length > 0 ? editHistory[editHistory.length - 1]! : null;
+  const lastEdited = lastEdit?.at ?? null;
+  const lastEditedBy = lastEdit?.by ?? null;
 
   async function save() {
     const next = text.trim();
@@ -221,9 +223,15 @@ function NoteCard({ note, leadNumber }: { note: TimelineRow; leadNumber: string 
         {editHistory.length > 0 && (
           <span
             className="mono-cap rounded-full bg-warm2 px-2 py-0.5 text-[8.5px] font-semibold tracking-[.08em] text-mute"
-            title={`${editHistory.length} edit${editHistory.length === 1 ? "" : "s"}${
-              lastEdited ? `, last on ${new Date(lastEdited).toLocaleString()}` : ""
-            }`}
+            title={
+              editHistory
+                .map(
+                  (e) =>
+                    `${e.by ?? "Someone"} on ${new Date(e.at).toLocaleString()}` +
+                    (e.previous ? ` — was: "${e.previous}"` : ""),
+                )
+                .join("\n")
+            }
           >
             edited
           </span>
@@ -268,7 +276,7 @@ function NoteCard({ note, leadNumber }: { note: TimelineRow; leadNumber: string 
 
       {!editing && lastEdited && (
         <div className="mt-2 font-mono text-[10px] text-hint">
-          Last edited {new Date(lastEdited).toLocaleString()}
+          Last edited{lastEditedBy ? ` by ${lastEditedBy}` : ""} on {new Date(lastEdited).toLocaleString()}
         </div>
       )}
     </div>

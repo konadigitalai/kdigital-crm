@@ -98,47 +98,100 @@ export function IconRail({
           of the shared nav registry; we used to have a hardcoded copy here
           which produced a duplicate gear icon.) */}
       <div className="flex flex-shrink-0 flex-col items-center gap-1.5">
-        <div className="relative mt-1">
-          <RailTooltip label={currentUser ? `${currentUser.name} · ${currentUser.email}` : "Account"}>
-            <button
-              type="button"
-              onClick={() => setMenuOpen((v) => !v)}
-              aria-label="Account menu"
-              aria-expanded={menuOpen}
-              className="flex h-[38px] w-[38px] items-center justify-center rounded-xl border-[1.5px] border-white/[.18] bg-grad-mute text-[13px] font-bold text-white transition hover:border-white/40"
-            >
-              {currentUser?.initials ?? "?"}
-            </button>
-          </RailTooltip>
-          {menuOpen && (
-            <>
-              <button
-                type="button"
-                aria-label="Close menu"
-                className="fixed inset-0 z-[40] cursor-default"
-                onClick={() => setMenuOpen(false)}
-              />
-              <div className="absolute bottom-[44px] left-[44px] z-[50] w-[200px] overflow-hidden rounded-[12px] border border-rule bg-paper shadow-card">
-                {currentUser && (
-                  <div className="border-b border-rule px-3 py-2.5">
-                    <div className="truncate text-[13px] font-semibold text-ink">{currentUser.name}</div>
-                    <div className="truncate text-[11px] text-mute">{currentUser.email}</div>
-                  </div>
-                )}
-                <button
-                  type="button"
-                  onClick={onSignOut}
-                  className="flex w-full items-center gap-2 px-3 py-2.5 text-left text-[13px] font-semibold text-ink hover:bg-warm"
-                >
-                  <Icon name="arrow-right" size={14} strokeWidth={2} className="text-mute" />
-                  Sign out
-                </button>
-              </div>
-            </>
-          )}
-        </div>
+        <AccountMenu currentUser={currentUser} onSignOut={onSignOut} open={menuOpen} setOpen={setMenuOpen} />
       </div>
     </nav>
+  );
+}
+
+// Account avatar + dropdown.
+//
+// The dropdown HAS to be portaled — IconRail lives in a grid column whose
+// parent has `overflow-hidden` (66px wide), so an absolutely-positioned
+// child trying to render past the rail gets clipped. Same trick as
+// `RailTooltip` below: read the button's bounding rect at click time and
+// render the menu via createPortal at fixed coordinates.
+function AccountMenu({
+  currentUser,
+  onSignOut,
+  open,
+  setOpen,
+}: {
+  currentUser: CurrentUser | null;
+  onSignOut: () => void;
+  open: boolean;
+  setOpen: (next: boolean | ((v: boolean) => boolean)) => void;
+}) {
+  const btnRef = useRef<HTMLButtonElement>(null);
+  const [pos, setPos] = useState<{ top: number; left: number } | null>(null);
+
+  function toggle() {
+    if (open) {
+      setOpen(false);
+      return;
+    }
+    const el = btnRef.current;
+    if (!el) {
+      setOpen(true);
+      return;
+    }
+    const r = el.getBoundingClientRect();
+    // Place the menu's bottom-left corner ~8px above the avatar's top, and
+    // shifted right past the rail. Coordinates are viewport-fixed so the
+    // dropdown isn't subject to any ancestor's overflow:hidden.
+    setPos({ top: r.top - 8, left: r.right + 6 });
+    setOpen(true);
+  }
+
+  return (
+    <div className="relative mt-1">
+      <RailTooltip label={currentUser ? `${currentUser.name} · ${currentUser.email}` : "Account"}>
+        <button
+          ref={btnRef}
+          type="button"
+          onClick={toggle}
+          aria-label="Account menu"
+          aria-expanded={open}
+          className="flex h-[38px] w-[38px] items-center justify-center rounded-xl border-[1.5px] border-white/[.18] bg-grad-mute text-[13px] font-bold text-white transition hover:border-white/40"
+        >
+          {currentUser?.initials ?? "?"}
+        </button>
+      </RailTooltip>
+      {open && typeof document !== "undefined" && pos && createPortal(
+        <>
+          {/* Click-outside backdrop. Fixed-fill captures every click and
+              closes the menu so we don't need outside-click listeners. */}
+          <button
+            type="button"
+            aria-label="Close menu"
+            className="fixed inset-0 z-[60] cursor-default"
+            onClick={() => setOpen(false)}
+          />
+          <div
+            // Menu's BOTTOM edge is anchored to `top: pos.top`, so it
+            // opens upward, sitting just above the avatar.
+            style={{ top: pos.top, left: pos.left, transform: "translateY(-100%)" }}
+            className="fixed z-[70] w-[220px] overflow-hidden rounded-[12px] border border-rule bg-paper shadow-card"
+          >
+            {currentUser && (
+              <div className="border-b border-rule px-3 py-2.5">
+                <div className="truncate text-[13px] font-semibold text-ink">{currentUser.name}</div>
+                <div className="truncate text-[11px] text-mute">{currentUser.email}</div>
+              </div>
+            )}
+            <button
+              type="button"
+              onClick={onSignOut}
+              className="flex w-full items-center gap-2 px-3 py-2.5 text-left text-[13px] font-semibold text-ink hover:bg-warm"
+            >
+              <Icon name="arrow-right" size={14} strokeWidth={2} className="text-mute" />
+              Sign out
+            </button>
+          </div>
+        </>,
+        document.body,
+      )}
+    </div>
   );
 }
 

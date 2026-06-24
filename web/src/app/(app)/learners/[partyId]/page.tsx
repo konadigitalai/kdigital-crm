@@ -8,9 +8,12 @@ import { cn } from "@/lib/cn";
 import type {
   BatchAssignment, BatchSlot, BatchStatus, CourseAssignment, EnrolmentStatus, ProgramEnrolment,
 } from "@/lib/types";
-import { AssignBatchButton, EnrolmentStatusMenu } from "@/components/learner/AssignBatchDialog";
+import { AssignBatchButton } from "@/components/learner/AssignBatchDialog";
 import { AddCourseButton } from "@/components/learner/AddCourseDialog";
-import { CourseStatusBadgeClient } from "@/components/learner/CourseStatusBadge";
+import { UnassignCourseButton } from "@/components/learner/UnassignCourseButton";
+import { UnassignBatchButton } from "@/components/learner/UnassignBatchButton";
+import { LearnerDescription } from "@/components/learner/LearnerDescription";
+import { TimelineTabs } from "@/components/record/TimelineTabs";
 import { ShareToSlackButton } from "@/components/share/ShareToSlackButton";
 
 const BATCH_STATUS_CLS: Record<BatchStatus, string> = {
@@ -20,11 +23,39 @@ const BATCH_STATUS_CLS: Record<BatchStatus, string> = {
   cancelled: "bg-[rgba(217,83,79,.10)]  text-state-warn",
 };
 
+// Read-only badge style for a learner's batch_assignment.status. The
+// learner page never mutates this — status changes happen in the Batches
+// module and reflect here on next refresh.
+const ASSIGNMENT_STATUS_CLS: Record<EnrolmentStatus, string> = {
+  active:    "bg-[rgba(46,158,106,.10)] text-state-ok",
+  completed: "bg-warm2                  text-mute",
+  dropped:   "bg-[rgba(217,83,79,.10)]  text-state-warn",
+  deferred:  "bg-[rgba(224,138,30,.12)] text-state-amber",
+};
+
 const SLOT_LABEL: Record<BatchSlot, string> = {
   morning:   "Morning",
   afternoon: "Afternoon",
   evening:   "Evening",
 };
+
+// Read-only badge for a course's active/inactive state, sourced from
+// course.enabled. The learner page never mutates this — course toggles
+// happen in the Courses module.
+function CourseActiveBadge({ enabled }: { enabled: boolean }) {
+  return (
+    <span
+      className={cn(
+        "mono-cap inline-flex items-center rounded-full px-2 py-0.5 text-[9.5px] font-semibold",
+        enabled
+          ? "bg-[rgba(46,158,106,.10)] text-state-ok"
+          : "bg-warm2 text-mute",
+      )}
+    >
+      {enabled ? "active" : "inactive"}
+    </span>
+  );
+}
 
 export default async function LearnerRecordPage({ params }: { params: Promise<{ partyId: string }> }) {
   await requirePagePermission("learners.read");
@@ -35,7 +66,9 @@ export default async function LearnerRecordPage({ params }: { params: Promise<{ 
   const { party, enrolments, courseAssignments, assignments, timeline, originLead } = data;
   const initials = party.attributes?.initials ?? party.name.slice(0, 2).toUpperCase();
 
-  // Group: program → its course-assignments → batches under each
+  // Group by enrolment id, not programId — a course_assignment may have a
+  // null programId (standalone course), but it always carries enrolment_id,
+  // so this never silently drops rows.
   type ProgramGroup = {
     enrolment: ProgramEnrolment;
     courses: { assignment: CourseAssignment; batches: BatchAssignment[] }[];
@@ -43,14 +76,14 @@ export default async function LearnerRecordPage({ params }: { params: Promise<{ 
   };
   const groups = new Map<string, ProgramGroup>();
   for (const e of enrolments) {
-    groups.set(e.programId, { enrolment: e, courses: [], looseBatches: [] });
+    groups.set(e.id, { enrolment: e, courses: [], looseBatches: [] });
   }
   for (const ca of courseAssignments) {
-    const g = groups.get(ca.programId);
+    const g = groups.get(ca.enrolmentId);
     if (g) g.courses.push({ assignment: ca, batches: [] });
   }
   for (const ba of assignments) {
-    const g = groups.get(ba.programId);
+    const g = groups.get(ba.enrolmentId);
     if (!g) continue;
     if (ba.courseAssignmentId) {
       const cc = g.courses.find((c) => c.assignment.id === ba.courseAssignmentId);
@@ -93,7 +126,7 @@ export default async function LearnerRecordPage({ params }: { params: Promise<{ 
                 {originLead && (
                   <>
                     <span>·</span>
-                    <Link href={`/records/${originLead.number}`} className="hover:text-ink">
+                    <Link href={`/records/${originLead.number}?asLead=1`} className="hover:text-ink">
                       from {originLead.number}
                     </Link>
                   </>
@@ -113,7 +146,7 @@ export default async function LearnerRecordPage({ params }: { params: Promise<{ 
             </div>
           ) : (
             [...groups.values()].map((g) => (
-              <div key={g.enrolment.programId} className="mb-8 rounded-[18px] border border-rule bg-paper">
+              <div key={g.enrolment.id} className="mb-8 rounded-[18px] border border-rule bg-paper">
                 {/* Program header */}
                 <div className="flex items-start gap-4 border-b border-rule p-5">
                   <div className="flex h-12 w-12 flex-shrink-0 items-center justify-center rounded-[14px] bg-grad text-white">
@@ -166,7 +199,7 @@ export default async function LearnerRecordPage({ params }: { params: Promise<{ 
                               {c.batches.length} batch{c.batches.length === 1 ? "" : "es"}
                             </span>
                             <div className="ml-auto flex items-center gap-2">
-                              <CourseStatusBadge partyId={party.id} courseAssignmentId={c.assignment.id} current={c.assignment.status} />
+                              <CourseActiveBadge enabled={c.assignment.courseEnabled} />
                               <AssignBatchButton
                                 partyId={party.id}
                                 courseId={c.assignment.courseId}
@@ -174,6 +207,12 @@ export default async function LearnerRecordPage({ params }: { params: Promise<{ 
                                 alreadyEnrolledCohortIds={enrolledCohortIds}
                                 variant="ghost"
                                 label="+ Assign batch"
+                              />
+                              <UnassignCourseButton
+                                partyId={party.id}
+                                courseAssignmentId={c.assignment.id}
+                                courseName={c.assignment.courseName}
+                                batchCount={c.batches.length}
                               />
                             </div>
                           </div>
@@ -203,10 +242,19 @@ export default async function LearnerRecordPage({ params }: { params: Promise<{ 
                                     )}
                                   </div>
                                   <div className="flex flex-col items-end gap-1.5">
-                                    <span className={cn("mono-cap inline-flex items-center rounded-full px-2 py-0.5 text-[9.5px] font-semibold", BATCH_STATUS_CLS[a.batchStatus])}>
-                                      {a.batchStatus}
+                                    <div className="flex items-center gap-1.5">
+                                      <span className={cn("mono-cap inline-flex items-center rounded-full px-2 py-0.5 text-[9.5px] font-semibold", BATCH_STATUS_CLS[a.batchStatus])}>
+                                        {a.batchStatus}
+                                      </span>
+                                      <UnassignBatchButton
+                                        partyId={party.id}
+                                        assignmentId={a.id}
+                                        cohortName={a.cohortName}
+                                      />
+                                    </div>
+                                    <span className={cn("mono-cap inline-flex items-center rounded-full px-2 py-0.5 text-[9.5px] font-semibold", ASSIGNMENT_STATUS_CLS[a.status])}>
+                                      {a.status}
                                     </span>
-                                    <EnrolmentStatusMenu partyId={party.id} enrolmentId={a.id} current={a.status} />
                                   </div>
                                 </div>
                               ))}
@@ -221,30 +269,37 @@ export default async function LearnerRecordPage({ params }: { params: Promise<{ 
             ))
           )}
 
-          {/* Timeline */}
+          {/* Activity — same Timeline / Emails / Notes tabs the lead record
+              has. Notes post to the origin lead so support and sales see one
+              unified note stream. When there's no origin lead (rare manual
+              learner) we fall back to a static timeline. */}
           <div className="mb-5 mt-10 flex items-center gap-[9px]">
             <span className="h-[1.5px] w-[18px] bg-brand-violet" />
-            <span className="mono-cap text-[11px] font-semibold tracking-[.16em] text-brand-violet">Timeline</span>
+            <span className="mono-cap text-[11px] font-semibold tracking-[.16em] text-brand-violet">Activity</span>
           </div>
-          <div className="tl-rail">
-            {timeline.length === 0 && <div className="text-[13px] text-mute">No activity yet.</div>}
-            {timeline.map((t, i) => (
-              <div key={i} className={cn("tl-node", t.tag === "ai" ? "ai" : "human")}>
-                <div className="mono-cap mb-1.5 text-[10px] tracking-[.08em] text-hint">
-                  {t.payload?.when ?? new Date(t.ts).toLocaleString()}
-                </div>
-                <div className="rounded-[13px] border border-rule bg-paper p-[15px_17px]">
-                  <div className="mb-[7px] flex items-center gap-2.5">
-                    <span className="text-[13px] font-bold tracking-[-.005em]">{t.actorName}</span>
-                    <span className={cn("mono-cap rounded-full px-2 py-0.5 text-[8.5px] font-semibold tracking-[.08em]", t.tag === "ai" ? "bg-[rgba(107,31,184,.10)] text-brand-violet" : "bg-[rgba(31,63,207,.08)] text-brand-blue")}>
-                      {t.verb}
-                    </span>
+          {originLead ? (
+            <TimelineTabs leadNumber={originLead.number} timeline={timeline} />
+          ) : (
+            <div className="tl-rail">
+              {timeline.length === 0 && <div className="text-[13px] text-mute">No activity yet.</div>}
+              {timeline.map((t, i) => (
+                <div key={i} className={cn("tl-node", t.tag === "ai" ? "ai" : "human")}>
+                  <div className="mono-cap mb-1.5 text-[10px] tracking-[.08em] text-hint">
+                    {t.payload?.when ?? new Date(t.ts).toLocaleString()}
                   </div>
-                  <p className="whitespace-pre-line text-[13px] leading-[1.55] text-ink2">{t.detail}</p>
+                  <div className="rounded-[13px] border border-rule bg-paper p-[15px_17px]">
+                    <div className="mb-[7px] flex items-center gap-2.5">
+                      <span className="text-[13px] font-bold tracking-[-.005em]">{t.actorName}</span>
+                      <span className={cn("mono-cap rounded-full px-2 py-0.5 text-[8.5px] font-semibold tracking-[.08em]", t.tag === "ai" ? "bg-[rgba(107,31,184,.10)] text-brand-violet" : "bg-[rgba(31,63,207,.08)] text-brand-blue")}>
+                        {t.verb}
+                      </span>
+                    </div>
+                    <p className="whitespace-pre-line text-[13px] leading-[1.55] text-ink2">{t.detail}</p>
+                  </div>
                 </div>
-              </div>
-            ))}
-          </div>
+              ))}
+            </div>
+          )}
         </div>
 
         <aside className="bg-warm px-[26px] pb-[60px] pt-6">
@@ -259,11 +314,21 @@ export default async function LearnerRecordPage({ params }: { params: Promise<{ 
 
           {originLead && (
             <div className="acard mb-3.5">
+              <H4>Description</H4>
+              <LearnerDescription
+                leadNumber={originLead.number}
+                initial={originLead.description}
+              />
+            </div>
+          )}
+
+          {originLead && (
+            <div className="acard mb-3.5">
               <H4>Origin</H4>
               <Field k="Lead number" v={originLead.number} />
               <Field k="Score"       v={String(originLead.score)} />
               <Field k="Heat"        v={originLead.heat} />
-              <Link href={`/records/${originLead.number}`} className="mt-3 inline-flex items-center gap-1.5 text-[12px] font-semibold text-brand-violet">
+              <Link href={`/records/${originLead.number}?asLead=1`} className="mt-3 inline-flex items-center gap-1.5 text-[12px] font-semibold text-brand-violet">
                 View lead record →
               </Link>
             </div>
@@ -305,8 +370,3 @@ function Field({ k, v, link }: { k: string; v: string | null; link?: boolean }) 
   );
 }
 
-function CourseStatusBadge({ partyId, courseAssignmentId, current }: {
-  partyId: string; courseAssignmentId: string; current: EnrolmentStatus;
-}) {
-  return <CourseStatusBadgeClient partyId={partyId} courseAssignmentId={courseAssignmentId} current={current} />;
-}

@@ -34,7 +34,6 @@ export default async function AgentHome() {
     <>
       <Topbar
         crumb={<>Edify CRM <span className="text-hint">/</span> <b className="font-semibold text-ink">Agent Home</b></>}
-        search="Search leads, agents, records…"
         status={`${liveAgentCount} agent${liveAgentCount === 1 ? "" : "s"} live`}
       />
 
