@@ -2,15 +2,22 @@
 // deterministically in SQL, then asks Claude for a tight forecast briefing.
 // The result is persisted in `forecast_snapshot` so the home card and the
 // agent detail page can render the latest snapshot without re-calling Claude.
+//
+// Implemented as a 3-node LangGraph: aggregate → narrate → write_back.
+// The actual SQL aggregation runs outside the graph so the run's `target`
+// string can include the weighted-pipeline number; `aggregate` here is the
+// step pill / lookup wrapper.
 
 import { sql } from "drizzle-orm";
+import { z } from "zod";
+import { Annotation, StateGraph, START, END } from "@langchain/langgraph";
+import { HumanMessage, SystemMessage } from "@langchain/core/messages";
+import type { RunnableConfig } from "@langchain/core/runnables";
 import { withTenant } from "../db/app.js";
-import { callClaude } from "../lib/llm.js";
-import { runAgent } from "./run.js";
+import { makeChatModel } from "../lib/llm.js";
+import { runWithGraph, getCheckpointer, configurable } from "./runtime.js";
 
 // ── Probability priors per rating ───────────────────────────────────────
-// Used to compute the rating-weighted pipeline. Tunable later — we may
-// derive these from historical conversion rates per tenant.
 const RATING_PROB: Record<string, number> = {
   "new lead": 0.05,
   "attempted": 0.10,
@@ -20,8 +27,6 @@ const RATING_PROB: Record<string, number> = {
   "superhot": 0.75,
   "enrolled": 1.0,
 };
-
-// ── Output shapes ───────────────────────────────────────────────────────
 
 interface ForecastNumbers {
   generatedAt: string;
@@ -88,9 +93,6 @@ export interface ForecastSnapshot {
 }
 
 // ── SQL aggregator ──────────────────────────────────────────────────────
-
-// Reusable parsed-value expression. Reused several times below.
-//   ₹1.49L → 149000 ; ₹2.4Cr → 24000000 ; ₹99k → 99000 ; otherwise 0
 const parsedValueExpr = sql`
   CASE
     WHEN l.value ~ '^₹[0-9.]+L$'  THEN (regexp_replace(l.value, '[₹L]', '', 'g'))::numeric * 100000
@@ -102,15 +104,9 @@ const parsedValueExpr = sql`
 
 async function aggregate(tenantId: string): Promise<ForecastNumbers> {
   return await withTenant(tenantId, async (db) => {
-    // ── Totals + funnel
     const totalsR = await db.execute(sql`
       WITH parsed AS (
-        SELECT
-          l.work_item_id,
-          l.rating,
-          l.fee_paid,
-          l.fee_due,
-          ${parsedValueExpr} AS parsed_value
+        SELECT l.work_item_id, l.rating, l.fee_paid, l.fee_due, ${parsedValueExpr} AS parsed_value
         FROM lead l
       )
       SELECT
@@ -123,10 +119,8 @@ async function aggregate(tenantId: string): Promise<ForecastNumbers> {
     const totals0 = totalsR.rows[0] as Record<string, unknown>;
 
     const funnelR = await db.execute(sql`
-      SELECT
-        l.rating AS rating,
-        COUNT(*)::int AS count,
-        COALESCE(SUM(${parsedValueExpr}), 0)::numeric AS "parsedValueINR"
+      SELECT l.rating AS rating, COUNT(*)::int AS count,
+             COALESCE(SUM(${parsedValueExpr}), 0)::numeric AS "parsedValueINR"
       FROM lead l
       GROUP BY l.rating
     `);
@@ -134,38 +128,29 @@ async function aggregate(tenantId: string): Promise<ForecastNumbers> {
       (r) => ({ rating: r.rating, count: Number(r.count), parsedValueINR: Number(r.parsedValueINR) || 0 }),
     );
 
-    // ── Weighted pipeline (computed in JS so the prior table lives in code)
     const weightedPipelineINR = ratingFunnel.reduce((acc, r) => {
-      if (r.rating === "enrolled") return acc; // already realised
+      if (r.rating === "enrolled") return acc;
       const prob = RATING_PROB[r.rating] ?? 0.1;
       return acc + r.parsedValueINR * prob;
     }, 0);
 
-    // ── Enrolment counts
     const enrolR = await db.execute(sql`
-      SELECT
-        COUNT(*) FILTER (WHERE created_at > NOW() - INTERVAL '30 days')::int AS "last30d",
-        COALESCE(SUM(price_paid), 0)::numeric AS "priceSum"
+      SELECT COUNT(*) FILTER (WHERE created_at > NOW() - INTERVAL '30 days')::int AS "last30d",
+             COALESCE(SUM(price_paid), 0)::numeric AS "priceSum"
       FROM enrolment
     `);
     const enrolledLast30d = Number((enrolR.rows[0] as { last30d: number }).last30d);
     const enrolmentRevenue = Number((enrolR.rows[0] as { priceSum: string }).priceSum) || 0;
 
-    // ── Per-program breakdown
     const progR = await db.execute(sql`
       SELECT
-        p.id           AS "programId",
-        p.name         AS "programName",
-        p.price        AS price,
+        p.id AS "programId", p.name AS "programName", p.price AS price,
         json_object_agg(rating_counts.rating, rating_counts.cnt) FILTER (WHERE rating_counts.rating IS NOT NULL) AS "leadsByRating",
         (SELECT COUNT(*)::int FROM enrolment e WHERE e.program_id = p.id) AS enrolments,
         (SELECT COUNT(*)::int FROM enrolment e WHERE e.program_id = p.id AND e.created_at > NOW() - INTERVAL '30 days') AS "enrolmentsLast30d"
       FROM program p
       LEFT JOIN LATERAL (
-        SELECT l.rating, COUNT(*)::int AS cnt
-        FROM lead l
-        WHERE l.program_id = p.id
-        GROUP BY l.rating
+        SELECT l.rating, COUNT(*)::int AS cnt FROM lead l WHERE l.program_id = p.id GROUP BY l.rating
       ) rating_counts ON true
       WHERE p.enabled = true
       GROUP BY p.id, p.name, p.price
@@ -174,7 +159,6 @@ async function aggregate(tenantId: string): Promise<ForecastNumbers> {
     const byProgram = (progR.rows as Array<Record<string, unknown>>).map((row) => {
       const leadsByRating = (row.leadsByRating as Record<string, number> | null) ?? {};
       const price = row.price == null ? null : Number(row.price);
-      // Expected revenue from open leads on this program: price × prob × count, summed
       let expected = 0;
       if (price != null) {
         for (const [rating, cnt] of Object.entries(leadsByRating)) {
@@ -194,18 +178,12 @@ async function aggregate(tenantId: string): Promise<ForecastNumbers> {
       };
     });
 
-    // ── Cohort fill (active cohorts only)
     const cohortR = await db.execute(sql`
       SELECT
-        c.id           AS "cohortId",
-        c.name         AS "cohortName",
-        p.name         AS "programName",
-        c.seats        AS seats,
-        (SELECT COUNT(DISTINCT ba.party_id)::int
-         FROM batch_assignment ba
-         WHERE ba.cohort_id = c.id) AS assigned,
-        c.start_date   AS "startDate",
-        c.status       AS status
+        c.id AS "cohortId", c.name AS "cohortName", p.name AS "programName",
+        c.seats AS seats,
+        (SELECT COUNT(DISTINCT ba.party_id)::int FROM batch_assignment ba WHERE ba.cohort_id = c.id) AS assigned,
+        c.start_date AS "startDate", c.status AS status
       FROM cohort c
       LEFT JOIN course co ON co.id = c.course_id
       LEFT JOIN program p ON p.id = co.program_id
@@ -229,7 +207,6 @@ async function aggregate(tenantId: string): Promise<ForecastNumbers> {
       };
     });
 
-    // ── At-risk counts
     const atRiskR = await db.execute(sql`
       WITH last_act AS (
         SELECT a.work_item_id, MAX(a.ts) AS last_ts FROM activity a GROUP BY a.work_item_id
@@ -241,27 +218,19 @@ async function aggregate(tenantId: string): Promise<ForecastNumbers> {
             AND (la.last_ts IS NULL OR la.last_ts < NOW() - INTERVAL '7 days')
         ) AS "silent7d",
         (SELECT COUNT(*)::int FROM lead l
-          WHERE l.rating <> 'enrolled'
-            AND l.fee_due IS NOT NULL
-            AND l.fee_due > 0
-            AND l.due_date IS NOT NULL
-            AND l.due_date < CURRENT_DATE
+          WHERE l.rating <> 'enrolled' AND l.fee_due IS NOT NULL AND l.fee_due > 0
+            AND l.due_date IS NOT NULL AND l.due_date < CURRENT_DATE
         ) AS "overdueFees",
         (SELECT COUNT(*)::int FROM lead l WHERE l.rating <> 'enrolled' AND l.program_id IS NULL) AS "missingProgram"
     `);
     const ar = atRiskR.rows[0] as Record<string, unknown>;
 
-    // ── Top open leads (for Claude to pick priority leads from)
     const topR = await db.execute(sql`
       WITH last_act AS (
         SELECT a.work_item_id, MAX(a.ts) AS last_ts FROM activity a GROUP BY a.work_item_id
       )
       SELECT
-        wi.number,
-        p.name,
-        l.program,
-        l.rating,
-        l.score,
+        wi.number, p.name, l.program, l.rating, l.score,
         ${parsedValueExpr} AS "parsedValueINR",
         EXTRACT(EPOCH FROM (NOW() - la.last_ts)) / 86400 AS "daysSinceLastTouch"
       FROM lead l
@@ -271,12 +240,8 @@ async function aggregate(tenantId: string): Promise<ForecastNumbers> {
       WHERE l.rating <> 'enrolled'
       ORDER BY
         CASE l.rating
-          WHEN 'superhot' THEN 0
-          WHEN 'hot'      THEN 1
-          WHEN 'warm'     THEN 2
-          WHEN 'attempted' THEN 3
-          WHEN 'new lead' THEN 4
-          ELSE 5
+          WHEN 'superhot' THEN 0 WHEN 'hot' THEN 1 WHEN 'warm' THEN 2
+          WHEN 'attempted' THEN 3 WHEN 'new lead' THEN 4 ELSE 5
         END,
         l.score DESC NULLS LAST
       LIMIT 25
@@ -339,16 +304,32 @@ Hard rules:
 Hard rules continued:
 - NEVER invent numbers. Every cited number must appear in the input.
 - Lead numbers must be from the input list, not made up.
-- Do not write "leverage", "synergy", "best-in-class". Stick to plain English.
+- Do not write "leverage", "synergy", "best-in-class". Stick to plain English.`;
 
-Output JSON: {"headline": string, "healthSummary": string,
-  "risks": [{"title": string, "detail": string, "severity": string}],
-  "opportunities": [{"title": string, "detail": string}],
-  "priorityLeads": [{"leadNumber": string, "reason": string}],
-  "monthTargetReadout": string }`;
+const NarrativeSchema = z.object({
+  headline: z.string().min(1),
+  healthSummary: z.string().min(1),
+  risks: z
+    .array(
+      z.object({
+        title: z.string().min(1),
+        detail: z.string().min(1),
+        severity: z.enum(["low", "med", "high"]),
+      }),
+    )
+    .default([]),
+  opportunities: z
+    .array(z.object({ title: z.string().min(1), detail: z.string().min(1) }))
+    .default([]),
+  priorityLeads: z
+    .array(z.object({ leadNumber: z.string().min(1), reason: z.string().min(1) }))
+    .default([]),
+  monthTargetReadout: z.string().default(""),
+});
+type RawNarrative = z.input<typeof NarrativeSchema>;
 
 function buildUserPrompt(numbers: ForecastNumbers): string {
-  const fmtINR = (n: number) => `₹${(n).toLocaleString("en-IN")}`;
+  const fmtINR = (n: number) => `₹${n.toLocaleString("en-IN")}`;
   const f = numbers.totals;
   const funnel = numbers.ratingFunnel
     .map((r) => `  - ${r.rating}: ${r.count} leads · ${fmtINR(r.parsedValueINR)} parsed value`)
@@ -394,165 +375,154 @@ At-risk counts:
 Top open leads (pick 3-5 priority leads from this list):
 ${top || "  (no open leads)"}
 
-Task: write the forecast briefing as JSON.`;
+Task: write the forecast briefing.`;
 }
 
-function validate(o: unknown, allowedLeadNumbers: Set<string>): ForecastNarrative {
-  const x = o as Record<string, unknown>;
-  if (!x || typeof x !== "object") throw new Error("Forecast output not an object");
-  const headline = String(x.headline ?? "").trim();
-  const healthSummary = String(x.healthSummary ?? "").trim();
-  const monthTargetReadout = String(x.monthTargetReadout ?? "").trim();
-  if (!headline) throw new Error("headline empty");
-  if (!healthSummary) throw new Error("healthSummary empty");
-
-  const risks = Array.isArray(x.risks) ? x.risks : [];
-  const opps  = Array.isArray(x.opportunities) ? x.opportunities : [];
-  const leads = Array.isArray(x.priorityLeads) ? x.priorityLeads : [];
-
-  const cleanRisks = (risks as unknown[])
-    .map((r) => {
-      const rr = r as Record<string, unknown>;
-      const title = String(rr.title ?? "").trim();
-      const detail = String(rr.detail ?? "").trim();
-      const sev = String(rr.severity ?? "med").toLowerCase();
-      const severity: "low" | "med" | "high" = sev === "high" ? "high" : sev === "low" ? "low" : "med";
-      if (!title || !detail) return null;
-      return { title, detail, severity };
-    })
-    .filter((r): r is { title: string; detail: string; severity: "low" | "med" | "high" } => r !== null);
-
-  const cleanOpps = (opps as unknown[])
-    .map((o) => {
-      const oo = o as Record<string, unknown>;
-      const title = String(oo.title ?? "").trim();
-      const detail = String(oo.detail ?? "").trim();
-      if (!title || !detail) return null;
-      return { title, detail };
-    })
-    .filter((o): o is { title: string; detail: string } => o !== null);
-
-  const cleanLeads = (leads as unknown[])
-    .map((l) => {
-      const ll = l as Record<string, unknown>;
-      const leadNumber = String(ll.leadNumber ?? "").trim();
-      const reason = String(ll.reason ?? "").trim();
-      if (!leadNumber || !reason) return null;
-      if (!allowedLeadNumbers.has(leadNumber)) return null; // drop fabricated numbers
-      return { leadNumber, reason };
-    })
-    .filter((l): l is { leadNumber: string; reason: string } => l !== null)
-    .slice(0, 5);
-
+function trimNarrativeAgainstAllowed(
+  raw: RawNarrative,
+  allowedLeadNumbers: Set<string>,
+): ForecastNarrative {
   return {
-    headline,
-    healthSummary,
-    risks: cleanRisks,
-    opportunities: cleanOpps,
-    priorityLeads: cleanLeads,
-    monthTargetReadout,
+    headline: raw.headline,
+    healthSummary: raw.healthSummary,
+    risks: raw.risks ?? [],
+    opportunities: raw.opportunities ?? [],
+    priorityLeads: (raw.priorityLeads ?? [])
+      .filter((l) => allowedLeadNumbers.has(l.leadNumber))
+      .slice(0, 5),
+    monthTargetReadout: raw.monthTargetReadout ?? "",
   };
 }
 
-// ── Main entry ──────────────────────────────────────────────────────────
+// ─── Graph state ─────────────────────────────────────────────────────────────
+
+const ForecastStateAnn = Annotation.Root({
+  numbers: Annotation<ForecastNumbers>(),
+  generatedBy: Annotation<string | null>({ reducer: (_x, y) => y, default: () => null }),
+  narrative: Annotation<ForecastNarrative | null>({
+    reducer: (_x, y) => y,
+    default: () => null,
+  }),
+  llmModel: Annotation<string | null>({ reducer: (_x, y) => y, default: () => null }),
+});
+type ForecastStateT = typeof ForecastStateAnn.State;
+
+async function aggregateNode(_state: ForecastStateT) {
+  // Aggregation already ran outside the graph (so we know the weighted-pipeline
+  // figure for the run target). This node is the step pill.
+  return {};
+}
+
+async function narrateNode(state: ForecastStateT) {
+  const model = makeChatModel({ maxTokens: 1500 }).withStructuredOutput(NarrativeSchema, {
+    name: "forecast_narrative",
+  });
+  const raw = await model.invoke([
+    new SystemMessage(SYSTEM_PROMPT),
+    new HumanMessage(buildUserPrompt(state.numbers)),
+  ]);
+  const allowed = new Set(state.numbers.topOpenLeads.map((l) => l.number));
+  const narrative = trimNarrativeAgainstAllowed(raw, allowed);
+  return { narrative, llmModel: process.env.ANTHROPIC_MODEL ?? null };
+}
+
+async function writeBackNode(state: ForecastStateT, config: RunnableConfig) {
+  const { db, tenantId } = configurable(config);
+  const numbers = state.numbers;
+  const narrative = state.narrative!;
+
+  await db.execute(sql`
+    INSERT INTO forecast_snapshot (
+      tenant_id, numbers, narrative, model, tokens_in, tokens_out, generated_by
+    ) VALUES (
+      ${tenantId},
+      ${JSON.stringify(numbers)}::jsonb,
+      ${JSON.stringify(narrative)}::jsonb,
+      ${state.llmModel},
+      ${null},
+      ${null},
+      ${state.generatedBy}
+    )
+  `);
+
+  await db.execute(sql`
+    INSERT INTO activity (
+      tenant_id, actor_type, actor_name, verb, detail, tag, icon_key, icon_bg, icon_stroke, payload, ts
+    ) VALUES (
+      ${tenantId}, 'agent', 'Forecast Agent',
+      'generated forecast', ${narrative.headline.slice(0, 200)},
+      'auto', 'chart',
+      'rgba(198,154,58,.10)', '#C69A3A',
+      ${JSON.stringify({ subject: "tenant pipeline", weightedPipelineINR: numbers.totals.weightedPipelineINR })}::jsonb,
+      NOW()
+    )
+  `);
+
+  await db.execute(sql`
+    INSERT INTO audit_log (tenant_id, actor_type, action, target_type, context)
+    VALUES (
+      ${tenantId}, 'agent', 'forecast_generated', 'tenant',
+      ${JSON.stringify({ weightedPipelineINR: numbers.totals.weightedPipelineINR, model: state.llmModel })}::jsonb
+    )
+  `);
+
+  return {};
+}
+
+const NODE_ORDER = ["aggregate", "narrate", "write_back"] as const;
+
+const forecastGraph = new StateGraph(ForecastStateAnn)
+  .addNode("aggregate", aggregateNode)
+  .addNode("narrate", narrateNode)
+  .addNode("write_back", writeBackNode)
+  .addEdge(START, "aggregate")
+  .addEdge("aggregate", "narrate")
+  .addEdge("narrate", "write_back")
+  .addEdge("write_back", END)
+  .compile({ checkpointer: getCheckpointer() });
 
 export async function runForecast(
   tenantId: string,
   generatedBy: string | null,
 ): Promise<ForecastSnapshot> {
-  // Step 1: aggregate (deterministic, runs outside runAgent so we can include
-  // the result in the run's "target" string).
   const numbers = await aggregate(tenantId);
 
-  const { result, runWorkItemId } = await runAgent({
+  const { result } = await runWithGraph<
+    ForecastStateT,
+    { narrative: ForecastNarrative; model: string | null }
+  >({
     tenantId,
     agentKey: "forecast",
     target: `${Math.round(numbers.totals.weightedPipelineINR / 100000) / 10}L weighted pipeline`,
-    steps: [
-      { label: "aggregate", state: "queued" },
-      { label: "narrate", state: "queued" },
-      { label: "write_back", state: "queued" },
-    ],
-    body: async ({ beginStep, endStep, db }) => {
-      beginStep("aggregate");
-      endStep(`${numbers.totals.activeLeads} active leads · ₹${Math.round(numbers.totals.weightedPipelineINR/100000)/10}L weighted`);
-
-      beginStep("narrate");
-      const out = await callClaude({
-        system: SYSTEM_PROMPT,
-        user: buildUserPrompt(numbers),
-        expectJson: true,
-        maxTokens: 1500,
-      });
-      const allowed = new Set(numbers.topOpenLeads.map((l) => l.number));
-      const narrative = validate(out.jsonValue, allowed);
-      endStep(`${out.usage.in}+${out.usage.out} tokens`);
-
-      beginStep("write_back");
-      await db.execute(sql`
-        INSERT INTO forecast_snapshot (
-          tenant_id, numbers, narrative, model, tokens_in, tokens_out, generated_by
-        ) VALUES (
-          ${tenantId},
-          ${JSON.stringify(numbers)}::jsonb,
-          ${JSON.stringify(narrative)}::jsonb,
-          ${out.model},
-          ${out.usage.in},
-          ${out.usage.out},
-          ${generatedBy}
-        )
-      `);
-
-      // Activity row + audit log so the timeline + audit trail capture this.
-      await db.execute(sql`
-        INSERT INTO activity (
-          tenant_id, actor_type, actor_name, verb, detail, tag, icon_key, icon_bg, icon_stroke, payload, ts
-        ) VALUES (
-          ${tenantId}, 'agent', 'Forecast Agent',
-          'generated forecast', ${narrative.headline.slice(0, 200)},
-          'auto', 'chart',
-          'rgba(198,154,58,.10)', '#C69A3A',
-          ${JSON.stringify({ subject: "tenant pipeline", weightedPipelineINR: numbers.totals.weightedPipelineINR })}::jsonb,
-          NOW()
-        )
-      `);
-
-      await db.execute(sql`
-        INSERT INTO audit_log (tenant_id, actor_type, action, target_type, context)
-        VALUES (
-          ${tenantId}, 'agent', 'forecast_generated', 'tenant',
-          ${JSON.stringify({ weightedPipelineINR: numbers.totals.weightedPipelineINR, model: out.model, tokensIn: out.usage.in, tokensOut: out.usage.out })}::jsonb
-        )
-      `);
-
-      endStep("done");
-      return {
-        narrative,
-        model: out.model,
-        tokensIn: out.usage.in,
-        tokensOut: out.usage.out,
-      };
+    nodeOrder: [...NODE_ORDER],
+    graph: forecastGraph,
+    initialState: { numbers, generatedBy, narrative: null, llmModel: null },
+    formatStepDetail: (node, update) => {
+      if (node === "aggregate")
+        return `${numbers.totals.activeLeads} active leads · ₹${Math.round(numbers.totals.weightedPipelineINR / 100000) / 10}L weighted`;
+      if (node === "narrate" && update.narrative) {
+        return update.narrative.headline.slice(0, 80);
+      }
+      return undefined;
     },
+    project: (state) => ({ narrative: state.narrative!, model: state.llmModel }),
   });
 
-  void runWorkItemId;
   return {
     generatedAt: numbers.generatedAt,
     numbers,
     narrative: result.narrative,
     model: result.model,
-    tokensIn: result.tokensIn,
-    tokensOut: result.tokensOut,
+    tokensIn: null,
+    tokensOut: null,
   };
 }
 
 export async function getLatestForecast(tenantId: string): Promise<ForecastSnapshot | null> {
   return await withTenant(tenantId, async (db) => {
     const r = await db.execute(sql`
-      SELECT
-        generated_at AS "generatedAt",
-        numbers, narrative,
-        model, tokens_in AS "tokensIn", tokens_out AS "tokensOut"
+      SELECT generated_at AS "generatedAt", numbers, narrative,
+             model, tokens_in AS "tokensIn", tokens_out AS "tokensOut"
       FROM forecast_snapshot
       ORDER BY generated_at DESC
       LIMIT 1
