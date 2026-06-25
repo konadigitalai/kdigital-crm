@@ -51,18 +51,39 @@ if (!API_URL) {
   );
 }
 
-// On the server, forward the browser's session cookie to the API so it
-// authenticates as the same user. In the browser, fetch's `credentials: 'include'`
-// will attach the cookie automatically (we still need a CORS allow-credentials
-// response header — set in api/src/index.ts).
+// Pull an Auth0 access token and attach it as Bearer on every API call.
+// Server vs. client get the token via different SDK paths but the end
+// result is the same: a fresh access token issued for the Edify CRM API
+// audience.
+//
+// If the token can't be fetched (signed-out user, expired session that
+// can't refresh), we return no header — the API will reject with 401 and
+// the SDK middleware bounces the browser to /auth/login on next nav.
 async function authHeaders(): Promise<Record<string, string>> {
-  if (!isServer) return {};
-  const { cookies } = await import("next/headers");
-  const store = await cookies();
-  const all = store.getAll();
-  if (!all.length) return {};
-  const cookieHeader = all.map((c: { name: string; value: string }) => `${c.name}=${c.value}`).join("; ");
-  return { Cookie: cookieHeader };
+  try {
+    let token: string | undefined;
+    if (isServer) {
+      // Server side: pulls the token from the encrypted session cookie.
+      // Imported lazily so this module stays browser-safe.
+      const { auth0 } = await import("./auth0");
+      const result = await auth0.getAccessToken();
+      // Server SDK returns { token, expires_at, ... }; some SDK paths
+      // surface just the string. Handle both.
+      token = typeof result === "string" ? result : result?.token;
+    } else {
+      // Browser side: SDK exposes a hook that hits its own /auth/access-token
+      // route. That route reads the encrypted cookie and returns a fresh
+      // token, transparently refreshing if needed. Returns the string by
+      // default.
+      const { getAccessToken } = await import("@auth0/nextjs-auth0");
+      token = await getAccessToken();
+    }
+    return token ? { Authorization: `Bearer ${token}` } : {};
+  } catch {
+    // No session / expired refresh / etc. — leave the header off and let
+    // the API return 401 so callers can redirect to /auth/login.
+    return {};
+  }
 }
 
 // Structured error surface: callers that need the body / status can do
@@ -585,76 +606,26 @@ export async function reopenCase(idOrNumber: string): Promise<void> {
 
 // ── Auth / users / groups ──────────────────────────────────────────────────
 
+// Sign-out is now a full-page navigation to /auth/logout (auto-mounted by
+// the Auth0 SDK middleware). This helper exists for any straggler caller
+// that imports it; new code should do `window.location.href = "/auth/logout"`.
 export async function logout(): Promise<void> {
-  await post<void>("/auth/logout", {});
+  if (typeof window !== "undefined") {
+    window.location.href = "/auth/logout";
+  }
 }
+
+// User + group reads — used by in-app pickers (assignee dropdowns, etc.).
+// Mutations (create/update/deactivate/reset-password, create-group/edit-perm)
+// moved to Auth0; see https://manage.auth0.com.
 
 export async function getUsers(): Promise<AdminUser[]> {
   const { users } = await get<{ users: AdminUser[] }>("/users");
   return users;
 }
 
-export async function createUser(input: {
-  email: string;
-  name?: string;
-  role: string;
-  password?: string;
-  groupIds: string[];
-}): Promise<{ user: AdminUser }> {
-  return await post<{ user: AdminUser }>("/users", input);
-}
-
-export async function updateUser(
-  id: string,
-  patch: { name?: string; role?: string; active?: boolean; groupIds?: string[] },
-): Promise<{ user: AdminUser }> {
-  return await send<{ user: AdminUser }>("PATCH", `/users/${id}`, patch);
-}
-
-export async function resetUserPassword(id: string, password: string): Promise<void> {
-  await post<void>(`/users/${id}/reset-password`, { password });
-}
-
-export async function activateUser(id: string): Promise<void> {
-  await post<void>(`/users/${id}/activate`, {});
-}
-
-export async function deactivateUser(id: string): Promise<void> {
-  await post<void>(`/users/${id}/deactivate`, {});
-}
-
 export async function getGroups(): Promise<GroupsResponse> {
   return await get<GroupsResponse>("/groups");
-}
-
-export async function createGroup(input: {
-  name: string;
-  description?: string | null;
-  permissions: string[];
-}): Promise<void> {
-  await post<void>("/groups", input);
-}
-
-export async function updateGroup(
-  id: string,
-  patch: { name?: string; description?: string | null },
-): Promise<void> {
-  await send<void>("PATCH", `/groups/${id}`, patch);
-}
-
-export async function setGroupPermissions(id: string, permissions: string[]): Promise<void> {
-  await send<void>("PUT", `/groups/${id}/permissions`, { permissions });
-}
-
-export async function deleteGroup(id: string): Promise<void> {
-  await send<void>("DELETE", `/groups/${id}`);
-}
-
-// Compute the union permission set for a list of group ids — used by the
-// user-edit dialog's "Effective access" summary.
-export async function getEffectivePermissions(groupIds: string[]): Promise<string[]> {
-  const { permissions } = await post<{ permissions: string[] }>("/groups/effective", { groupIds });
-  return permissions;
 }
 
 // ── Saved views ────────────────────────────────────────────────────────────

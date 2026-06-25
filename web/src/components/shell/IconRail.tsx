@@ -5,12 +5,11 @@
 // `navItems.ts` registry so the two panels can't drift.
 
 import Link from "next/link";
-import { usePathname, useRouter } from "next/navigation";
+import { usePathname } from "next/navigation";
 import { useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { Icon } from "@/components/ui/Icon";
 import { cn } from "@/lib/cn";
-import { logout } from "@/lib/api";
 import type { CurrentUser, SummaryResponse } from "@/lib/types";
 import { buildNavItems, filterNavItems, isActive } from "./navItems";
 
@@ -27,28 +26,23 @@ export function IconRail({
   onExpandSidebar?: () => void;
 }) {
   const pathname = usePathname();
-  const router = useRouter();
   const items = filterNavItems(buildNavItems(summary), currentUser);
   const [menuOpen, setMenuOpen] = useState(false);
 
-  async function onSignOut() {
+  function onSignOut() {
     setMenuOpen(false);
-    try {
-      await logout();
-    } catch {
-      /* ignore — even if API rejects, the cookie is gone */
-    }
-    router.replace("/login");
-    router.refresh();
+    // Full-page nav: /auth/logout is auto-mounted by the Auth0 SDK
+    // middleware and handles cookie wipe + Auth0 server-side logout.
+    window.location.href = "/auth/logout";
   }
 
   return (
     <nav className="relative z-[2] flex h-full flex-col items-center bg-ink py-3.5">
-      {/* Pinned top: brand mark + (when sidebar collapsed) expand button */}
+      {/* Pinned top: only the expand-sidebar button. The gradient brand
+          mark was dropped — the dark rail looks cleaner without it, and
+          the labeled sidebar (when open) already has the Edify wordmark
+          at the top. */}
       <div className="flex flex-shrink-0 flex-col items-center gap-1.5">
-        <Link href="/" className="mb-1 flex h-10 w-10 items-center justify-center rounded-xl bg-grad shadow-rail" aria-label="Edify home">
-          <span className="font-serif text-[22px] font-semibold leading-none text-white">E</span>
-        </Link>
         {sidebarCollapsed && onExpandSidebar && (
           <RailTooltip label="Expand sidebar">
             <button

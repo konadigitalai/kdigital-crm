@@ -21,16 +21,24 @@ interface SettingsCard {
   requires: string;
   /** Section the card belongs to in the page layout. */
   section: "Workspace" | "Operations" | "Channels" | "WhatsApp" | "Data";
+  /** When true, render as an external link (opens new tab). Used for the
+   *  Auth0 dashboard card. */
+  external?: boolean;
 }
 
 const ALL_CARDS: SettingsCard[] = [
-  // Workspace — who has access, who they belong to
-  { section: "Workspace", href: "/admin/users",  icon: "users", title: "Users",
-    blurb: "Add, deactivate, and manage agent accounts.",
+  // Workspace — who has access, who they belong to. User + role management
+  // lives in Auth0 now; this card just hands the operator off to the
+  // dashboard. The legacy /admin/users and /admin/groups routes were
+  // deleted; their permissions (users.manage, groups.manage) are still
+  // honored as the gate so non-admins don't see this card.
+  { section: "Workspace",
+    href: "https://manage.auth0.com",
+    external: true,
+    icon: "users",
+    title: "Users & roles (Auth0)",
+    blurb: "Manage users, groups, and permissions in the Auth0 dashboard.",
     requires: "users.manage" },
-  { section: "Workspace", href: "/admin/groups", icon: "agents-grid", title: "Groups & permissions",
-    blurb: "Group-based permission catalog and role assignment.",
-    requires: "groups.manage" },
 
   // Operations — academic structure
   { section: "Operations", href: "/admin/programs", icon: "doc", title: "Programs",
@@ -103,24 +111,32 @@ export default async function SettingsPage() {
               <section key={g.section}>
                 <h2 className="mono-cap mb-3 text-[10.5px] font-semibold tracking-[.14em] text-mute">{g.section}</h2>
                 <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
-                  {g.cards.map((c) => (
-                    <Link
-                      key={c.href}
-                      href={c.href}
-                      className="group relative flex items-start gap-3 rounded-[14px] border border-rule bg-paper p-5 transition hover:border-rule2 hover:bg-warm/30"
-                    >
-                      <span className="grid h-9 w-9 flex-shrink-0 place-items-center rounded-[10px] bg-grad-soft text-brand-violet ring-1 ring-inset ring-rule">
-                        <Icon name={c.icon} size={18} strokeWidth={1.7} />
-                      </span>
-                      <div className="min-w-0 flex-1">
-                        <div className="flex items-center gap-1.5">
-                          <span className="text-[14.5px] font-semibold text-ink">{c.title}</span>
-                          <span className="ml-auto text-mute opacity-0 transition group-hover:opacity-100">→</span>
+                  {g.cards.map((c) => {
+                    const cardClass = "group relative flex items-start gap-3 rounded-[14px] border border-rule bg-paper p-5 transition hover:border-rule2 hover:bg-warm/30";
+                    const body = (
+                      <>
+                        <span className="grid h-9 w-9 flex-shrink-0 place-items-center rounded-[10px] bg-grad-soft text-brand-violet ring-1 ring-inset ring-rule">
+                          <Icon name={c.icon} size={18} strokeWidth={1.7} />
+                        </span>
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-center gap-1.5">
+                            <span className="text-[14.5px] font-semibold text-ink">{c.title}</span>
+                            <span className="ml-auto text-mute opacity-0 transition group-hover:opacity-100">↗</span>
+                          </div>
+                          <p className="mt-1 text-[12.5px] leading-snug text-mute">{c.blurb}</p>
                         </div>
-                        <p className="mt-1 text-[12.5px] leading-snug text-mute">{c.blurb}</p>
-                      </div>
-                    </Link>
-                  ))}
+                      </>
+                    );
+                    return c.external ? (
+                      <a key={c.href} href={c.href} target="_blank" rel="noreferrer" className={cardClass}>
+                        {body}
+                      </a>
+                    ) : (
+                      <Link key={c.href} href={c.href} className={cardClass}>
+                        {body}
+                      </Link>
+                    );
+                  })}
                 </div>
               </section>
             ))}
