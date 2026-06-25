@@ -32,7 +32,7 @@ function citationHref(c: EdifyCitation): string | null {
     case "agent":   return `/agents/${c.ref}`;
     case "program": return `/admin/programs`;
     case "cohort":  return `/admin/cohorts`;
-    case "user":    return `/admin/users`;
+    case "user":    return null;  // user management moved to Auth0; no in-app page
     default:        return null;
   }
 }

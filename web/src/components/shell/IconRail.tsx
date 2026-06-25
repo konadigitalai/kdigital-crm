@@ -5,12 +5,11 @@
 // `navItems.ts` registry so the two panels can't drift.
 
 import Link from "next/link";
-import { usePathname, useRouter } from "next/navigation";
+import { usePathname } from "next/navigation";
 import { useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { Icon } from "@/components/ui/Icon";
 import { cn } from "@/lib/cn";
-import { logout } from "@/lib/api";
 import type { CurrentUser, SummaryResponse } from "@/lib/types";
 import { buildNavItems, filterNavItems, isActive } from "./navItems";
 
@@ -27,19 +26,14 @@ export function IconRail({
   onExpandSidebar?: () => void;
 }) {
   const pathname = usePathname();
-  const router = useRouter();
   const items = filterNavItems(buildNavItems(summary), currentUser);
   const [menuOpen, setMenuOpen] = useState(false);
 
-  async function onSignOut() {
+  function onSignOut() {
     setMenuOpen(false);
-    try {
-      await logout();
-    } catch {
-      /* ignore — even if API rejects, the cookie is gone */
-    }
-    router.replace("/login");
-    router.refresh();
+    // Full-page nav: /auth/logout is auto-mounted by the Auth0 SDK
+    // middleware and handles cookie wipe + Auth0 server-side logout.
+    window.location.href = "/auth/logout";
   }
 
   return (

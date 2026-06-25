@@ -15,7 +15,7 @@ export default async function AdminDeletedLeadsPage() {
       <Topbar
         crumb={
           <>
-            <Link href="/admin/groups" className="cursor-pointer hover:text-ink">Admin</Link>
+            <Link href="/settings" className="cursor-pointer hover:text-ink">Settings</Link>
             <span className="text-hint">/</span>
             <Link href="/leads" className="cursor-pointer hover:text-ink">Leads</Link>
             <span className="text-hint">/</span>
