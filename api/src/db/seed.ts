@@ -22,13 +22,14 @@ import {
   program,
   tenant,
   supportCase,
-  userGroup,
-  userGroupMember,
-  userGroupPermission,
   workItem,
 } from "./schema.js";
-import { hashPassword } from "../lib/passwords.js";
-import { SYSTEM_GROUPS } from "../lib/permissions.js";
+// Auth is owned by Auth0 now — seeded users have no password hash and
+// can't log in via the legacy /auth/login (which no longer exists). The
+// only way into the app is Auth0 Universal Login; first sign-in JIT-
+// provisions an app_user row keyed by the auth0 sub. The rows seeded
+// below exist so that activity timestamps + foreign keys (e.g.
+// ticketAgents → support_case.assigned_id) line up with the demo data.
 
 const TENANT_NAME = "Digital Edify";
 
@@ -165,8 +166,8 @@ async function main() {
     "onboarding_task", "service_case", "deal", "lead",
     "batch_assignment", "enrolment",
     "work_item", "cohort", "course", "program",
-    "user_group_member", "user_group_permission", "user_group",
-    "app_session",
+    // user_group_member / user_group_permission / user_group / app_session
+    // tables no longer exist post-Auth0 cutover (see post-0039 migration).
     "party_role", "party", "app_user", "tenant",
   ]) {
     await pool.query(`DELETE FROM ${t}`);
@@ -204,49 +205,24 @@ async function main() {
     ticketAgents[e.name] = u!.id;
   }
 
-  // ── Super-user (crmadmin) + system groups + memberships
+  // ── Super-user (crmadmin) — kept as a placeholder row so legacy data
+  // that references this email still resolves. Real login is via Auth0;
+  // this row will be backfilled with an auth0_sub the first time someone
+  // signs in with the matching email (or operators can manually set it).
   console.log("→ creating super-user crmadmin@gmail.com…");
-  const crmAdminHash = await hashPassword("NewMani!23");
   const [crmAdmin] = await db.insert(appUser).values({
     tenantId,
     email: "crmadmin@gmail.com",
     name: "CRM Admin",
     role: "admin",
-    passwordHash: crmAdminHash,
   }).returning();
 
-  console.log("→ seeding system groups + memberships…");
-  const groupIdByName: Record<string, string> = {};
-  for (const spec of SYSTEM_GROUPS) {
-    const [g] = await db.insert(userGroup).values({
-      tenantId,
-      name: spec.name,
-      description: spec.description,
-      isSystem: true,
-    }).returning();
-    groupIdByName[spec.name] = g!.id;
-    if (spec.permissions.length) {
-      await db.insert(userGroupPermission).values(
-        spec.permissions.map((permission) => ({ groupId: g!.id, permission })),
-      );
-    }
-  }
-
-  const adminsId = groupIdByName["Administrators"]!;
-  const advisorsId = groupIdByName["Advisors"]!;
-
-  // crmadmin + Manikanta → Administrators
-  // Priya, Rahul, all service_reps → Advisors
-  const adminMembers = [crmAdmin!.id, admin!.id];
-  const advisorMembers = [
-    advisorPriya!.id,
-    advisorRahul!.id,
-    ...Object.values(ticketAgents).filter((id) => id !== admin!.id),
-  ];
-  await db.insert(userGroupMember).values([
-    ...adminMembers.map((userId) => ({ userId, groupId: adminsId })),
-    ...advisorMembers.map((userId) => ({ userId, groupId: advisorsId })),
-  ]);
+  // Group seeding is gone — Auth0 owns Roles + Permissions now. The
+  // crmAdmin / admin / advisor users are only referenced for FK display
+  // (activity actor names, support_case assignees). Real permissions
+  // ride on the Auth0 JWT.
+  void crmAdmin;
+  void advisorPriya;
 
   // ── Programs (with price) + courses + batches per course
   console.log("→ catalog (programs + courses + batches)…");

@@ -3,16 +3,12 @@
 // Labeled sidebar — the 280px column to the right of the IconRail. Reads
 // from the shared navItems registry so it always agrees with the rail.
 
-import { useState } from "react";
 import Link from "next/link";
-import { usePathname, useRouter } from "next/navigation";
-import { Icon, type IconName } from "@/components/ui/Icon";
+import { usePathname } from "next/navigation";
+import { Icon } from "@/components/ui/Icon";
 import { cn } from "@/lib/cn";
-import { logout } from "@/lib/api";
 import type { CurrentUser, RecentRun, SummaryResponse } from "@/lib/types";
 import { buildNavItems, filterNavItems, isActive } from "./navItems";
-
-type SideTabKey = "chat" | "agents" | "build";
 
 export function Sidebar({
   recentRuns,
@@ -28,30 +24,36 @@ export function Sidebar({
   onCollapse?: () => void;
 }) {
   const pathname = usePathname();
-  const router = useRouter();
   const navItems = filterNavItems(buildNavItems(summary), currentUser);
-  const [activeTab, setActiveTab] = useState<SideTabKey>("agents");
 
-  async function onSignOut() {
-    try {
-      await logout();
-    } catch {
-      /* ignore — even if the request fails, the cookie is gone */
-    }
-    router.replace("/login");
-    router.refresh();
+  function onSignOut() {
+    // Full-page nav: /auth/logout is auto-mounted by the Auth0 SDK
+    // middleware and handles cookie wipe + Auth0 server-side logout.
+    window.location.href = "/auth/logout";
   }
 
   return (
     <aside className="hidden h-screen flex-col overflow-hidden border-r border-rule bg-warm p-[16px_14px] lg:flex">
-      {/* Pinned: tab strip + new task. The tab strip shares its row with the
-          collapse button, which sits at the far right. */}
-      <div className="mb-[18px] flex flex-shrink-0 items-center gap-2">
-        <div className="flex flex-1 gap-[3px] rounded-[12px] border border-rule bg-warm2 p-1">
-          <SideTab icon="chat"        label="Chat"   on={activeTab === "chat"}   onClick={() => setActiveTab("chat")} />
-          <SideTab icon="agents-grid" label="Agents" on={activeTab === "agents"} onClick={() => setActiveTab("agents")} />
-          <SideTab icon="build"       label="Build"  on={activeTab === "build"}  onClick={() => setActiveTab("build")} />
-        </div>
+      {/* Pinned top — slim brand row. Just the wordmark + collapse button,
+          no heavy pill outline. The Chat / Agents / Build tab strip is
+          parked for now and the bottom-of-sidebar brand block is gone;
+          this single line is the only branding inside the panel. */}
+      <div className="mb-3 flex flex-shrink-0 items-center justify-between gap-2 px-[6px]">
+        {/* Claude-style minimal wordmark — no border, no pill. Just the
+            product name in the serif display face. The whole word is the
+            link target so clicking it returns to Agent Home. */}
+        <Link
+          href="/"
+          aria-label="Agent Home"
+          className="group flex min-w-0 flex-1 items-baseline gap-1.5 px-1"
+        >
+          <span className="font-serif text-[22px] font-normal leading-none tracking-[-.01em] text-ink transition group-hover:text-brand-violet">
+            Edify
+          </span>
+          <span className="truncate font-serif text-[15px] font-normal italic leading-none text-mute">
+            Agentic&nbsp;OS
+          </span>
+        </Link>
         {onCollapse && (
           <button
             type="button"
@@ -65,10 +67,6 @@ export function Sidebar({
         )}
       </div>
 
-      {activeTab === "chat" && <SideTabPlaceholder kind="chat" />}
-      {activeTab === "build" && <SideTabPlaceholder kind="build" />}
-
-      {activeTab === "agents" && <>
       {/* Scrollable middle: nav + recent runs share one scroll region so the
           full nav is reachable when there are many entries. */}
       <div className="-mx-[14px] flex flex-1 flex-col overflow-y-auto px-[14px]">
@@ -135,18 +133,11 @@ export function Sidebar({
           })}
         </div>
       </div>
-      </>}
 
-      {/* Pinned footer: app switcher + signed-in user */}
+      {/* Pinned footer: signed-in user. The old "Edify Agent OS" app-switcher
+          card was dropped — branding lives in the top row now and the card
+          itself wasn't clickable anyway. */}
       <div className="mt-3 flex-shrink-0 border-t border-rule pt-3.5">
-        <div className="mb-3 flex items-center gap-3 rounded-[12px] border border-rule bg-warm2 p-3">
-          <div className="grid h-[34px] w-[34px] flex-shrink-0 place-items-center rounded-[9px] bg-grad text-white">
-            <span className="font-serif text-[18px] font-semibold leading-none">E</span>
-          </div>
-          <div className="flex-1">
-            <div className="text-[13px] font-bold tracking-tight">Edify Agent OS</div>
-          </div>
-        </div>
         <div className="flex items-center gap-2.5 px-1.5 py-1">
           <div className="grid h-[30px] w-[30px] place-items-center rounded-full bg-ink text-[12px] font-bold text-white">
             {currentUser?.initials ?? "?"}
@@ -166,59 +157,6 @@ export function Sidebar({
         </div>
       </div>
     </aside>
-  );
-}
-
-function SideTab({
-  icon,
-  label,
-  on,
-  onClick,
-}: {
-  icon: IconName;
-  label: string;
-  on?: boolean;
-  onClick?: () => void;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      aria-pressed={!!on}
-      className={cn(
-        "flex flex-1 items-center justify-center gap-[7px] rounded-lg px-[6px] py-2 text-[12.5px] font-semibold transition",
-        on
-          ? "bg-paper text-ink shadow-[0_1px_3px_rgba(14,10,20,.08)]"
-          : "bg-transparent text-mute hover:text-ink",
-      )}
-    >
-      <Icon name={icon} size={14} strokeWidth={1.8} />
-      {label}
-    </button>
-  );
-}
-
-function SideTabPlaceholder({ kind }: { kind: "chat" | "build" }) {
-  const copy =
-    kind === "chat"
-      ? {
-          icon: "chat" as IconName,
-          title: "Chat",
-          body: "Conversations with your agents will live here. Coming soon.",
-        }
-      : {
-          icon: "build" as IconName,
-          title: "Build",
-          body: "Compose new agents and tools from this panel. Coming soon.",
-        };
-  return (
-    <div className="flex flex-1 flex-col items-center justify-center gap-3 px-4 py-10 text-center">
-      <div className="grid h-10 w-10 place-items-center rounded-[11px] border border-rule bg-warm2 text-mute">
-        <Icon name={copy.icon} size={18} strokeWidth={1.8} />
-      </div>
-      <div className="text-[14px] font-semibold text-ink">{copy.title}</div>
-      <div className="max-w-[220px] text-[12.5px] leading-snug text-mute">{copy.body}</div>
-    </div>
   );
 }
 

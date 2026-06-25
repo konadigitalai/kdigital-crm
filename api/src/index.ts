@@ -3,11 +3,9 @@ import dotenv from "dotenv";
 // dev shell has its own ANTHROPIC_MODEL set for unrelated tooling).
 dotenv.config({ override: true });
 import express from "express";
-import cookieParser from "cookie-parser";
 import { appPool } from "./db/app.js";
 import { authMiddleware } from "./middleware/auth.js";
 import { requirePermission } from "./middleware/require.js";
-import { authRouter } from "./routes/auth.js";
 import { leadsRouter } from "./routes/leads.js";
 import { pipelineRouter } from "./routes/pipeline.js";
 import { activityRouter } from "./routes/activity.js";
@@ -43,9 +41,8 @@ const app = express();
 // signature verification. We can't use the app-wide express.json() before
 // this, hence the per-route ordering.
 //
-// CORS doesn't apply to webhook (Meta isn't a browser); cookieParser
-// doesn't either. So this mount runs against a bare app — fine for one
-// route, weird if it grew.
+// CORS doesn't apply to webhook (Meta isn't a browser). So this mount
+// runs against a bare app — fine for one route, weird if it grew.
 app.use(
   "/webhooks/whatsapp",
   express.raw({ type: "application/json", limit: "1mb" }),
@@ -53,7 +50,6 @@ app.use(
 );
 
 app.use(express.json());
-app.use(cookieParser());
 
 // CORS_ORIGIN can be a single origin or a comma-separated allowlist (e.g.
 // the prod Vercel domain plus any custom domain). Credentialed requests
@@ -84,9 +80,11 @@ app.get("/health", async (_req, res) => {
   }
 });
 
-app.use("/auth", authRouter);
-
 // ── Authenticated ──────────────────────────────────────────────────────────
+// Auth is owned by Auth0 (see middleware/auth.ts — verifies the Bearer JWT
+// against Auth0's JWKS). The legacy /auth/login + /auth/logout endpoints
+// were removed; the web app calls the SDK-mounted Next.js routes
+// (/auth/login, /auth/logout) instead.
 app.use(authMiddleware);
 app.use("/me", meRouter);
 

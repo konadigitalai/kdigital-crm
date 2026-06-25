@@ -24,7 +24,7 @@ export default async function AdminWhatsAppIntegrationPage() {
       <Topbar
         crumb={
           <>
-            <Link href="/admin/groups" className="cursor-pointer hover:text-ink">Admin</Link>
+            <Link href="/settings" className="cursor-pointer hover:text-ink">Settings</Link>
             <span className="text-hint">/</span>
             <b className="font-semibold text-ink">Integrations · WhatsApp</b>
           </>

@@ -54,12 +54,14 @@ export const appUser = pgTable(
   {
     id: uuid("id").primaryKey().defaultRandom(),
     tenantId: uuid("tenant_id").notNull().references(() => tenant.id),
-    auth0Sub: text("auth0_sub"), // nullable while auth is bypassed
+    // Auth0 subject ("auth0|abc123", "google-oauth2|123…"). Populated by
+    // JIT provisioning on first authenticated request. Nullable so seed
+    // rows can exist before any human signs in.
+    auth0Sub: text("auth0_sub"),
     email: text("email").notNull(),
     name: text("name"),
     role: text("role").notNull().default("advisor"),
     active: boolean("active").notNull().default(true),
-    passwordHash: text("password_hash"), // bcryptjs hash; NULL = no password set yet
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => ({
@@ -69,63 +71,10 @@ export const appUser = pgTable(
   }),
 );
 
-// ─── Auth: sessions + groups ──────────────────────────────────────────────
-
-export const appSession = pgTable(
-  "app_session",
-  {
-    id: uuid("id").primaryKey().defaultRandom(),
-    tenantId: uuid("tenant_id").notNull().references(() => tenant.id),
-    userId: uuid("user_id").notNull().references(() => appUser.id, { onDelete: "cascade" }),
-    tokenHash: text("token_hash").notNull(),
-    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
-    revokedAt: timestamp("revoked_at", { withTimezone: true }),
-  },
-  (t) => ({
-    tokenHashKey: uniqueIndex("app_session_token_hash_key").on(t.tokenHash),
-    userIdx: index("app_session_user_idx").on(t.tenantId, t.userId),
-  }),
-);
-
-export const userGroup = pgTable(
-  "user_group",
-  {
-    id: uuid("id").primaryKey().defaultRandom(),
-    tenantId: uuid("tenant_id").notNull().references(() => tenant.id),
-    name: text("name").notNull(),
-    description: text("description"),
-    isSystem: boolean("is_system").notNull().default(false),
-    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-  },
-  (t) => ({
-    tenantNameKey: uniqueIndex("user_group_tenant_name_key").on(t.tenantId, t.name),
-  }),
-);
-
-export const userGroupPermission = pgTable(
-  "user_group_permission",
-  {
-    groupId: uuid("group_id").notNull().references(() => userGroup.id, { onDelete: "cascade" }),
-    permission: text("permission").notNull(),
-  },
-  (t) => ({
-    pk: uniqueIndex("user_group_permission_pk").on(t.groupId, t.permission),
-  }),
-);
-
-export const userGroupMember = pgTable(
-  "user_group_member",
-  {
-    userId: uuid("user_id").notNull().references(() => appUser.id, { onDelete: "cascade" }),
-    groupId: uuid("group_id").notNull().references(() => userGroup.id, { onDelete: "cascade" }),
-    addedAt: timestamp("added_at", { withTimezone: true }).notNull().defaultNow(),
-  },
-  (t) => ({
-    pk: uniqueIndex("user_group_member_pk").on(t.userId, t.groupId),
-    groupIdx: index("user_group_member_group_idx").on(t.groupId),
-  }),
-);
+// ─── Auth: legacy cookie sessions + group tables ─────────────────────────
+// Dropped at the Auth0 cutover (see post-0039-drop-cookie-auth.sql).
+// Permissions now ride on the Auth0 access token; user roles are managed
+// in Auth0 Dashboard → User Management → Roles.
 
 // ─── Party (people / orgs SoR) ────────────────────────────────────────────
 

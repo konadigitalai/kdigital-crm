@@ -15,7 +15,8 @@ export type IconName =
   | "doc" | "stamp" | "burst"
   // Sidebar-friendly nav glyphs (added so labels and shapes match)
   | "message-square" | "user-plus" | "graduation-cap" | "pipeline"
-  | "life-ring" | "calendar" | "tag" | "robot";
+  | "life-ring" | "calendar" | "tag" | "robot"
+  | "batches";
 
 export function Icon({ name, size = 16, strokeWidth = 1.7, className, ...rest }: IconProps) {
   const props = {
@@ -119,5 +120,15 @@ export function Icon({ name, size = 16, strokeWidth = 1.7, className, ...rest }:
     case "robot":
       // Bot face — AI agents
       return (<svg {...props}><rect x="4" y="7" width="16" height="13" rx="3" /><circle cx="9" cy="13.5" r="1.2" /><circle cx="15" cy="13.5" r="1.2" /><path d="M12 4v3M9 17h6" /></svg>);
+    case "batches":
+      // Stacked layers / cohorts — Batches (separate from Calendar so the
+      // sidebar doesn't show two identical calendar glyphs).
+      return (
+        <svg {...props}>
+          <path d="M12 3l9 4.5-9 4.5-9-4.5z" />
+          <path d="M3 12l9 4.5 9-4.5" />
+          <path d="M3 16.5l9 4.5 9-4.5" />
+        </svg>
+      );
   }
 }

@@ -47,12 +47,14 @@ export function buildNavItems(summary: SummaryResponse): NavItem[] {
   const leadBadge = summary.overall.total ? String(summary.overall.total) : undefined;
   return [
     { href: "/",                          icon: "home",            label: "Agent Home" },
-    { href: "/inbox",                     icon: "message-square",  label: "Inbox",                          requires: "whatsapp.read" },
+    // Inbox is hidden for now — WhatsApp conversations module is still WIP.
+    // Re-enable by uncommenting once the inbox UX is finalized.
+    // { href: "/inbox",                     icon: "message-square",  label: "Inbox",                          requires: "whatsapp.read" },
     { href: "/leads",                     icon: "user-plus",       label: "Leads",       badge: leadBadge, requires: "leads.read" },
     { href: "/learners",                  icon: "graduation-cap",  label: "Learners",                       requires: "learners.read" },
     { href: "/cases",                     icon: "life-ring",       label: "Cases",       badge: caseBadge, requires: "cases.read" },
     { href: "/pipeline",                  icon: "pipeline",        label: "Pipeline",                       requires: "pipeline.read" },
-    { href: "/admin/cohorts",             icon: "calendar",        label: "Batches",                        requires: "admin.batches.manage" },
+    { href: "/admin/cohorts",             icon: "batches",         label: "Batches",                        requires: "admin.batches.manage" },
     { href: "/calendar",                  icon: "calendar",        label: "Calendar",                       requires: "events.manage.self" },
     { href: "/agents",                    icon: "robot",           label: "Agents",                         requires: "agents.read" },
     { href: "/settings",                  icon: "settings",        label: "Settings", requiresAny: SETTINGS_ANY_PERMISSIONS },
