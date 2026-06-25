@@ -44,11 +44,11 @@ export function IconRail({
 
   return (
     <nav className="relative z-[2] flex h-full flex-col items-center bg-ink py-3.5">
-      {/* Pinned top: brand mark + (when sidebar collapsed) expand button */}
+      {/* Pinned top: only the expand-sidebar button. The gradient brand
+          mark was dropped — the dark rail looks cleaner without it, and
+          the labeled sidebar (when open) already has the Edify wordmark
+          at the top. */}
       <div className="flex flex-shrink-0 flex-col items-center gap-1.5">
-        <Link href="/" className="mb-1 flex h-10 w-10 items-center justify-center rounded-xl bg-grad shadow-rail" aria-label="Edify home">
-          <span className="font-serif text-[22px] font-semibold leading-none text-white">E</span>
-        </Link>
         {sidebarCollapsed && onExpandSidebar && (
           <RailTooltip label="Expand sidebar">
             <button
