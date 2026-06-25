@@ -338,19 +338,12 @@ async function buildSnapshot(
       active: r.active as boolean,
     }));
 
-    const groupsR = await db.execute(sql`
-      SELECT
-        g.name,
-        (SELECT COUNT(*)::int FROM user_group_member m WHERE m.group_id = g.id) AS "memberCount",
-        (SELECT COUNT(*)::int FROM user_group_permission p WHERE p.group_id = g.id) AS permissions
-      FROM user_group g
-      ORDER BY g.is_system DESC, g.name
-    `);
-    const groups = (groupsR.rows as Array<Record<string, unknown>>).map((r) => ({
-      name: r.name as string,
-      memberCount: Number(r.memberCount) || 0,
-      permissions: Number(r.permissions) || 0,
-    }));
+    // Groups + permissions are owned by Auth0 now (Roles + Permissions in
+    // the dashboard). The legacy user_group tables were dropped at the
+    // Auth0 cutover (post-0039). Edify can still answer questions about
+    // permissions by reading the access-token claim downstream, but the
+    // snapshot it feeds Claude is just an empty list here.
+    const groups: Array<{ name: string; memberCount: number; permissions: number }> = [];
 
     // Recent agent runs (12)
     const runsR = await db.execute(sql`
