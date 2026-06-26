@@ -346,57 +346,57 @@ function BatchFormDialog({
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/40 p-6 backdrop-blur-sm"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-6 backdrop-blur-sm"
       onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
     >
-      <div
-        className="my-12 w-full max-w-[640px] rounded-2xl border border-rule bg-paper p-7 shadow-card"
+      {/* Panel is height-bounded; header + footer stay pinned, the form
+          body becomes the only scrollable region. */}
+      <form
+        onSubmit={(e) => {
+          e.preventDefault();
+          setFormError(null);
+          if (!name.trim() || !courseId) return;
+          // Mirror the API's cross-field validation so the user gets feedback fast.
+          if (trainerId && coTrainerId && trainerId === coTrainerId) {
+            setFormError("Trainer and co-trainer must be different people.");
+            return;
+          }
+          if (daysOfWeek.length > 0 && (!startTime || !endTime)) {
+            setFormError("Pick start time and end time when days are selected.");
+            return;
+          }
+          if (startTime && endTime && endTime <= startTime) {
+            setFormError("End time must be after start time.");
+            return;
+          }
+          onSubmit({
+            courseId,
+            name: name.trim(),
+            code: code.trim() || null,
+            slot: (slot || null) as BatchSlot | null,
+            startDate: startDate || null,
+            endDate: endDate || null,
+            seats: seats !== "" ? Number(seats) : null,
+            status,
+            trainerId,
+            coTrainerId,
+            daysOfWeek,
+            startTime: startTime || null,
+            endTime:   endTime   || null,
+          });
+        }}
         onClick={(e) => e.stopPropagation()}
+        className="flex max-h-[calc(100vh-3rem)] w-full max-w-[640px] flex-col rounded-2xl border border-rule bg-paper shadow-card"
       >
-        <div className="mb-6 flex items-start justify-between gap-4">
+        <div className="flex flex-shrink-0 items-start justify-between gap-4 border-b border-rule p-7 pb-5">
           <div>
             <h2 className="font-serif text-[26px] font-normal leading-tight tracking-[-.01em]">{title}</h2>
             <p className="mt-1 text-[13px] text-mute">A batch is a time-fenced run of one course. Active batches with a trainer + days + time auto-populate the trainer's calendar.</p>
           </div>
-          <button onClick={onClose} className="text-mute hover:text-ink"><Icon name="plus" size={18} strokeWidth={2} className="rotate-45" /></button>
+          <button type="button" onClick={onClose} className="text-mute hover:text-ink"><Icon name="plus" size={18} strokeWidth={2} className="rotate-45" /></button>
         </div>
 
-        <form
-          onSubmit={(e) => {
-            e.preventDefault();
-            setFormError(null);
-            if (!name.trim() || !courseId) return;
-            // Mirror the API's cross-field validation so the user gets feedback fast.
-            if (trainerId && coTrainerId && trainerId === coTrainerId) {
-              setFormError("Trainer and co-trainer must be different people.");
-              return;
-            }
-            if (daysOfWeek.length > 0 && (!startTime || !endTime)) {
-              setFormError("Pick start time and end time when days are selected.");
-              return;
-            }
-            if (startTime && endTime && endTime <= startTime) {
-              setFormError("End time must be after start time.");
-              return;
-            }
-            onSubmit({
-              courseId,
-              name: name.trim(),
-              code: code.trim() || null,
-              slot: (slot || null) as BatchSlot | null,
-              startDate: startDate || null,
-              endDate: endDate || null,
-              seats: seats !== "" ? Number(seats) : null,
-              status,
-              trainerId,
-              coTrainerId,
-              daysOfWeek,
-              startTime: startTime || null,
-              endTime:   endTime   || null,
-            });
-          }}
-          className="space-y-4"
-        >
+        <div className="flex-1 space-y-4 overflow-y-auto p-7">
           <Field label="Course" required>
             <select className={inputCls} value={courseId} onChange={(e) => setCourseId(e.target.value)} disabled={!!initial}>
               {courses.map((c) => (
@@ -501,18 +501,20 @@ function BatchFormDialog({
             </div>
           </Field>
 
+        </div>
+
+        <div className="flex flex-shrink-0 flex-col gap-3 border-t border-rule p-5">
           {formError && (
             <div className="rounded-md border border-state-warn/30 bg-state-warn/10 px-3 py-2 text-[12px] text-state-warn">{formError}</div>
           )}
-
-          <div className="flex items-center justify-end gap-3 pt-2">
+          <div className="flex items-center justify-end gap-3">
             <button type="button" onClick={onClose} className="btn">Cancel</button>
             <button type="submit" disabled={busy} className="btn-grad disabled:opacity-60">
               {busy ? "Saving…" : submitLabel}
             </button>
           </div>
-        </form>
-      </div>
+        </div>
+      </form>
     </div>
   );
 }
