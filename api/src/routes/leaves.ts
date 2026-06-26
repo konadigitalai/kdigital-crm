@@ -1,16 +1,19 @@
-// Leaves — self-marked. Admin (leaves.read.all) can read everyone's.
+// Leaves — self-marked. Open to any authenticated user; the legacy
+// leaves.read.self permission gate was removed after the Auth0 cutover
+// because that permission isn't in the Auth0 catalog. Add it back to
+// Auth0 and reinstate `requirePermission("leaves.read.self")` on these
+// handlers if access ever needs tightening again.
 
 import { Router } from "express";
 import { sql } from "drizzle-orm";
 import { withTenant } from "../db/app.js";
-import { requirePermission } from "../middleware/require.js";
 
 export const leavesRouter = Router();
 
 const KINDS = new Set(["sick", "personal", "vacation", "wfh", "holiday"]);
 const HALF = new Set(["full", "am", "pm"]);
 
-leavesRouter.get("/", requirePermission("leaves.read.self"), async (req, res, next) => {
+leavesRouter.get("/", async (req, res, next) => {
   try {
     const targetUserId = req.query.userId ? String(req.query.userId) : req.userId!;
     const from = req.query.from ? String(req.query.from) : null;
@@ -43,7 +46,7 @@ leavesRouter.get("/", requirePermission("leaves.read.self"), async (req, res, ne
   }
 });
 
-leavesRouter.post("/", requirePermission("leaves.read.self"), async (req, res, next) => {
+leavesRouter.post("/", async (req, res, next) => {
   try {
     const date = String(req.body?.date ?? "").trim();
     const kind = String(req.body?.kind ?? "").trim();
@@ -68,7 +71,7 @@ leavesRouter.post("/", requirePermission("leaves.read.self"), async (req, res, n
   }
 });
 
-leavesRouter.patch("/:id", requirePermission("leaves.read.self"), async (req, res, next) => {
+leavesRouter.patch("/:id", async (req, res, next) => {
   try {
     const id = String(req.params.id);
     const b = req.body ?? {};
@@ -97,7 +100,7 @@ leavesRouter.patch("/:id", requirePermission("leaves.read.self"), async (req, re
   }
 });
 
-leavesRouter.delete("/:id", requirePermission("leaves.read.self"), async (req, res, next) => {
+leavesRouter.delete("/:id", async (req, res, next) => {
   try {
     const id = String(req.params.id);
     const out = await withTenant(req.tenantId!, async (db) => {
