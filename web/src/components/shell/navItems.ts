@@ -73,17 +73,46 @@ export function filterNavItems(items: NavItem[], user: CurrentUser | null): NavI
   });
 }
 
+// Resolve which sidebar entry should be marked "active" for a given URL.
+//
+// Rule: exactly one nav item lights up at a time. Items with their own
+// dedicated entry (Batches → /admin/cohorts, Calendar → /calendar, etc.)
+// always win over the generic Settings catch-all, even though their paths
+// happen to live under /admin or /whatsapp.
+//
+// The dedicated-entry exception list below MUST stay in sync with the
+// `href` values that appear in buildNavItems().
+const DEDICATED_HREFS = [
+  "/inbox",
+  "/leads",
+  "/learners",
+  "/cases",
+  "/pipeline",
+  "/admin/cohorts",   // Batches
+  "/calendar",
+  "/agents",
+];
+
 export function isActive(pathname: string, href: string): boolean {
   if (href === "/") return pathname === "/";
   if (href === "/leads") return pathname.startsWith("/leads") || pathname.startsWith("/records");
   if (href === "/learners") return pathname.startsWith("/learners");
   if (href === "/cases") return pathname.startsWith("/cases");
-  // Settings is the new home for admin + integrations + WA broadcasts/automations.
+  // Settings is the catch-all for admin + WhatsApp config. But it must NOT
+  // light up when the user is on a path that has its own dedicated nav
+  // entry — e.g. /admin/cohorts (Batches) is also under /admin, but we
+  // want only Batches to highlight, not Settings.
   if (href === "/settings") {
+    const onDedicated = DEDICATED_HREFS.some(
+      (h) => h !== "/settings" && (pathname === h || pathname.startsWith(`${h}/`)),
+    );
+    if (onDedicated) return false;
     return pathname.startsWith("/settings")
         || pathname.startsWith("/admin")
         || pathname.startsWith("/whatsapp/broadcasts")
         || pathname.startsWith("/whatsapp/automations");
   }
-  return pathname.startsWith(href);
+  // For every other entry, use strict prefix-with-boundary so /admin/cohorts
+  // doesn't accidentally match /admin or vice versa.
+  return pathname === href || pathname.startsWith(`${href}/`);
 }

@@ -43,7 +43,6 @@ export default async function PipelinePage() {
     <>
       <Topbar
         crumb={<>Edify CRM <span className="text-hint">/</span> <b className="font-semibold text-ink">Pipeline</b></>}
-        search="Search pipeline…"
         status="Agents sorting"
       />
 
