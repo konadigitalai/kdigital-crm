@@ -15,6 +15,7 @@ import type { RunnableConfig } from "@langchain/core/runnables";
 import { makeChatModel } from "../lib/llm.js";
 import { runWithGraph, getCheckpointer, configurable } from "./runtime.js";
 import { loadLeadContext, renderLeadContextBlock, type LeadContext } from "./lead-context.js";
+import { resolveSentinelPartyId } from "../lib/party/resolve.js";
 
 const VALID_ICONS = ["send", "clock", "mail", "star", "check", "info", "money"] as const;
 type NbaIcon = (typeof VALID_ICONS)[number];
@@ -114,13 +115,15 @@ async function writeBackNode(state: NbaStateT, config: RunnableConfig) {
     WHERE work_item_id = ${ctx.workItemId}
   `);
 
+  // Phase 3: agent-authored rows attribute to the tenant's sentinel party.
+  const actorPartyId = await resolveSentinelPartyId(db, tenantId);
   await db.execute(sql`
     INSERT INTO activity (
-      tenant_id, work_item_id, party_id, actor_type, actor_name,
+      tenant_id, work_item_id, party_id, actor_type, actor_party_id, actor_name,
       verb, detail, tag, icon_key, icon_bg, icon_stroke, payload, ts
     ) VALUES (
       ${tenantId}, ${ctx.workItemId}, ${ctx.partyId},
-      'agent', 'Next-Best-Action Agent',
+      'agent', ${actorPartyId}, 'Next-Best-Action Agent',
       'suggested', ${`${nba.nbaLabel} (${nba.nbaConfidence}% conf). ${nba.nbaWhy.slice(0, 200)}`},
       'auto', 'star',
       'rgba(107,31,184,.1)', '#6B1FB8',
@@ -130,9 +133,9 @@ async function writeBackNode(state: NbaStateT, config: RunnableConfig) {
   `);
 
   await db.execute(sql`
-    INSERT INTO audit_log (tenant_id, actor_type, action, target_type, target_id, context)
+    INSERT INTO audit_log (tenant_id, actor_type, actor_party_id, action, target_type, target_id, context)
     VALUES (
-      ${tenantId}, 'agent', 'nba_suggested', 'work_item', ${ctx.workItemId},
+      ${tenantId}, 'agent', ${actorPartyId}, 'nba_suggested', 'work_item', ${ctx.workItemId},
       ${JSON.stringify({ rating: ctx.rating, nbaLabel: nba.nbaLabel, nbaConfidence: nba.nbaConfidence, model: state.llmModel })}::jsonb
     )
   `);

@@ -18,6 +18,8 @@ import {
   type MetaCreds,
 } from "../lib/whatsapp/meta.js";
 import { recordOutbound } from "../lib/whatsapp/inbox.js";
+import { partyIdFromAppUserId } from "../lib/party/resolve.js";
+import { filterConsentedRecipients } from "../lib/party/consent.js";
 
 export const whatsappRouter = Router();
 
@@ -338,10 +340,15 @@ whatsappRouter.get("/conversations", requirePermission("whatsapp.read"), async (
     const rows = await withTenant(req.tenantId!, async (db) => {
       const conditions: ReturnType<typeof sql>[] = [];
       if (status !== "all") conditions.push(sql`c.status = ${status}`);
-      if (assignee === "me") conditions.push(sql`c.assigned_user_id = ${req.userId}`);
-      else if (assignee === "unassigned") conditions.push(sql`c.assigned_user_id IS NULL`);
-      else if (assignee && /^[0-9a-fA-F-]{36}$/.test(assignee)) {
-        conditions.push(sql`c.assigned_user_id = ${assignee}`);
+      // Phase 2: c.assigned_user_id stores party.id; resolve app_user.id → party.id.
+      if (assignee === "me") {
+        const mePartyId = await partyIdFromAppUserId(db, req.userId!);
+        conditions.push(sql`c.assigned_user_id = ${mePartyId}`);
+      } else if (assignee === "unassigned") {
+        conditions.push(sql`c.assigned_user_id IS NULL`);
+      } else if (assignee && /^[0-9a-fA-F-]{36}$/.test(assignee)) {
+        const partyId = await partyIdFromAppUserId(db, assignee);
+        conditions.push(sql`c.assigned_user_id = ${partyId}`);
       }
       if (q) {
         const like = `%${q}%`;
@@ -352,7 +359,7 @@ whatsappRouter.get("/conversations", requirePermission("whatsapp.read"), async (
       const r = await db.execute(sql`
         SELECT
           c.id, c.party_id AS "partyId", c.status,
-          c.assigned_user_id AS "assignedUserId",
+          u.id               AS "assignedUserId",  -- app_user.id via party_id (Phase 2)
           u.name AS "assignedUserName",
           c.last_message_text  AS "lastMessageText",
           c.last_message_at    AS "lastMessageAt",
@@ -376,7 +383,7 @@ whatsappRouter.get("/conversations", requirePermission("whatsapp.read"), async (
           ) AS "isLearner"
         FROM wa_conversation c
         JOIN party p ON p.id = c.party_id
-        LEFT JOIN app_user u ON u.id = c.assigned_user_id
+        LEFT JOIN app_user u ON u.party_id = c.assigned_user_id
         ${where}
         ORDER BY c.last_message_at DESC NULLS LAST
         LIMIT ${limit}
@@ -399,7 +406,7 @@ whatsappRouter.get("/conversations/:id", requirePermission("whatsapp.read"), asy
       const convR = await db.execute(sql`
         SELECT
           c.id, c.party_id AS "partyId", c.status,
-          c.assigned_user_id AS "assignedUserId",
+          u.id               AS "assignedUserId",  -- app_user.id via party_id (Phase 2)
           u.name AS "assignedUserName",
           c.last_message_at AS "lastMessageAt",
           c.last_inbound_at AS "lastInboundAt",
@@ -424,7 +431,7 @@ whatsappRouter.get("/conversations/:id", requirePermission("whatsapp.read"), asy
           ) AS "isLearner"
         FROM wa_conversation c
         JOIN party p ON p.id = c.party_id
-        LEFT JOIN app_user u ON u.id = c.assigned_user_id
+        LEFT JOIN app_user u ON u.party_id = c.assigned_user_id
         WHERE c.id = ${id}
         LIMIT 1
       `);
@@ -433,7 +440,9 @@ whatsappRouter.get("/conversations/:id", requirePermission("whatsapp.read"), asy
 
       const msgsR = await db.execute(sql`
         SELECT
-          id, direction, sender_type AS "senderType", sender_user_id AS "senderUserId",
+          id, direction, sender_type AS "senderType",
+          (SELECT au.id FROM app_user au WHERE au.party_id = sender_user_id LIMIT 1) AS "senderUserId", -- Phase 2: app_user.id via party
+
           content_type AS "contentType", body, media_url AS "mediaUrl", media_mime AS "mediaMime",
           template_name AS "templateName", template_variables AS "templateVariables",
           provider_message_id AS "providerMessageId",
@@ -480,8 +489,10 @@ whatsappRouter.post("/conversations/:id/assign", requirePermission("whatsapp.sen
     }
 
     await withTenant(req.tenantId!, async (db) => {
+      // Phase 2: assigned_user_id stores party.id; resolve.
+      const partyId = userId ? await partyIdFromAppUserId(db, userId) : null;
       await db.execute(sql`
-        UPDATE wa_conversation SET assigned_user_id = ${userId} WHERE id = ${id}
+        UPDATE wa_conversation SET assigned_user_id = ${partyId} WHERE id = ${id}
       `);
     });
     res.json({ ok: true });
@@ -954,11 +965,11 @@ whatsappRouter.get("/broadcasts", requirePermission("whatsapp.read"), async (req
                b.read_count AS "readCount",
                b.failed_count AS "failedCount",
                b.created_at AS "createdAt",
-               b.created_by AS "createdBy",
+               u.id         AS "createdBy",  -- app_user.id via party_id (Phase 2)
                u.name AS "createdByName"
         FROM wa_broadcast b
         LEFT JOIN wa_template t ON t.id = b.template_id
-        LEFT JOIN app_user u ON u.id = b.created_by
+        LEFT JOIN app_user u ON u.party_id = b.created_by
         ORDER BY b.created_at DESC
         LIMIT 200
       `);
@@ -998,9 +1009,11 @@ whatsappRouter.post("/broadcasts", requirePermission("whatsapp.broadcast"), asyn
       if (!tpl) return { kind: "tpl-missing" as const };
       if (tpl.status !== "approved") return { kind: "tpl-not-approved" as const, status: tpl.status };
 
+      // Phase 2: created_by stores party.id.
+      const creatorPartyId = req.userId ? await partyIdFromAppUserId(db, req.userId) : null;
       const r = await db.execute(sql`
         INSERT INTO wa_broadcast (tenant_id, name, template_id, created_by, default_variables, status, scheduled_at)
-        VALUES (current_tenant(), ${name}, ${templateId}, ${req.userId ?? null},
+        VALUES (current_tenant(), ${name}, ${templateId}, ${creatorPartyId},
                 ${sql`${JSON.stringify(defaultVariables)}::jsonb`},
                 ${scheduledAt ? "scheduled" : "draft"},
                 ${scheduledAt})
@@ -1034,11 +1047,11 @@ whatsappRouter.get("/broadcasts/:id", requirePermission("whatsapp.read"), async 
                b.read_count AS "readCount",
                b.failed_count AS "failedCount",
                b.created_at AS "createdAt", b.updated_at AS "updatedAt",
-               b.created_by AS "createdBy",
+               u.id         AS "createdBy",  -- app_user.id via party_id (Phase 2)
                u.name AS "createdByName"
         FROM wa_broadcast b
         LEFT JOIN wa_template t ON t.id = b.template_id
-        LEFT JOIN app_user u ON u.id = b.created_by
+        LEFT JOIN app_user u ON u.party_id = b.created_by
         WHERE b.id = ${id}
       `);
       const broadcast = bR.rows[0] as Record<string, unknown> | undefined;
@@ -1090,10 +1103,25 @@ whatsappRouter.post("/broadcasts/:id/recipients", requirePermission("whatsapp.br
       if (!b) return { kind: "missing" as const };
       if (!["draft", "scheduled"].includes(b.status)) return { kind: "bad-state" as const, status: b.status };
 
+      // Phase 4: strict consent gate. Filter partyIds by opt_in=true on the
+      // whatsapp channel before we touch the recipient table.
+      const consent = await filterConsentedRecipients(db, "whatsapp", partyIds);
+      const allowedPartyIds = new Set(consent.allowed);
+
       let added = 0;
-      // Path A: partyIds — resolve each to a phone using the party's
-      // phone + phone_country_code columns (matches inbox.ts convention).
+      const skipped: Array<{ partyId: string; reason: string }> = [];
+      // Any inbound partyId that filterConsentedRecipients discarded up
+      // front (bad UUID) gets a reason too, so the caller sees a full list.
       for (const pid of partyIds) {
+        if (!allowedPartyIds.has(pid)) {
+          const reason = consent.blocked.find((c) => c.partyId === pid)?.reason ?? "no_consent";
+          skipped.push({ partyId: pid, reason });
+        }
+      }
+
+      // Path A: partyIds — resolve each ALLOWED party to a phone using the
+      // party's phone + phone_country_code columns (matches inbox.ts convention).
+      for (const pid of consent.allowed) {
         const pR = await db.execute(sql`
           SELECT id,
                  NULLIF(regexp_replace(COALESCE(phone_country_code, ''), '[^0-9]', '', 'g')
@@ -1101,7 +1129,10 @@ whatsappRouter.post("/broadcasts/:id/recipients", requirePermission("whatsapp.br
           FROM party WHERE id = ${pid}
         `);
         const p = pR.rows[0] as { id: string; digits: string | null } | undefined;
-        if (!p?.digits) continue; // skip parties without a phone
+        if (!p?.digits) {
+          skipped.push({ partyId: pid, reason: "no_phone" });
+          continue;
+        }
         const e164 = `+${p.digits}`;
         const ins = await db.execute(sql`
           INSERT INTO wa_broadcast_recipient (tenant_id, broadcast_id, party_id, to_phone)
@@ -1111,7 +1142,8 @@ whatsappRouter.post("/broadcasts/:id/recipients", requirePermission("whatsapp.br
         `);
         if (ins.rows.length > 0) added++;
       }
-      // Path B: raw entries.
+      // Path B: raw entries. Consent unchecked — no party to check against.
+      // Ops takes responsibility for these; we return a warning below.
       for (const e of entries) {
         const phone = String(e?.phone ?? "").trim();
         if (!phone) continue;
@@ -1132,12 +1164,18 @@ whatsappRouter.post("/broadcasts/:id/recipients", requirePermission("whatsapp.br
         WHERE id = ${id}
       `);
 
-      return { kind: "ok" as const, added };
+      const warnings: string[] = [];
+      if (entries.length > 0) {
+        warnings.push(
+          "raw phone entries were added without consent check — ops responsibility",
+        );
+      }
+      return { kind: "ok" as const, added, skipped, warnings };
     });
 
     if (out.kind === "missing") return res.status(404).json({ error: "Broadcast not found" });
     if (out.kind === "bad-state") return res.status(409).json({ error: `Cannot add recipients to a ${out.status} broadcast` });
-    res.json({ ok: true, added: out.added });
+    res.json({ ok: true, added: out.added, skipped: out.skipped, warnings: out.warnings });
   } catch (err) { next(err); }
 });
 
@@ -1303,13 +1341,13 @@ whatsappRouter.get("/automations", requirePermission("whatsapp.read"), async (re
       const r = await db.execute(sql`
         SELECT a.id, a.name, a.description,
                a.trigger, a.actions, a.enabled,
-               a.created_by AS "createdBy",
+               u.id         AS "createdBy",  -- app_user.id via party_id (Phase 2)
                u.name AS "createdByName",
                a.created_at AS "createdAt",
                a.updated_at AS "updatedAt",
                (SELECT COUNT(*)::int FROM wa_automation_run r WHERE r.automation_id = a.id) AS "runCount"
         FROM wa_automation a
-        LEFT JOIN app_user u ON u.id = a.created_by
+        LEFT JOIN app_user u ON u.party_id = a.created_by
         ORDER BY a.created_at DESC
       `);
       return r.rows;
@@ -1327,13 +1365,15 @@ whatsappRouter.post("/automations", requirePermission("whatsapp.manage"), async 
     const { name, description, trigger, actions, enabled } = v.value;
 
     const id = await withTenant(req.tenantId!, async (db) => {
+      // Phase 2: created_by stores party.id.
+      const creatorPartyId = req.userId ? await partyIdFromAppUserId(db, req.userId) : null;
       const r = await db.execute(sql`
         INSERT INTO wa_automation (tenant_id, name, description, trigger, actions, enabled, created_by)
         VALUES (
           current_tenant(), ${name}, ${description},
           ${sql`${JSON.stringify(trigger)}::jsonb`},
           ${sql`${JSON.stringify(actions)}::jsonb`},
-          ${enabled}, ${req.userId ?? null}
+          ${enabled}, ${creatorPartyId}
         )
         RETURNING id
       `);
@@ -1351,12 +1391,12 @@ whatsappRouter.get("/automations/:id", requirePermission("whatsapp.read"), async
     const out = await withTenant(req.tenantId!, async (db) => {
       const r = await db.execute(sql`
         SELECT a.id, a.name, a.description, a.trigger, a.actions, a.enabled,
-               a.created_by AS "createdBy",
+               u.id         AS "createdBy",  -- app_user.id via party_id (Phase 2)
                u.name AS "createdByName",
                a.created_at AS "createdAt",
                a.updated_at AS "updatedAt"
         FROM wa_automation a
-        LEFT JOIN app_user u ON u.id = a.created_by
+        LEFT JOIN app_user u ON u.party_id = a.created_by
         WHERE a.id = ${id}
       `);
       return r.rows[0] as Record<string, unknown> | undefined;

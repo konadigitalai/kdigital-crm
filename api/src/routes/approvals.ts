@@ -2,6 +2,7 @@ import { Router } from "express";
 import { sql } from "drizzle-orm";
 import { withTenant } from "../db/app.js";
 import { requirePermission } from "../middleware/require.js";
+import { resolveActorPartyId } from "../lib/party/resolve.js";
 
 export const approvalsRouter = Router();
 
@@ -26,6 +27,7 @@ approvalsRouter.post("/:id/decide", requirePermission("agents.run"), async (req,
     const proposed = req.body?.proposed && typeof req.body.proposed === "object" ? req.body.proposed : null;
 
     const result = await withTenant(req.tenantId!, async (db) => {
+      const actorPartyId = await resolveActorPartyId(db, req.tenantId!, req.userId);
       const a = await db.execute(sql`
         SELECT a.id, a.status, a.work_item_id AS "workItemId", a.action_type AS "actionType",
                wi.party_id AS "partyId", p.name AS "partyName"
@@ -62,8 +64,8 @@ approvalsRouter.post("/:id/decide", requirePermission("agents.run"), async (req,
 
       if (row.workItemId) {
         await db.execute(sql`
-          INSERT INTO activity (tenant_id, work_item_id, party_id, actor_type, actor_name, verb, detail, tag, payload, ts)
-          VALUES (current_tenant(), ${row.workItemId}, ${row.partyId}, 'user', 'You',
+          INSERT INTO activity (tenant_id, work_item_id, party_id, actor_type, actor_party_id, actor_name, verb, detail, tag, payload, ts)
+          VALUES (current_tenant(), ${row.workItemId}, ${row.partyId}, 'user', ${actorPartyId}, 'You',
                   ${verb}, ${detail}, ${tag},
                   ${JSON.stringify({ when: "Just now", quote: null, approvalId: id })}::jsonb, NOW())
         `);
@@ -71,8 +73,8 @@ approvalsRouter.post("/:id/decide", requirePermission("agents.run"), async (req,
 
       // Audit log
       await db.execute(sql`
-        INSERT INTO audit_log (tenant_id, actor_type, action, target_type, target_id, context)
-        VALUES (current_tenant(), 'user', ${decision === "approve" ? "approval_approved" : "approval_rejected"},
+        INSERT INTO audit_log (tenant_id, actor_type, actor_party_id, action, target_type, target_id, context)
+        VALUES (current_tenant(), 'user', ${actorPartyId}, ${decision === "approve" ? "approval_approved" : "approval_rejected"},
                 'approval', ${id},
                 ${JSON.stringify({ workItemId: row.workItemId, actionType: row.actionType })}::jsonb)
       `);

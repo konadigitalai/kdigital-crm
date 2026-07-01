@@ -3,6 +3,7 @@ import { sql } from "drizzle-orm";
 import { withTenant } from "../db/app.js";
 import { emitEvent } from "../lib/events.js";
 import { requirePermission } from "../middleware/require.js";
+import { partyIdFromAppUserId, resolveActorPartyId, resolveSentinelPartyId } from "../lib/party/resolve.js";
 
 export const leadsRouter = Router();
 
@@ -179,13 +180,23 @@ leadsRouter.post("/", async (req, res, next) => {
     }
 
     const result = await withTenant(req.tenantId!, async (db) => {
+      // Phase 3: every activity/audit row we write below gets actor_party_id.
+      // The seeded rows in the timeline are `actor_type='user'` (advisor) and
+      // `actor_type='ai'`; the ai ones use sentinel, user ones use req.userId.
+      const userActorPartyId  = await resolveActorPartyId(db, req.tenantId!, req.userId);
+      const agentActorPartyId = await resolveSentinelPartyId(db, req.tenantId!);
+
       // Resolve advisor: explicit id wins; otherwise pick first admin.
-      let resolvedAdvisorId = advisorId;
-      if (!resolvedAdvisorId) {
+      // Phase 2 Party Model: work_item.assignee_id / lead.advisor_id both
+      // reference party.id now. The client sends an app_user.id — resolve.
+      let resolvedAdvisorId: string | null = null;
+      if (advisorId) {
+        resolvedAdvisorId = await partyIdFromAppUserId(db, advisorId);
+      } else {
         const r = await db.execute(sql`
-          SELECT id FROM app_user WHERE role = 'admin' AND active = true ORDER BY created_at LIMIT 1
+          SELECT party_id FROM app_user WHERE role = 'admin' AND active = true ORDER BY created_at LIMIT 1
         `);
-        resolvedAdvisorId = (r.rows[0] as { id: string } | undefined)?.id ?? null;
+        resolvedAdvisorId = (r.rows[0] as { party_id: string } | undefined)?.party_id ?? null;
       }
 
       // Next human number
@@ -203,6 +214,24 @@ leadsRouter.post("/", async (req, res, next) => {
         RETURNING id
       `);
       const partyId = (partyR.rows[0] as { id: string }).id;
+
+      // Phase 1 Party Model dual-write — mirror email/phone into contact_point.
+      // `source` is a category enum (web / instagram_ad / referral…), NOT a
+      // per-party external ID, so it does NOT go into party_external_id.
+      // Genuine external IDs (Instagram lead id, Razorpay customer id) will be
+      // inserted by their respective integrations once wired.
+      if (email) {
+        await db.execute(sql`
+          INSERT INTO contact_point (tenant_id, party_id, kind, value, label, is_primary)
+          VALUES (current_tenant(), ${partyId}, 'email', ${email}, 'primary', true)
+        `);
+      }
+      if (phone) {
+        await db.execute(sql`
+          INSERT INTO contact_point (tenant_id, party_id, kind, value, label, is_primary)
+          VALUES (current_tenant(), ${partyId}, 'phone', ${phone}, 'primary', true)
+        `);
+      }
 
       await db.execute(sql`
         INSERT INTO party_role (tenant_id, party_id, role)
@@ -235,18 +264,19 @@ leadsRouter.post("/", async (req, res, next) => {
         INSERT INTO lead (
           work_item_id, tenant_id,
           source, source_label, score, score_label, score_desc, heat, rating,
-          city, program, program_id, value, stage, stage_label,
+          program, program_id, value, stage, stage_label,
           advisor_id, avatar, initials,
           nba_icon, nba_label, nba_ghost,
           nba_confidence, nba_headline, nba_why
         ) VALUES (
           ${wiId}, current_tenant(),
           ${source}, ${sourceLabel}, ${score}, ${HEAT_LABEL[heat]}, ${HEAT_DESC[heat]}, ${heat}, ${rating},
-          ${city}, ${programName}, ${resolvedProgramId}, ${value}, ${stage}, ${STAGE_LABEL[stage]},
+          ${programName}, ${resolvedProgramId}, ${value}, ${stage}, ${STAGE_LABEL[stage]},
           ${resolvedAdvisorId}, ${pickAvatar(name)}, ${initialsOf(name)},
           ${nbaIcon}, ${nbaLabel}, false,
           ${nba.confidence}, ${nba.headline}, ${nba.why}
         )
+        -- Phase 3: lead.city dropped; city lives on party only.
       `);
 
       // 4. signals
@@ -305,13 +335,15 @@ leadsRouter.post("/", async (req, res, next) => {
 
       for (const r of timelineRows) {
         const ts = new Date(wiCreatedAt.getTime() + r.off * 60_000);
+        // Phase 3: pick sentinel for ai/agent/system, otherwise the acting user.
+        const actorPartyId = r.actorType === "user" ? userActorPartyId : agentActorPartyId;
         await db.execute(sql`
           INSERT INTO activity (
             tenant_id, work_item_id, party_id,
-            actor_type, actor_name, verb, detail, tag, payload, ts
+            actor_type, actor_party_id, actor_name, verb, detail, tag, payload, ts
           ) VALUES (
             current_tenant(), ${wiId}, ${partyId},
-            ${r.actorType}, ${r.actorName}, ${r.verb}, ${r.detail}, ${r.tag},
+            ${r.actorType}, ${actorPartyId}, ${r.actorName}, ${r.verb}, ${r.detail}, ${r.tag},
             ${JSON.stringify({ when: fmt(ts), quote: null })}::jsonb,
             ${ts.toISOString()}
           )
@@ -321,7 +353,7 @@ leadsRouter.post("/", async (req, res, next) => {
       // Resolve advisor name for the outbound event payload (cheap; same tx).
       let advisorName: string | null = null;
       if (resolvedAdvisorId) {
-        const u = await db.execute(sql`SELECT name FROM app_user WHERE id = ${resolvedAdvisorId}`);
+        const u = await db.execute(sql`SELECT name FROM app_user WHERE party_id = ${resolvedAdvisorId}`);
         advisorName = (u.rows[0] as { name: string } | undefined)?.name ?? null;
       }
 
@@ -381,7 +413,7 @@ leadsRouter.get("/", async (req, res, next) => {
           p.phone            AS phone,
           p.phone_country_code AS "phoneCountryCode",
           l.initials         AS initials,
-          l.city             AS city,
+          p.city             AS city,             -- Phase 3: was l.city (denorm dropped)
           l.program          AS program,
           l.program_id       AS "programId",
           l.value            AS value,
@@ -405,12 +437,12 @@ leadsRouter.get("/", async (req, res, next) => {
           l.registered_date  AS "registeredDate",
           l.source           AS source,
           l.source_label     AS "sourceLabel",
-          l.advisor_id       AS "advisorId",
+          au.id              AS "advisorId",  -- app_user.id for wire compat (l.advisor_id stores party.id)
           au.name            AS "advisorName"
         FROM lead l
         JOIN work_item wi ON wi.id = l.work_item_id
         JOIN party p      ON p.id  = wi.party_id
-        LEFT JOIN app_user au ON au.id = l.advisor_id
+        LEFT JOIN app_user au ON au.party_id = l.advisor_id
         WHERE EXISTS (
           SELECT 1 FROM party_role pr
           WHERE pr.party_id = p.id AND pr.role = 'lead' AND pr.valid_to IS NULL
@@ -448,6 +480,9 @@ leadsRouter.patch("/:idOrNumber", async (req, res, next) => {
     const actorId   = req.userId ?? null;
 
     const updated = await withTenant(req.tenantId!, async (db) => {
+      // Phase 3: resolve actor once per handler for every activity row below.
+      const actorPartyId = await resolveActorPartyId(db, req.tenantId!, actorId);
+
       // Resolve work_item by id or number AND fetch current values so we can
       // compute a *real diff* — only fields that actually changed get logged.
       const beforeR = await db.execute(
@@ -465,7 +500,7 @@ leadsRouter.patch("/:idOrNumber", async (req, res, next) => {
                      l.payment_proof_url AS "paymentProofUrl",
                      l.score, l.heat, l.stage, l.stage_label AS "stageLabel",
                      l.nba_label AS "nbaLabel", l.nba_icon AS "nbaIcon",
-                     l.advisor_id AS "advisorId",
+                     (SELECT au.id FROM app_user au WHERE au.party_id = l.advisor_id LIMIT 1) AS "advisorId",
                      l.program_id AS "programId", l.program AS "programName"
               FROM work_item wi
               JOIN party p ON p.id = wi.party_id
@@ -485,7 +520,7 @@ leadsRouter.patch("/:idOrNumber", async (req, res, next) => {
                      l.payment_proof_url AS "paymentProofUrl",
                      l.score, l.heat, l.stage, l.stage_label AS "stageLabel",
                      l.nba_label AS "nbaLabel", l.nba_icon AS "nbaIcon",
-                     l.advisor_id AS "advisorId",
+                     (SELECT au.id FROM app_user au WHERE au.party_id = l.advisor_id LIMIT 1) AS "advisorId",
                      l.program_id AS "programId", l.program AS "programName"
               FROM work_item wi
               JOIN party p ON p.id = wi.party_id
@@ -504,10 +539,43 @@ leadsRouter.patch("/:idOrNumber", async (req, res, next) => {
         await db.execute(sql`UPDATE party SET name = ${String(b.name).trim()} WHERE id = ${partyId}`);
       }
       if (b.email !== undefined) {
-        await db.execute(sql`UPDATE party SET email = ${norm(b.email)} WHERE id = ${partyId}`);
+        const v = norm(b.email);
+        await db.execute(sql`UPDATE party SET email = ${v} WHERE id = ${partyId}`);
+        // Phase 1 dual-write. Partial unique index (tenant_id, party_id, kind)
+        // WHERE is_primary matches post-0040-contact-point.sql.
+        if (v) {
+          await db.execute(sql`
+            INSERT INTO contact_point (tenant_id, party_id, kind, value, label, is_primary)
+            VALUES (current_tenant(), ${partyId}, 'email', ${v}, 'primary', true)
+            ON CONFLICT (tenant_id, party_id, kind) WHERE is_primary
+            DO UPDATE SET value = EXCLUDED.value, updated_at = now()
+          `);
+        } else {
+          // email cleared → mark the primary email row as historical (not deleted).
+          await db.execute(sql`
+            UPDATE contact_point SET valid_to = CURRENT_DATE, is_primary = false, updated_at = now()
+            WHERE tenant_id = current_tenant() AND party_id = ${partyId}
+              AND kind = 'email' AND is_primary = true
+          `);
+        }
       }
       if (b.phone !== undefined) {
-        await db.execute(sql`UPDATE party SET phone = ${norm(b.phone)} WHERE id = ${partyId}`);
+        const v = norm(b.phone);
+        await db.execute(sql`UPDATE party SET phone = ${v} WHERE id = ${partyId}`);
+        if (v) {
+          await db.execute(sql`
+            INSERT INTO contact_point (tenant_id, party_id, kind, value, label, is_primary)
+            VALUES (current_tenant(), ${partyId}, 'phone', ${v}, 'primary', true)
+            ON CONFLICT (tenant_id, party_id, kind) WHERE is_primary
+            DO UPDATE SET value = EXCLUDED.value, updated_at = now()
+          `);
+        } else {
+          await db.execute(sql`
+            UPDATE contact_point SET valid_to = CURRENT_DATE, is_primary = false, updated_at = now()
+            WHERE tenant_id = current_tenant() AND party_id = ${partyId}
+              AND kind = 'phone' AND is_primary = true
+          `);
+        }
       }
       if (b.phoneCountryCode !== undefined) {
         // Normalize: keep only "+digits" (e.g. "+91"). Empty/invalid → null.
@@ -520,9 +588,8 @@ leadsRouter.patch("/:idOrNumber", async (req, res, next) => {
         await db.execute(sql`UPDATE party SET phone_country_code = ${cc} WHERE id = ${partyId}`);
       }
       if (b.city !== undefined) {
+        // Phase 3: city lives on party only (lead.city denorm dropped).
         await db.execute(sql`UPDATE party SET city = ${norm(b.city)} WHERE id = ${partyId}`);
-        // Also update lead.city (denormalized)
-        await db.execute(sql`UPDATE lead SET city = ${norm(b.city)} WHERE work_item_id = ${wiId}`);
       }
 
       // Build lead update (dynamic SET)
@@ -568,7 +635,11 @@ leadsRouter.patch("/:idOrNumber", async (req, res, next) => {
       }
       if (b.nbaLabel !== undefined) leadSets.push(sql`nba_label = ${b.nbaLabel ? String(b.nbaLabel).trim() : null}`);
       if (b.nbaIcon  !== undefined) leadSets.push(sql`nba_icon  = ${b.nbaIcon  ? String(b.nbaIcon).trim()  : null}`);
-      if (b.advisorId !== undefined) leadSets.push(sql`advisor_id = ${b.advisorId || null}`);
+      if (b.advisorId !== undefined) {
+        // Phase 2: client sends app_user.id; column stores party.id.
+        const partyId = b.advisorId ? await partyIdFromAppUserId(db, String(b.advisorId)) : null;
+        leadSets.push(sql`advisor_id = ${partyId}`);
+      }
       // New: description + payment trail
       if (b.description !== undefined) leadSets.push(sql`description = ${b.description ? String(b.description) : null}`);
       if (b.feePaid !== undefined)
@@ -764,8 +835,8 @@ leadsRouter.patch("/:idOrNumber", async (req, res, next) => {
         const summaryFields = changes.map((c) => c.field);
 
         await db.execute(sql`
-          INSERT INTO activity (tenant_id, work_item_id, party_id, actor_type, actor_name, verb, detail, tag, payload, ts)
-          VALUES (current_tenant(), ${wiId}, ${partyId}, 'user', ${actorName}, 'Edit',
+          INSERT INTO activity (tenant_id, work_item_id, party_id, actor_type, actor_party_id, actor_name, verb, detail, tag, payload, ts)
+          VALUES (current_tenant(), ${wiId}, ${partyId}, 'user', ${actorPartyId}, ${actorName}, 'Edit',
                   ${detail}, 'you',
                   ${JSON.stringify({ when: "Just now", quote: null, fields: summaryFields, changes, byUserId: actorId })}::jsonb,
                   NOW())
@@ -804,6 +875,7 @@ leadsRouter.post("/:idOrNumber/notes", async (req, res, next) => {
     const actorId   = req.userId ?? null;
 
     const result = await withTenant(req.tenantId!, async (db) => {
+      const actorPartyId = await resolveActorPartyId(db, req.tenantId!, actorId);
       const wiRow = await db.execute(
         isUuid
           ? sql`SELECT id, party_id FROM work_item WHERE id = ${idOrNumber} AND type = 'lead'`
@@ -813,8 +885,8 @@ leadsRouter.post("/:idOrNumber/notes", async (req, res, next) => {
       const wiId = (wiRow.rows[0] as { id: string }).id;
       const partyId = (wiRow.rows[0] as { party_id: string }).party_id;
       const r = await db.execute(sql`
-        INSERT INTO activity (tenant_id, work_item_id, party_id, actor_type, actor_name, verb, detail, tag, payload, ts)
-        VALUES (current_tenant(), ${wiId}, ${partyId}, 'user', ${actorName}, 'Note',
+        INSERT INTO activity (tenant_id, work_item_id, party_id, actor_type, actor_party_id, actor_name, verb, detail, tag, payload, ts)
+        VALUES (current_tenant(), ${wiId}, ${partyId}, 'user', ${actorPartyId}, ${actorName}, 'Note',
                 ${text}, 'you',
                 ${JSON.stringify({ when: "Just now", quote: null, kind: "note", byUserId: actorId })}::jsonb, NOW())
         RETURNING id
@@ -847,6 +919,7 @@ leadsRouter.patch("/:idOrNumber/notes/:activityId", async (req, res, next) => {
     const actorId   = req.userId ?? null;
 
     const result = await withTenant(req.tenantId!, async (db) => {
+      const actorPartyId = await resolveActorPartyId(db, req.tenantId!, actorId);
       // Resolve work_item to scope the search (and reject cross-lead edits)
       const wiRow = await db.execute(
         isUuid
@@ -909,10 +982,10 @@ leadsRouter.patch("/:idOrNumber/notes/:activityId", async (req, res, next) => {
       const detail = `Edited a note: "${trim(row.detail)}" → "${trim(text)}"`;
       await db.execute(sql`
         INSERT INTO activity (
-          tenant_id, work_item_id, party_id, actor_type, actor_name,
+          tenant_id, work_item_id, party_id, actor_type, actor_party_id, actor_name,
           verb, detail, tag, payload, ts
         ) VALUES (
-          current_tenant(), ${wiId}, ${partyId}, 'user', ${actorName},
+          current_tenant(), ${wiId}, ${partyId}, 'user', ${actorPartyId}, ${actorName},
           'Note edited', ${detail}, 'you',
           ${JSON.stringify({
             when: "Just now",
@@ -955,6 +1028,7 @@ leadsRouter.post("/:idOrNumber/comms", async (req, res, next) => {
     if (kind === "schedule" && !when) return res.status(400).json({ error: "when required for schedule" });
 
     const result = await withTenant(req.tenantId!, async (db) => {
+      const actorPartyId = await resolveActorPartyId(db, req.tenantId!, req.userId);
       const wiRow = await db.execute(
         isUuid
           ? sql`SELECT id, party_id FROM work_item WHERE id = ${idOrNumber} AND type = 'lead'`
@@ -966,15 +1040,15 @@ leadsRouter.post("/:idOrNumber/comms", async (req, res, next) => {
 
       if (kind === "email") {
         await db.execute(sql`
-          INSERT INTO activity (tenant_id, work_item_id, party_id, actor_type, actor_name, verb, detail, tag, payload, ts)
-          VALUES (current_tenant(), ${wiId}, ${partyId}, 'user', 'You', 'Email',
+          INSERT INTO activity (tenant_id, work_item_id, party_id, actor_type, actor_party_id, actor_name, verb, detail, tag, payload, ts)
+          VALUES (current_tenant(), ${wiId}, ${partyId}, 'user', ${actorPartyId}, 'You', 'Email',
                   ${subject ? `${subject}\n\n${body}` : body}, 'you',
                   ${JSON.stringify({ when: "Just now", quote: null, kind: "email", subject })}::jsonb, NOW())
         `);
       } else {
         await db.execute(sql`
-          INSERT INTO activity (tenant_id, work_item_id, party_id, actor_type, actor_name, verb, detail, tag, payload, ts)
-          VALUES (current_tenant(), ${wiId}, ${partyId}, 'user', 'You', 'Scheduled',
+          INSERT INTO activity (tenant_id, work_item_id, party_id, actor_type, actor_party_id, actor_name, verb, detail, tag, payload, ts)
+          VALUES (current_tenant(), ${wiId}, ${partyId}, 'user', ${actorPartyId}, 'You', 'Scheduled',
                   ${`Follow-up scheduled for ${when}${subject ? ` — ${subject}` : ""}.`}, 'you',
                   ${JSON.stringify({ when: "Just now", quote: null, kind: "schedule", scheduledAt: when, subject })}::jsonb, NOW())
         `);
@@ -1074,6 +1148,7 @@ leadsRouter.post("/bulk", async (req, res, next) => {
     });
 
     const result = await withTenant(req.tenantId!, async (db) => {
+      const actorPartyId = await resolveActorPartyId(db, req.tenantId!, req.userId);
       const updated: string[] = [];
       const failed: { id: string; error: string }[] = [];
 
@@ -1093,7 +1168,10 @@ leadsRouter.post("/bulk", async (req, res, next) => {
             sets.push(sql`program_id = ${patch.programId ? String(patch.programId) : null}`);
             if (resolved.programName !== undefined) sets.push(sql`program = ${resolved.programName}`);
           }
-          if (patch.advisorId !== undefined) sets.push(sql`advisor_id = ${patch.advisorId ? String(patch.advisorId) : null}`);
+          if (patch.advisorId !== undefined) {
+            const partyId = patch.advisorId ? await partyIdFromAppUserId(db, String(patch.advisorId)) : null;
+            sets.push(sql`advisor_id = ${partyId}`);
+          }
           if (patch.source !== undefined) {
             sets.push(sql`source = ${patch.source ? String(patch.source) : null}`);
             if (resolved.sourceLabel !== undefined) sets.push(sql`source_label = ${resolved.sourceLabel}`);
@@ -1124,8 +1202,8 @@ leadsRouter.post("/bulk", async (req, res, next) => {
 
           const fieldsTouched = Object.keys(patch).join(", ");
           await db.execute(sql`
-            INSERT INTO activity (tenant_id, work_item_id, actor_type, actor_name, verb, detail, tag, payload, ts)
-            VALUES (current_tenant(), ${wiId}, 'user', 'You', 'Bulk edit',
+            INSERT INTO activity (tenant_id, work_item_id, actor_type, actor_party_id, actor_name, verb, detail, tag, payload, ts)
+            VALUES (current_tenant(), ${wiId}, 'user', ${actorPartyId}, 'You', 'Bulk edit',
                     ${`Updated ${fieldsTouched} via bulk action`},
                     'you',
                     ${JSON.stringify({ when: "Just now", kind: "bulk-edit", fields: Object.keys(patch), patch })}::jsonb,
@@ -1184,7 +1262,7 @@ leadsRouter.get("/deleted", requirePermission("leads.delete"), async (req, res, 
         JOIN party p     ON p.id = pr.party_id
         JOIN work_item wi ON wi.party_id = p.id AND wi.type = 'lead'
         JOIN lead l      ON l.work_item_id = wi.id
-        LEFT JOIN app_user u ON u.id = l.advisor_id
+        LEFT JOIN app_user u ON u.party_id = l.advisor_id
         WHERE pr.role = 'lead'
           AND pr.valid_to IS NOT NULL
           -- Exclude leads that were converted to learners (the convert path
@@ -1222,6 +1300,7 @@ leadsRouter.post("/:idOrNumber/restore", async (req, res, next) => {
     const isUuid = /^[0-9a-fA-F-]{36}$/.test(idOrNumber);
 
     const result = await withTenant(req.tenantId!, async (db) => {
+      const actorPartyId = await resolveActorPartyId(db, req.tenantId!, req.userId);
       const r = await db.execute(
         isUuid
           ? sql`
@@ -1269,15 +1348,15 @@ leadsRouter.post("/:idOrNumber/restore", async (req, res, next) => {
       `);
 
       await db.execute(sql`
-        INSERT INTO activity (tenant_id, work_item_id, party_id, actor_type, actor_name, verb, detail, tag, payload, ts)
-        VALUES (current_tenant(), ${row.id}, ${row.partyId}, 'user', 'You', 'Restored',
+        INSERT INTO activity (tenant_id, work_item_id, party_id, actor_type, actor_party_id, actor_name, verb, detail, tag, payload, ts)
+        VALUES (current_tenant(), ${row.id}, ${row.partyId}, 'user', ${actorPartyId}, 'You', 'Restored',
                 ${`Lead "${row.name}" restored.`}, 'you',
                 ${JSON.stringify({ when: "Just now", kind: "restore" })}::jsonb, NOW())
       `);
 
       await db.execute(sql`
-        INSERT INTO audit_log (tenant_id, actor_type, action, target_type, target_id, context)
-        VALUES (current_tenant(), 'user', 'lead_restored', 'lead', ${row.id},
+        INSERT INTO audit_log (tenant_id, actor_type, actor_party_id, action, target_type, target_id, context)
+        VALUES (current_tenant(), 'user', ${actorPartyId}, 'lead_restored', 'lead', ${row.id},
                 ${JSON.stringify({ partyId: row.partyId, name: row.name })}::jsonb)
       `);
 
@@ -1311,6 +1390,7 @@ leadsRouter.delete("/:idOrNumber/purge", requirePermission("leads.purge"), async
     const isUuid = /^[0-9a-fA-F-]{36}$/.test(idOrNumber);
 
     const result = await withTenant(req.tenantId!, async (db) => {
+      const actorPartyId = await resolveActorPartyId(db, req.tenantId!, req.userId);
       const r = await db.execute(
         isUuid
           ? sql`
@@ -1348,8 +1428,8 @@ leadsRouter.delete("/:idOrNumber/purge", requirePermission("leads.purge"), async
       // a still-existing target_id (most schemas don't FK audit_log → work_item,
       // but doing this first is safer regardless).
       await db.execute(sql`
-        INSERT INTO audit_log (tenant_id, actor_type, action, target_type, target_id, context)
-        VALUES (current_tenant(), 'user', 'lead_purged', 'lead', ${row.id},
+        INSERT INTO audit_log (tenant_id, actor_type, actor_party_id, action, target_type, target_id, context)
+        VALUES (current_tenant(), 'user', ${actorPartyId}, 'lead_purged', 'lead', ${row.id},
                 ${JSON.stringify({ partyId: row.partyId, name: row.name })}::jsonb)
       `);
 
@@ -1410,6 +1490,7 @@ leadsRouter.delete("/:idOrNumber", async (req, res, next) => {
     const isUuid = /^[0-9a-fA-F-]{36}$/.test(idOrNumber);
 
     const result = await withTenant(req.tenantId!, async (db) => {
+      const actorPartyId = await resolveActorPartyId(db, req.tenantId!, req.userId);
       const r = await db.execute(
         isUuid
           ? sql`
@@ -1454,16 +1535,16 @@ leadsRouter.delete("/:idOrNumber", async (req, res, next) => {
       // Drop a timeline row so the audit trail remains visible if anyone
       // looks at /records/:id later (the work_item itself is preserved).
       await db.execute(sql`
-        INSERT INTO activity (tenant_id, work_item_id, party_id, actor_type, actor_name, verb, detail, tag, payload, ts)
-        VALUES (current_tenant(), ${row.id}, ${row.partyId}, 'user', 'You', 'Deleted',
+        INSERT INTO activity (tenant_id, work_item_id, party_id, actor_type, actor_party_id, actor_name, verb, detail, tag, payload, ts)
+        VALUES (current_tenant(), ${row.id}, ${row.partyId}, 'user', ${actorPartyId}, 'You', 'Deleted',
                 ${`Lead "${row.name}" deleted (soft).`}, 'you',
                 ${JSON.stringify({ when: "Just now", kind: "delete" })}::jsonb, NOW())
       `);
 
       // Audit log mirrors how case-close logs.
       await db.execute(sql`
-        INSERT INTO audit_log (tenant_id, actor_type, action, target_type, target_id, context)
-        VALUES (current_tenant(), 'user', 'lead_deleted', 'lead', ${row.id},
+        INSERT INTO audit_log (tenant_id, actor_type, actor_party_id, action, target_type, target_id, context)
+        VALUES (current_tenant(), 'user', ${actorPartyId}, 'lead_deleted', 'lead', ${row.id},
                 ${JSON.stringify({ partyId: row.partyId, name: row.name })}::jsonb)
       `);
 
@@ -1498,6 +1579,7 @@ leadsRouter.post("/bulk-delete", requirePermission("leads.delete"), async (req, 
     }
 
     const result = await withTenant(req.tenantId!, async (db) => {
+      const actorPartyId = await resolveActorPartyId(db, req.tenantId!, req.userId);
       const deleted: string[] = [];
       const failed: { id: string; error: string }[] = [];
 
@@ -1542,15 +1624,15 @@ leadsRouter.post("/bulk-delete", requirePermission("leads.delete"), async (req, 
           `);
 
           await db.execute(sql`
-            INSERT INTO activity (tenant_id, work_item_id, party_id, actor_type, actor_name, verb, detail, tag, payload, ts)
-            VALUES (current_tenant(), ${row.id}, ${row.partyId}, 'user', 'You', 'Deleted',
+            INSERT INTO activity (tenant_id, work_item_id, party_id, actor_type, actor_party_id, actor_name, verb, detail, tag, payload, ts)
+            VALUES (current_tenant(), ${row.id}, ${row.partyId}, 'user', ${actorPartyId}, 'You', 'Deleted',
                     ${`Lead "${row.name}" deleted (soft, bulk action).`}, 'you',
                     ${JSON.stringify({ when: "Just now", kind: "delete-bulk" })}::jsonb, NOW())
           `);
 
           await db.execute(sql`
-            INSERT INTO audit_log (tenant_id, actor_type, action, target_type, target_id, context)
-            VALUES (current_tenant(), 'user', 'lead_deleted', 'lead', ${row.id},
+            INSERT INTO audit_log (tenant_id, actor_type, actor_party_id, action, target_type, target_id, context)
+            VALUES (current_tenant(), 'user', ${actorPartyId}, 'lead_deleted', 'lead', ${row.id},
                     ${JSON.stringify({ partyId: row.partyId, name: row.name, bulk: true })}::jsonb)
           `);
 

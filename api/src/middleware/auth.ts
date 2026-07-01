@@ -15,6 +15,7 @@
 import type { Request, Response, NextFunction } from "express";
 import { createRemoteJWKSet, jwtVerify, type JWTPayload } from "jose";
 import { appPool } from "../db/app.js";
+import { provisionPartyForInternalUser } from "../lib/party/provision.js";
 
 declare global {
   namespace Express {
@@ -171,22 +172,32 @@ async function provisionUser(claims: JWTPayload): Promise<NonNullable<Request["u
   // 5. No matching row — insert a fresh one. Role defaults to 'admin' for
   // the first JIT-provisioned user since we expect Phase A's first user
   // to log in here. (Subsequent users can have their role adjusted after.)
+  //
+  // Phase 2 Party Model: create party + primary email contact_point, then
+  // insert app_user pointing at it. Wrap in a transaction so a crash mid-
+  // way doesn't leave a dangling party.
+  const client = await appPool.connect();
   try {
-    const ins = await appPool.query<{
+    await client.query(`SELECT set_config('app.tenant_id', $1, false)`, [tenantId]);
+    await client.query("BEGIN");
+    const { partyId } = await provisionPartyForInternalUser(client, tenantId, email, name);
+    const ins = await client.query<{
       id: string; tenant_id: string; email: string; name: string | null;
       role: string; active: boolean;
     }>(
-      `INSERT INTO app_user (tenant_id, email, name, role, active, auth0_sub)
-       VALUES ($1, $2, $3, 'admin', true, $4)
+      `INSERT INTO app_user (tenant_id, party_id, email, name, role, active, auth0_sub)
+       VALUES ($1, $2, $3, $4, 'admin', true, $5)
        RETURNING id, tenant_id, email, name, role, active`,
-      [tenantId, email, name, sub],
+      [tenantId, partyId, email, name, sub],
     );
+    await client.query("COMMIT");
     const row = ins.rows[0]!;
     return {
       id: row.id, tenantId: row.tenant_id, email: row.email,
       name: row.name, role: row.role, active: row.active,
     };
   } catch (err) {
+    try { await client.query("ROLLBACK"); } catch { /* ignore */ }
     // Race / sub collision: another request just inserted the same sub. Re-read.
     const recovered = await appPool.query<{
       id: string; tenant_id: string; email: string; name: string | null;
@@ -206,6 +217,8 @@ async function provisionUser(claims: JWTPayload): Promise<NonNullable<Request["u
       };
     }
     throw err;
+  } finally {
+    client.release();
   }
 }
 

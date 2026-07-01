@@ -58,6 +58,15 @@ export const appUser = pgTable(
     // JIT provisioning on first authenticated request. Nullable so seed
     // rows can exist before any human signs in.
     auth0Sub: text("auth0_sub"),
+    // Phase 2 Party Model — every internal user is also a party row. FK +
+    // UNIQUE + NOT NULL are enforced in post-0044-app-user-party-fk.sql.
+    // .references() intentionally omitted here — referenced FK is created
+    // by SQL because Drizzle would try to add it in the wrong order when
+    // regenerating from schema.ts.
+    partyId: uuid("party_id").notNull(),
+    // Retained as read-only redundancy for one release; canonical is
+    // party.email / party.name. Do not write via schema.ts inserts —
+    // route/seed code writes both party + app_user in a transaction.
     email: text("email").notNull(),
     name: text("name"),
     role: text("role").notNull().default("advisor"),
@@ -68,6 +77,7 @@ export const appUser = pgTable(
     roleCheck: check("app_user_role_check", sql`${t.role} IN ('admin','advisor','service_rep','readonly')`),
     auth0SubKey: uniqueIndex("app_user_auth0_sub_key").on(t.auth0Sub).where(sql`${t.auth0Sub} IS NOT NULL`),
     tenantEmailKey: uniqueIndex("app_user_tenant_email_key").on(t.tenantId, t.email),
+    partyUnique: uniqueIndex("app_user_party_unique").on(t.partyId),
   }),
 );
 
@@ -91,6 +101,26 @@ export const party = pgTable(
     city: text("city"),
     identifiers: jsonb("identifiers").notNull().default(sql`'{}'::jsonb`),
     attributes: jsonb("attributes").notNull().default(sql`'{}'::jsonb`),
+    // Phase 1 Party Model — org hierarchy self-FK. Nullable. FK + CHECK
+    // (parent_party_id <> id) are added in post-0043-party-parent-fk.sql;
+    // Drizzle can't express a self-reference inline in the same pgTable call,
+    // so the column lives here without .references() and the constraint is SQL-side.
+    parentPartyId: uuid("parent_party_id"),
+    // Phase 2 Party Model — true when this party is an internal user (employee,
+    // advisor, trainer, service_rep). Every app_user has a party where this is
+    // true. Added in post-0044-app-user-party-fk.sql.
+    isInternal: boolean("is_internal").notNull().default(false),
+    // Phase 3 Party Model — sentinel party used as the actor_party_id for
+    // agent/system-initiated activity and audit_log rows. Exactly one per tenant
+    // (enforced by a partial unique index in post-0047-party-sentinel.sql).
+    isSystem: boolean("is_system").notNull().default(false),
+    // Phase 4 Party Model — soft-delete flags for merged parties. When two
+    // parties are merged, the loser gets is_merged=true and points at the
+    // winner via merged_into_party_id. See post-0051-party-merge-log.sql.
+    // Self-FK for merged_into_party_id — Drizzle can't inline; SQL-side.
+    isMerged: boolean("is_merged").notNull().default(false),
+    mergedIntoPartyId: uuid("merged_into_party_id"),
+    mergedAt: timestamp("merged_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
@@ -117,6 +147,187 @@ export const partyRole = pgTable(
     roleCheck: check("party_role_role_check", sql`${t.role} IN ('lead','contact','learner','advisor','alumnus')`),
     lookupIdx: index("party_role_lookup_idx").on(t.tenantId, t.role, t.partyId),
     partyValidKey: uniqueIndex("party_role_party_valid_key").on(t.partyId, t.role, t.validFrom),
+  }),
+);
+
+// ─── Phase 1 Party Model — contact points, external IDs, affiliations ─────
+//
+// These three tables extend the Party model additively:
+//   contact_point       — one row per email/phone/whatsapp/address a party has
+//   party_external_id   — external system IDs (Instagram, Razorpay, Auth0 sub, …)
+//   party_affiliation   — person↔org links with role + temporal validity
+//
+// See post-0040/0041/0042-*.sql. During Phase 1 the existing party.email
+// and party.phone columns remain canonical; writers dual-write into
+// contact_point in the same transaction (see routes/leads.ts, lib/whatsapp/inbox.ts,
+// db/seed.ts). Read paths migrate in Phase 3.
+
+export const contactPoint = pgTable(
+  "contact_point",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    tenantId: uuid("tenant_id").notNull().references(() => tenant.id),
+    partyId: uuid("party_id").notNull().references(() => party.id, { onDelete: "cascade" }),
+    kind: text("kind").notNull(),                              // 'email' | 'phone' | 'whatsapp' | 'address' | 'social'
+    value: text("value").notNull(),                            // the actual email/number/handle/street
+    label: text("label"),                                      // 'work' | 'personal' | 'billing' | 'shipping' | 'primary'
+    isPrimary: boolean("is_primary").notNull().default(false), // one primary per (party, kind) — see partial unique index
+    verifiedAt: timestamp("verified_at", { withTimezone: true }),
+    consent: jsonb("consent").notNull().default(sql`'{}'::jsonb`), // {marketing:bool, calls:bool, source:'…', ts:'…'}
+    validFrom: date("valid_from").notNull().defaultNow(),
+    validTo: date("valid_to"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    kindCheck: check("contact_point_kind_check", sql`${t.kind} IN ('email','phone','whatsapp','address','social')`),
+    partyKindIdx: index("contact_point_party_kind_idx").on(t.tenantId, t.partyId, t.kind),
+    // Fast "who has this value?" — only currently-valid rows.
+    valueIdx: index("contact_point_value_idx").on(t.tenantId, t.kind, t.value)
+      .where(sql`${t.validTo} IS NULL`),
+    // One primary per (party, kind). Partial UNIQUE — matches post-0040.
+    primaryUniq: uniqueIndex("contact_point_primary_uniq").on(t.tenantId, t.partyId, t.kind)
+      .where(sql`${t.isPrimary} = true`),
+  }),
+);
+
+export const partyExternalId = pgTable(
+  "party_external_id",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    tenantId: uuid("tenant_id").notNull().references(() => tenant.id),
+    partyId: uuid("party_id").notNull().references(() => party.id, { onDelete: "cascade" }),
+    system: text("system").notNull(),               // 'instagram_lead' | 'razorpay_customer' | 'auth0_sub' | 'seed_source' | …
+    externalId: text("external_id").notNull(),
+    metadata: jsonb("metadata").notNull().default(sql`'{}'::jsonb`),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    systemKey: uniqueIndex("party_external_id_system_key").on(t.tenantId, t.system, t.externalId),
+    partyIdx: index("party_external_id_party_idx").on(t.tenantId, t.partyId),
+  }),
+);
+
+export const partyAffiliation = pgTable(
+  "party_affiliation",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    tenantId: uuid("tenant_id").notNull().references(() => tenant.id),
+    personPartyId: uuid("person_party_id").notNull().references(() => party.id, { onDelete: "cascade" }),
+    orgPartyId: uuid("org_party_id").notNull().references(() => party.id, { onDelete: "cascade" }),
+    roleAtOrg: text("role_at_org"),                          // 'decision_maker' | 'evaluator' | 'sponsor' | 'employee' | …
+    isPrimary: boolean("is_primary").notNull().default(false),
+    validFrom: date("valid_from").notNull().defaultNow(),
+    validTo: date("valid_to"),
+    attributes: jsonb("attributes").notNull().default(sql`'{}'::jsonb`),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    notSelf: check("party_affiliation_not_self", sql`${t.personPartyId} <> ${t.orgPartyId}`),
+    // One primary org per person, currently-valid. Partial UNIQUE — matches post-0042.
+    primaryUniq: uniqueIndex("party_affiliation_primary_uniq").on(t.tenantId, t.personPartyId)
+      .where(sql`${t.isPrimary} = true AND ${t.validTo} IS NULL`),
+    personIdx: index("party_affiliation_person_idx").on(t.tenantId, t.personPartyId),
+    orgIdx: index("party_affiliation_org_idx").on(t.tenantId, t.orgPartyId),
+  }),
+);
+
+// ─── Phase 4 Party Model — consent + dedup ────────────────────────────────
+//
+// party_consent             per-channel opt-in records (DPDP/GDPR)
+// party_merge_log           audit trail when two parties are merged
+// party_match_rule          per-tenant rules the dedup scanner runs
+// party_duplicate_candidate scanner output queue
+
+export const partyConsent = pgTable(
+  "party_consent",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    tenantId: uuid("tenant_id").notNull().references(() => tenant.id),
+    partyId: uuid("party_id").notNull().references(() => party.id, { onDelete: "cascade" }),
+    channel: text("channel").notNull(),                    // whatsapp | email | sms | calls
+    optIn: boolean("opt_in").notNull(),
+    source: text("source"),                                // 'signup' | 'unsubscribe' | 'legal_dsr' | …
+    evidenceUrl: text("evidence_url"),
+    validFrom: date("valid_from").notNull().defaultNow(),
+    validTo: date("valid_to"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    channelCheck: check("party_consent_channel_check", sql`${t.channel} IN ('whatsapp','email','sms','calls')`),
+    // One current row per (party, channel). Partial UNIQUE — SQL-side (post-0050).
+    currentUniq: uniqueIndex("party_consent_current_uniq").on(t.tenantId, t.partyId, t.channel)
+      .where(sql`${t.validTo} IS NULL`),
+    channelOptinIdx: index("party_consent_channel_optin_idx").on(t.tenantId, t.channel, t.optIn)
+      .where(sql`${t.validTo} IS NULL`),
+    partyHistoryIdx: index("party_consent_party_idx").on(t.tenantId, t.partyId, t.channel, t.validFrom),
+  }),
+);
+
+export const partyMergeLog = pgTable(
+  "party_merge_log",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    tenantId: uuid("tenant_id").notNull().references(() => tenant.id),
+    winnerPartyId: uuid("winner_party_id").notNull().references(() => party.id),
+    loserPartyId: uuid("loser_party_id").notNull().references(() => party.id),
+    mergedByPartyId: uuid("merged_by_party_id").references(() => party.id, { onDelete: "set null" }),
+    mergedAt: timestamp("merged_at", { withTimezone: true }).notNull().defaultNow(),
+    snapshot: jsonb("snapshot").notNull(),
+    note: text("note"),
+  },
+  (t) => ({
+    tenantIdx: index("party_merge_log_tenant_idx").on(t.tenantId, t.mergedAt),
+    winnerIdx: index("party_merge_log_winner_idx").on(t.tenantId, t.winnerPartyId),
+    loserIdx:  index("party_merge_log_loser_idx").on(t.tenantId, t.loserPartyId),
+  }),
+);
+
+export const partyMatchRule = pgTable(
+  "party_match_rule",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    tenantId: uuid("tenant_id").notNull().references(() => tenant.id),
+    name: text("name").notNull(),
+    kind: text("kind").notNull(),                          // exact_external_id | exact_email | e164_phone | fuzzy_name_city
+    config: jsonb("config").notNull().default(sql`'{}'::jsonb`),
+    enabled: boolean("enabled").notNull().default(true),
+    weight: integer("weight").notNull().default(100),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    kindCheck: check("party_match_rule_kind_check",
+      sql`${t.kind} IN ('exact_external_id','exact_email','e164_phone','fuzzy_name_city')`),
+    tenantEnabledIdx: index("party_match_rule_tenant_enabled_idx").on(t.tenantId, t.enabled),
+  }),
+);
+
+export const partyDuplicateCandidate = pgTable(
+  "party_duplicate_candidate",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    tenantId: uuid("tenant_id").notNull().references(() => tenant.id),
+    partyAId: uuid("party_a_id").notNull().references(() => party.id, { onDelete: "cascade" }),
+    partyBId: uuid("party_b_id").notNull().references(() => party.id, { onDelete: "cascade" }),
+    matchedByRuleId: uuid("matched_by_rule_id").references(() => partyMatchRule.id, { onDelete: "set null" }),
+    score: numeric("score", { precision: 5, scale: 2 }),
+    evidence: jsonb("evidence").notNull().default(sql`'{}'::jsonb`),
+    status: text("status").notNull().default("pending"),   // pending | confirmed | dismissed | merged
+    detectedAt: timestamp("detected_at", { withTimezone: true }).notNull().defaultNow(),
+    resolvedAt: timestamp("resolved_at", { withTimezone: true }),
+    resolvedByPartyId: uuid("resolved_by_party_id").references(() => party.id, { onDelete: "set null" }),
+  },
+  (t) => ({
+    statusCheck: check("party_dup_status_check", sql`${t.status} IN ('pending','confirmed','dismissed','merged')`),
+    // Canonical ordering — matches post-0052.
+    abOrder: check("party_dup_ab_order", sql`${t.partyAId} < ${t.partyBId}`),
+    // One pending candidate per (a, b). Partial UNIQUE — SQL-side.
+    pendingUniq: uniqueIndex("party_dup_pending_uniq").on(t.tenantId, t.partyAId, t.partyBId)
+      .where(sql`${t.status} = 'pending'`),
+    statusIdx: index("party_dup_status_idx").on(t.tenantId, t.status, t.detectedAt),
   }),
 );
 
@@ -168,8 +379,8 @@ export const cohort = pgTable(
     status: text("status").notNull().default("upcoming"),  // upcoming | running | completed | cancelled
     enabled: boolean("enabled").notNull().default(true),
     // Phase H — structured trainer assignment + cadence (powers the calendar).
-    trainerId:    uuid("trainer_id").references(() => appUser.id, { onDelete: "set null" }),
-    coTrainerId:  uuid("co_trainer_id").references(() => appUser.id, { onDelete: "set null" }),
+    trainerId:    uuid("trainer_id").references(() => party.id, { onDelete: "set null" }),
+    coTrainerId:  uuid("co_trainer_id").references(() => party.id, { onDelete: "set null" }),
     daysOfWeek:   text("days_of_week").array(),  // 'mon'|'tue'|'wed'|'thu'|'fri'|'sat'|'sun'
     startTime:    time("start_time"),            // 24h, IST
     endTime:      time("end_time"),
@@ -193,7 +404,7 @@ export const workItem = pgTable(
     number: text("number").notNull(),
     type: text("type").notNull(),
     partyId: uuid("party_id").references(() => party.id),
-    assigneeId: uuid("assignee_id").references(() => appUser.id),
+    assigneeId: uuid("assignee_id").references(() => party.id),
     state: text("state").notNull().default("open"),
     priority: integer("priority").notNull().default(3),
     slaDue: timestamp("sla_due", { withTimezone: true }),
@@ -227,14 +438,15 @@ export const lead = pgTable("lead", {
   scoreDesc: text("score_desc"),                // sentence describing what to do
   heat: text("heat"),                           // legacy; auto-derived from rating via trigger
   rating: text("rating").notNull().default("inbound"),  // inbound|cold|warm|hot|superhot|enrolled — human-set
-  city: text("city"),
+  // Phase 3 Party Model — lead.city was a denormalized shadow of party.city.
+  // Dropped in post-0049-drop-lead-city.sql. Reads now come from party.city.
   program: text("program"),                     // denormalized program name; programId is the canonical FK
   programId: uuid("program_id").references(() => program.id),
   value: text("value"),                         // free-form: "₹1.49L" / "verbal yes" / "asked re: EMI"
   description: text("description"),             // long-form description / context the advisor enters
   stage: text("stage"),                         // new | qual | demo | neg | won | lost
   stageLabel: text("stage_label"),
-  advisorId: uuid("advisor_id").references(() => appUser.id),  // FK → human advisor
+  advisorId: uuid("advisor_id").references(() => party.id),  // FK → human advisor
   avatar: text("avatar"),                       // gradient key for UI
   initials: text("initials"),
   // Money / payment trail at lead stage (preserved into enrolment on convert)
@@ -361,7 +573,7 @@ export const supportCase = pgTable(
     resolution:     text("resolution"),
     resolutionCode: text("resolution_code"), // 'fixed' | 'duplicate' | 'wont_fix' | 'no_action'
 
-    createdById: uuid("created_by_id").references(() => appUser.id),
+    createdById: uuid("created_by_id").references(() => party.id),
     createdAt:   timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt:   timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
@@ -558,8 +770,12 @@ export const activity = pgTable(
     workItemId: uuid("work_item_id"),
     partyId: uuid("party_id"),
     actorType: text("actor_type").notNull(),
-    actorId: text("actor_id"),
+    actorId: text("actor_id"),         // legacy text — unused; retained for one release
     actorName: text("actor_name"),
+    // Phase 3 Party Model — real FK to the actor's party. Nullable for
+    // legacy rows. See post-0048-activity-audit-actor-party.sql.
+    // System / agent writes point at the tenant's sentinel party (is_system=true).
+    actorPartyId: uuid("actor_party_id").references(() => party.id, { onDelete: "set null" }),
     channel: text("channel"),
     verb: text("verb").notNull(),
     detail: text("detail"),
@@ -573,6 +789,8 @@ export const activity = pgTable(
   (t) => ({
     wiIdx: index("activity_wi_idx").on(t.tenantId, t.workItemId, t.ts),
     partyIdx: index("activity_party_idx").on(t.tenantId, t.partyId, t.ts),
+    actorPartyIdx: index("activity_actor_party_idx").on(t.tenantId, t.actorPartyId, t.ts)
+      .where(sql`${t.actorPartyId} IS NOT NULL`),
     payloadGin: index("activity_gin").using("gin", t.payload),
   }),
 );
@@ -590,7 +808,7 @@ export const approval = pgTable(
     status: text("status").notNull().default("pending"),
     proposed: jsonb("proposed").notNull(),
     requestedBy: text("requested_by"),
-    decidedBy: uuid("decided_by").references(() => appUser.id),
+    decidedBy: uuid("decided_by").references(() => party.id),
     decidedAt: timestamp("decided_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
@@ -623,7 +841,7 @@ export const forecastSnapshot = pgTable(
     model: text("model"),
     tokensIn: integer("tokens_in"),
     tokensOut: integer("tokens_out"),
-    generatedBy: uuid("generated_by").references(() => appUser.id),
+    generatedBy: uuid("generated_by").references(() => party.id),
   },
   (t) => ({
     tenantIdx: index("forecast_snapshot_tenant_idx").on(t.tenantId, t.generatedAt),
@@ -637,7 +855,7 @@ export const edifyChatSession = pgTable(
   {
     id: uuid("id").primaryKey().defaultRandom(),
     tenantId: uuid("tenant_id").notNull().references(() => tenant.id),
-    userId: uuid("user_id").notNull().references(() => appUser.id, { onDelete: "cascade" }),
+    userId: uuid("user_id").notNull().references(() => party.id, { onDelete: "cascade" }),
     title: text("title"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     lastAt: timestamp("last_at", { withTimezone: true }).notNull().defaultNow(),
@@ -652,7 +870,7 @@ export const edifyChatMessage = pgTable(
   {
     id: uuid("id").primaryKey().defaultRandom(),
     tenantId: uuid("tenant_id").notNull().references(() => tenant.id),
-    userId: uuid("user_id").notNull().references(() => appUser.id, { onDelete: "cascade" }),
+    userId: uuid("user_id").notNull().references(() => party.id, { onDelete: "cascade" }),
     sessionId: uuid("session_id").notNull().references(() => edifyChatSession.id, { onDelete: "cascade" }),
     askedAt: timestamp("asked_at", { withTimezone: true }).notNull().defaultNow(),
     question: text("question").notNull(),
@@ -676,7 +894,7 @@ export const leaveDay = pgTable(
   {
     id: uuid("id").primaryKey().defaultRandom(),
     tenantId: uuid("tenant_id").notNull().references(() => tenant.id),
-    userId: uuid("user_id").notNull().references(() => appUser.id, { onDelete: "cascade" }),
+    userId: uuid("user_id").notNull().references(() => party.id, { onDelete: "cascade" }),
     date: date("date").notNull(),
     kind: text("kind").notNull(),
     halfDay: text("half_day").default("full"),
@@ -696,7 +914,7 @@ export const calendarEvent = pgTable(
   {
     id: uuid("id").primaryKey().defaultRandom(),
     tenantId: uuid("tenant_id").notNull().references(() => tenant.id),
-    organizerId: uuid("organizer_id").notNull().references(() => appUser.id, { onDelete: "cascade" }),
+    organizerId: uuid("organizer_id").notNull().references(() => party.id, { onDelete: "cascade" }),
     title: text("title").notNull(),
     description: text("description"),
     location: text("location"),
@@ -716,7 +934,7 @@ export const calendarInvitee = pgTable(
   {
     id: uuid("id").primaryKey().defaultRandom(),
     eventId: uuid("event_id").notNull().references(() => calendarEvent.id, { onDelete: "cascade" }),
-    userId: uuid("user_id").notNull().references(() => appUser.id, { onDelete: "cascade" }),
+    userId: uuid("user_id").notNull().references(() => party.id, { onDelete: "cascade" }),
     rsvp: text("rsvp").notNull().default("pending"),
     respondedAt: timestamp("responded_at", { withTimezone: true }),
   },
@@ -735,7 +953,10 @@ export const auditLog = pgTable(
     id: bigserial("id", { mode: "bigint" }).primaryKey(),
     tenantId: uuid("tenant_id").notNull(),
     actorType: text("actor_type").notNull(),
-    actorId: text("actor_id"),
+    actorId: text("actor_id"),         // legacy text — unused; retained for one release
+    // Phase 3 Party Model — real FK to the actor's party. Nullable for
+    // legacy rows. See post-0048-activity-audit-actor-party.sql.
+    actorPartyId: uuid("actor_party_id").references(() => party.id, { onDelete: "set null" }),
     action: text("action").notNull(),
     targetType: text("target_type"),
     targetId: uuid("target_id"),
@@ -745,6 +966,8 @@ export const auditLog = pgTable(
   },
   (t) => ({
     tenantTsIdx: index("audit_tenant_ts_idx").on(t.tenantId, t.ts),
+    actorPartyIdx: index("audit_log_actor_party_idx").on(t.tenantId, t.actorPartyId, t.ts)
+      .where(sql`${t.actorPartyId} IS NOT NULL`),
   }),
 );
 
@@ -796,7 +1019,7 @@ export const savedView = pgTable(
   {
     id:         uuid("id").primaryKey().defaultRandom(),
     tenantId:   uuid("tenant_id").notNull().references(() => tenant.id),
-    ownerId:    uuid("owner_id").notNull().references(() => appUser.id, { onDelete: "cascade" }),
+    ownerId:    uuid("owner_id").notNull().references(() => party.id, { onDelete: "cascade" }),
     scope:      text("scope").notNull(),                 // 'pipeline_list' | future surfaces
     name:       text("name").notNull(),
     visibility: text("visibility").notNull().default("personal"),
@@ -998,7 +1221,7 @@ export const waConversation = pgTable(
     tenantId:          uuid("tenant_id").notNull().references(() => tenant.id),
     partyId:           uuid("party_id").notNull().references(() => party.id, { onDelete: "cascade" }),
     status:            text("status").notNull().default("open"),
-    assignedUserId:    uuid("assigned_user_id").references(() => appUser.id, { onDelete: "set null" }),
+    assignedUserId:    uuid("assigned_user_id").references(() => party.id, { onDelete: "set null" }),
     lastMessageText:   text("last_message_text"),
     lastMessageAt:     timestamp("last_message_at", { withTimezone: true }),
     lastInboundAt:     timestamp("last_inbound_at", { withTimezone: true }),
@@ -1022,7 +1245,7 @@ export const waMessage = pgTable(
     conversationId:         uuid("conversation_id").notNull().references(() => waConversation.id, { onDelete: "cascade" }),
     direction:              text("direction").notNull(),
     senderType:             text("sender_type").notNull(),
-    senderUserId:           uuid("sender_user_id").references(() => appUser.id, { onDelete: "set null" }),
+    senderUserId:           uuid("sender_user_id").references(() => party.id, { onDelete: "set null" }),
     contentType:            text("content_type").notNull().default("text"),
     body:                   text("body"),
     mediaUrl:               text("media_url"),
@@ -1058,7 +1281,7 @@ export const waBroadcast = pgTable(
     tenantId:           uuid("tenant_id").notNull().references(() => tenant.id),
     name:               text("name").notNull(),
     templateId:         uuid("template_id").notNull().references(() => waTemplate.id, { onDelete: "restrict" }),
-    createdBy:          uuid("created_by").references(() => appUser.id, { onDelete: "set null" }),
+    createdBy:          uuid("created_by").references(() => party.id, { onDelete: "set null" }),
     defaultVariables:   jsonb("default_variables").notNull().default(sql`'{}'::jsonb`),
     status:             text("status").notNull().default("draft"),
     scheduledAt:        timestamp("scheduled_at", { withTimezone: true }),
@@ -1107,6 +1330,13 @@ export const waBroadcastRecipient = pgTable(
 export type Tenant = typeof tenant.$inferSelect;
 export type Lead = typeof lead.$inferSelect;
 export type WorkItem = typeof workItem.$inferSelect;
+export type ContactPoint = typeof contactPoint.$inferSelect;
+export type PartyExternalId = typeof partyExternalId.$inferSelect;
+export type PartyAffiliation = typeof partyAffiliation.$inferSelect;
+export type PartyConsent = typeof partyConsent.$inferSelect;
+export type PartyMergeLog = typeof partyMergeLog.$inferSelect;
+export type PartyMatchRule = typeof partyMatchRule.$inferSelect;
+export type PartyDuplicateCandidate = typeof partyDuplicateCandidate.$inferSelect;
 export type Activity = typeof activity.$inferSelect;
 export type AgentRun = typeof agentRun.$inferSelect;
 export type SupportCase = typeof supportCase.$inferSelect;
@@ -1135,7 +1365,7 @@ export const waAutomation = pgTable(
     trigger:     jsonb("trigger").notNull(),
     actions:     jsonb("actions").notNull().default(sql`'[]'::jsonb`),
     enabled:     boolean("enabled").notNull().default(false),
-    createdBy:   uuid("created_by").references(() => appUser.id, { onDelete: "set null" }),
+    createdBy:   uuid("created_by").references(() => party.id, { onDelete: "set null" }),
     createdAt:   timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt:   timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },

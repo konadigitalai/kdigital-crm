@@ -1,0 +1,68 @@
+flowchart TB
+    %% ── Users & external systems ─────────────────────────
+    User([Advisor / Manager / Admin])
+    Meta[/Meta WhatsApp Cloud API/]
+    Slack[/Slack Webhooks/]
+    Anthropic[/Anthropic Messages API/]
+
+    %% ── Frontend ─────────────────────────────────────────
+    subgraph Vercel["Vercel — web/"]
+        direction TB
+        Next["Next.js 15 · React 19 · Tailwind<br/>app/(app)/* route groups<br/>middleware.ts (auth gate)"]
+        Comps["components/<br/>leads · pipeline · cases · inbox<br/>whatsapp · agents · shell · ui"]
+        Next --- Comps
+    end
+
+    %% ── Backend ──────────────────────────────────────────
+    subgraph Render["Render — api/  (Node 20 · Express · Drizzle)"]
+        direction TB
+        Entry["index.ts<br/>CORS · cookieParser · raw-body /webhooks/whatsapp"]
+        AuthMW["middleware/<br/>auth · requirePermission (RBAC)"]
+        Routes["routes/ — REST surface<br/>leads · pipeline · learners · cases<br/>approvals · batches · views · share<br/>users · groups · catalog · me · summary<br/>integrations · whatsapp · events · leaves"]
+        WaWebhook["routes/whatsapp-webhook.ts<br/>HMAC-SHA256 verify on raw bytes"]
+
+        subgraph Agents["agents/ — LLM workers"]
+            direction LR
+            Run["run.ts<br/>work_item + agent_run bookkeeping"]
+            Edify[edify]
+            Score[scoring]
+            NBA[nba]
+            Forecast[forecast]
+            Outreach[outreach]
+            LeadCtx["lead-context"]
+            Run --- Edify & Score & NBA & Forecast & Outreach & LeadCtx
+        end
+
+        Lib["lib/<br/>llm · sessions · permissions · events<br/>share · slack · whatsapp/* (broadcasts worker)"]
+
+        Entry --> AuthMW --> Routes
+        Entry --> WaWebhook
+        Routes --> Agents
+        Routes --> Lib
+        Agents --> Lib
+    end
+
+    %% ── Data layer ───────────────────────────────────────
+    subgraph Azure["Azure Postgres Flexible Server 17 + pgvector"]
+        direction TB
+        AppSchema["app schema<br/>leads · learners · cases · pipeline<br/>work_item · agent_run · events · views"]
+        Tenant["withTenant() — RLS-scoped pool"]
+        Tenant --- AppSchema
+    end
+
+    %% ── Edges ────────────────────────────────────────────
+    User -->|HTTPS| Next
+    Next -->|fetch /api · cookies| Entry
+    Lib -->|pg pool · RLS session| Tenant
+    Agents -->|callClaude| Anthropic
+    Lib -->|incoming| Slack
+    Lib -->|outgoing template/text| Meta
+    Meta -->|webhook signed| WaWebhook
+
+    %% ── Styling ──────────────────────────────────────────
+    classDef ext fill:#fef3c7,stroke:#b45309,color:#78350f
+    classDef host fill:#e0e7ff,stroke:#4338ca,color:#1e1b4b
+    classDef db fill:#dcfce7,stroke:#15803d,color:#14532d
+    class Meta,Slack,Anthropic ext
+    class Vercel,Render host
+    class Azure db

@@ -31,7 +31,10 @@ import { integrationsRouter } from "./routes/integrations.js";
 import { shareRouter } from "./routes/share.js";
 import { whatsappRouter } from "./routes/whatsapp.js";
 import { whatsappWebhookRouter } from "./routes/whatsapp-webhook.js";
+import { partiesRouter } from "./routes/parties.js";
+import { partyConsentRouter } from "./routes/party-consent.js";
 import { startBroadcastWorker } from "./lib/whatsapp/broadcasts.js";
+import { startDedupWorker } from "./lib/party/dedup-worker.js";
 import { ensureCheckpointerSetup } from "./agents/runtime.js";
 
 const app = express();
@@ -150,6 +153,12 @@ app.use("/share", shareRouter);
 // Phase 2+. Permission gates are enforced per-handler inside the router.
 app.use("/whatsapp", whatsappRouter);
 
+// Phase 4 Party Model — dedup + consent endpoints. Gated per-handler
+// (admin-only for merge/scan). Consent PUT is any-authenticated for now;
+// tighten via a dedicated permission later if needed.
+app.use("/parties", partiesRouter);
+app.use("/party",   partyConsentRouter);
+
 // JSON error envelope
 app.use((err: Error, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
   console.error("[api]", err);
@@ -160,6 +169,7 @@ const port = Number(process.env.PORT ?? 4000);
 app.listen(port, async () => {
   console.log(`api listening on http://localhost:${port}`);
   startBroadcastWorker();
+  startDedupWorker();
   // Idempotent: creates the LangGraph checkpoint tables on first boot.
   try {
     await ensureCheckpointerSetup();
