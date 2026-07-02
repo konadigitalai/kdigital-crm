@@ -1,0 +1,8 @@
+{
+  "theme": "default",
+  "flowchart": { "useMaxWidth": false, "htmlLabels": true, "curve": "basis" },
+  "themeVariables": {
+    "fontFamily": "Inter, ui-sans-serif, system-ui, sans-serif",
+    "fontSize": "14px"
+  }
+}

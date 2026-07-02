@@ -16,6 +16,7 @@ import type { RunnableConfig } from "@langchain/core/runnables";
 import { withTenant } from "../db/app.js";
 import { makeChatModel } from "../lib/llm.js";
 import { runWithGraph, getCheckpointer, configurable } from "./runtime.js";
+import { resolveSentinelPartyId } from "../lib/party/resolve.js";
 
 // ── Probability priors per rating ───────────────────────────────────────
 const RATING_PROB: Record<string, number> = {
@@ -445,11 +446,13 @@ async function writeBackNode(state: ForecastStateT, config: RunnableConfig) {
     )
   `);
 
+  // Phase 3: agent-authored rows attribute to the tenant's sentinel party.
+  const actorPartyId = await resolveSentinelPartyId(db, tenantId);
   await db.execute(sql`
     INSERT INTO activity (
-      tenant_id, actor_type, actor_name, verb, detail, tag, icon_key, icon_bg, icon_stroke, payload, ts
+      tenant_id, actor_type, actor_party_id, actor_name, verb, detail, tag, icon_key, icon_bg, icon_stroke, payload, ts
     ) VALUES (
-      ${tenantId}, 'agent', 'Forecast Agent',
+      ${tenantId}, 'agent', ${actorPartyId}, 'Forecast Agent',
       'generated forecast', ${narrative.headline.slice(0, 200)},
       'auto', 'chart',
       'rgba(198,154,58,.10)', '#C69A3A',
@@ -459,9 +462,9 @@ async function writeBackNode(state: ForecastStateT, config: RunnableConfig) {
   `);
 
   await db.execute(sql`
-    INSERT INTO audit_log (tenant_id, actor_type, action, target_type, context)
+    INSERT INTO audit_log (tenant_id, actor_type, actor_party_id, action, target_type, context)
     VALUES (
-      ${tenantId}, 'agent', 'forecast_generated', 'tenant',
+      ${tenantId}, 'agent', ${actorPartyId}, 'forecast_generated', 'tenant',
       ${JSON.stringify({ weightedPipelineINR: numbers.totals.weightedPipelineINR, model: state.llmModel })}::jsonb
     )
   `);

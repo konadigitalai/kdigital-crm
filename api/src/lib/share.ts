@@ -130,7 +130,7 @@ async function fetchLead(tenantId: string, idOrNumber: string): Promise<Record<s
             FROM lead l
             JOIN work_item wi ON wi.id = l.work_item_id
             JOIN party p ON p.id = wi.party_id
-            LEFT JOIN app_user u ON u.id = l.advisor_id
+            LEFT JOIN app_user u ON u.party_id = l.advisor_id
             WHERE wi.id = ${idOrNumber} AND wi.type = 'lead'
             LIMIT 1
           `
@@ -148,7 +148,7 @@ async function fetchLead(tenantId: string, idOrNumber: string): Promise<Record<s
             FROM lead l
             JOIN work_item wi ON wi.id = l.work_item_id
             JOIN party p ON p.id = wi.party_id
-            LEFT JOIN app_user u ON u.id = l.advisor_id
+            LEFT JOIN app_user u ON u.party_id = l.advisor_id
             WHERE wi.number = ${idOrNumber} AND wi.type = 'lead'
             LIMIT 1
           `,
@@ -209,7 +209,7 @@ async function fetchCase(tenantId: string, idOrNumber: string): Promise<Record<s
               u.name AS "assigneeName"
             FROM support_case t
             JOIN work_item wi ON wi.id = t.work_item_id
-            LEFT JOIN app_user u ON u.id = wi.assignee_id
+            LEFT JOIN app_user u ON u.party_id = wi.assignee_id
             WHERE wi.id = ${idOrNumber} AND wi.type = 'support_case'
             LIMIT 1
           `
@@ -224,7 +224,7 @@ async function fetchCase(tenantId: string, idOrNumber: string): Promise<Record<s
               u.name AS "assigneeName"
             FROM support_case t
             JOIN work_item wi ON wi.id = t.work_item_id
-            LEFT JOIN app_user u ON u.id = wi.assignee_id
+            LEFT JOIN app_user u ON u.party_id = wi.assignee_id
             WHERE wi.number = ${idOrNumber} AND wi.type = 'support_case'
             LIMIT 1
           `,

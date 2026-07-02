@@ -30,7 +30,7 @@ pipelineRouter.get("/", async (req, res, next) => {
           p.phone            AS phone,
           p.phone_country_code AS "phoneCountryCode",
           l.initials         AS initials,
-          l.city             AS city,
+          p.city             AS city,             -- Phase 3: was l.city (denorm dropped)
           l.program          AS program,
           l.program_id       AS "programId",
           l.value            AS value,
@@ -54,12 +54,12 @@ pipelineRouter.get("/", async (req, res, next) => {
           l.registered_date  AS "registeredDate",
           l.source           AS source,
           l.source_label     AS "sourceLabel",
-          l.advisor_id       AS "advisorId",
+          au.id              AS "advisorId",   -- app_user.id via party_id (Phase 2)
           au.name            AS "advisorName"
         FROM lead l
         JOIN work_item wi ON wi.id = l.work_item_id
         JOIN party p      ON p.id  = wi.party_id
-        LEFT JOIN app_user au ON au.id = l.advisor_id
+        LEFT JOIN app_user au ON au.party_id = l.advisor_id
         WHERE EXISTS (
           SELECT 1 FROM party_role pr
           WHERE pr.party_id = p.id AND pr.role = 'lead' AND pr.valid_to IS NULL

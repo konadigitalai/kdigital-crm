@@ -16,6 +16,7 @@ import { z } from "zod";
 import { HumanMessage, SystemMessage } from "@langchain/core/messages";
 import { withTenant } from "../db/app.js";
 import { makeChatModel } from "../lib/llm.js";
+import { resolveActorPartyId } from "../lib/party/resolve.js";
 import { loadLeadContext, renderLeadContextBlock } from "./lead-context.js";
 
 const VALID_ACTIONS = [
@@ -186,7 +187,7 @@ async function buildSnapshot(
         p.name,
         l.rating, l.score,
         l.program,
-        l.city,
+        p.city,             -- Phase 3: was l.city (denorm dropped)
         l.value,
         EXTRACT(EPOCH FROM (NOW() - la.last_ts)) / 86400 AS "daysSinceLastTouch",
         u.name AS "advisorName"
@@ -194,7 +195,7 @@ async function buildSnapshot(
       JOIN work_item wi ON wi.id = l.work_item_id
       JOIN party p      ON p.id  = wi.party_id
       LEFT JOIN last_act la ON la.work_item_id = l.work_item_id
-      LEFT JOIN app_user u  ON u.id = l.advisor_id
+      LEFT JOIN app_user u  ON u.party_id = l.advisor_id
       WHERE l.rating <> 'enrolled'
       ORDER BY
         CASE l.rating
@@ -259,7 +260,7 @@ async function buildSnapshot(
         t.created_at AS "createdAt"
       FROM support_case t
       JOIN work_item wi ON wi.id = t.work_item_id
-      LEFT JOIN app_user u ON u.id = wi.assignee_id
+      LEFT JOIN app_user u ON u.party_id = wi.assignee_id
       WHERE t.status NOT IN ('closed','resolved','cancelled')
       ORDER BY t.created_at DESC
       LIMIT 10
@@ -644,10 +645,13 @@ export async function askEdify(
 
   // Audit log entry — useful when reviewing what the assistant has been asked.
   await withTenant(tenantId, async (db) => {
+    // Phase 3: the "actor" is the human user asking Edify (userId is the
+    // acting app_user.id passed in via configurable(state).userId).
+    const actorPartyId = await resolveActorPartyId(db, tenantId, userId);
     await db.execute(sql`
-      INSERT INTO audit_log (tenant_id, actor_type, action, target_type, target_id, context)
+      INSERT INTO audit_log (tenant_id, actor_type, actor_party_id, action, target_type, target_id, context)
       VALUES (
-        ${tenantId}, 'user', 'edify_asked', 'edify_chat_message', ${persisted.messageId},
+        ${tenantId}, 'user', ${actorPartyId}, 'edify_asked', 'edify_chat_message', ${persisted.messageId},
         ${JSON.stringify({ question: cleanQ.slice(0, 200), sessionId: persisted.sessionId, suggestedAction: validated.suggestedAction?.action ?? null, model: resolvedModel, tokensIn: usage.in, tokensOut: usage.out })}::jsonb
       )
     `);

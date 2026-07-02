@@ -5,6 +5,7 @@ import { Router } from "express";
 import { sql } from "drizzle-orm";
 import { withTenant } from "../db/app.js";
 import { requirePermission } from "../middleware/require.js";
+import { partyIdFromAppUserId } from "../lib/party/resolve.js";
 
 export const batchesRouter = Router();
 
@@ -64,6 +65,9 @@ batchesRouter.get("/sessions", requirePermission("events.manage.self"), async (r
     const me = req.userId!;
 
     const cohorts = await withTenant(req.tenantId!, async (db) => {
+      // Phase 2: trainer_id / co_trainer_id now point at party.id — resolve me first.
+      const mePartyId = await partyIdFromAppUserId(db, me);
+      if (!mePartyId) return [];
       const r = await db.execute(sql`
         SELECT
           c.id,
@@ -82,9 +86,9 @@ batchesRouter.get("/sessions", requirePermission("events.manage.self"), async (r
         FROM cohort c
         LEFT JOIN course   co ON co.id = c.course_id
         LEFT JOIN program  p  ON p.id  = co.program_id
-        LEFT JOIN app_user tu ON tu.id = c.trainer_id
-        LEFT JOIN app_user cu ON cu.id = c.co_trainer_id
-        WHERE (c.trainer_id = ${me} OR c.co_trainer_id = ${me})
+        LEFT JOIN app_user tu ON tu.party_id = c.trainer_id
+        LEFT JOIN app_user cu ON cu.party_id = c.co_trainer_id
+        WHERE (c.trainer_id = ${mePartyId} OR c.co_trainer_id = ${mePartyId})
           AND c.enabled = true
           AND c.status IN ('upcoming','running')
           AND c.days_of_week IS NOT NULL

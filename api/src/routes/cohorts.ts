@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { sql } from "drizzle-orm";
 import { withTenant } from "../db/app.js";
+import { partyIdFromAppUserId } from "../lib/party/resolve.js";
 
 export const cohortsRouter = Router();
 
@@ -75,8 +76,8 @@ const COHORT_SELECT = sql`
   FROM cohort c
   LEFT JOIN course   co ON co.id = c.course_id
   LEFT JOIN program  p  ON p.id  = co.program_id
-  LEFT JOIN app_user tu ON tu.id = c.trainer_id
-  LEFT JOIN app_user cu ON cu.id = c.co_trainer_id
+  LEFT JOIN app_user tu ON tu.party_id = c.trainer_id
+  LEFT JOIN app_user cu ON cu.party_id = c.co_trainer_id
 `;
 
 cohortsRouter.get("/", async (req, res, next) => {
@@ -154,6 +155,9 @@ cohortsRouter.post("/", async (req, res, next) => {
       : deriveSchedule(daysOfWeek);
 
     const created = await withTenant(req.tenantId!, async (db) => {
+      // Phase 2: FK columns store party.id now; resolve incoming app_user.ids.
+      const trainerPartyId   = await partyIdFromAppUserId(db, trainerId);
+      const coTrainerPartyId = await partyIdFromAppUserId(db, coTrainerId);
       const r = await db.execute(sql`
         INSERT INTO cohort
           (tenant_id, course_id, name, code, slot, time_label, schedule,
@@ -162,7 +166,7 @@ cohortsRouter.post("/", async (req, res, next) => {
         VALUES
           (current_tenant(), ${courseId}, ${name}, ${code}, ${slot}, ${timeLabel}, ${schedule},
            ${startDate}, ${endDate}, ${seats}, ${status}, true,
-           ${trainerId}, ${coTrainerId}, ${daysSqlValue(daysOfWeek)}, ${startTime}, ${endTime})
+           ${trainerPartyId}, ${coTrainerPartyId}, ${daysSqlValue(daysOfWeek)}, ${startTime}, ${endTime})
         RETURNING id
       `);
       const id = (r.rows[0] as { id: string }).id;
@@ -204,13 +208,14 @@ cohortsRouter.patch("/:id", async (req, res, next) => {
     let coTrainerProvided = false;
     let trainerId: string | null = null;
     let coTrainerId: string | null = null;
+    // Phase 2: sets happen inside withTenant below so we can resolve
+    // app_user.id → party.id via the same db handle.
     if (b.trainerId !== undefined) {
       trainerProvided = true;
       trainerId = b.trainerId ? String(b.trainerId).trim() : null;
       if (trainerId && !/^[0-9a-fA-F-]{36}$/.test(trainerId)) {
         return res.status(400).json({ error: "trainerId invalid" });
       }
-      sets.push(sql`trainer_id = ${trainerId}`);
     }
     if (b.coTrainerId !== undefined) {
       coTrainerProvided = true;
@@ -218,7 +223,6 @@ cohortsRouter.patch("/:id", async (req, res, next) => {
       if (coTrainerId && !/^[0-9a-fA-F-]{36}$/.test(coTrainerId)) {
         return res.status(400).json({ error: "coTrainerId invalid" });
       }
-      sets.push(sql`co_trainer_id = ${coTrainerId}`);
     }
     if (trainerProvided && coTrainerProvided && trainerId && coTrainerId && trainerId === coTrainerId) {
       return res.status(400).json({ error: "trainer and co-trainer must differ" });
@@ -281,9 +285,18 @@ cohortsRouter.patch("/:id", async (req, res, next) => {
       sets.push(sql`schedule = ${deriveSchedule(daysOfWeek)}`);
     }
 
-    if (sets.length === 0) return res.status(400).json({ error: "no fields to update" });
-
     const updated = await withTenant(req.tenantId!, async (db) => {
+      // Phase 2: resolve trainerId / coTrainerId (which are app_user.ids from
+      // the client) to party.id before pushing them into the SET clause.
+      if (trainerProvided) {
+        const partyId = await partyIdFromAppUserId(db, trainerId);
+        sets.push(sql`trainer_id = ${partyId}`);
+      }
+      if (coTrainerProvided) {
+        const partyId = await partyIdFromAppUserId(db, coTrainerId);
+        sets.push(sql`co_trainer_id = ${partyId}`);
+      }
+      if (sets.length === 0) return "empty";
       const setClause = sql.join(sets, sql`, `);
       const r = await db.execute(sql`
         UPDATE cohort SET ${setClause}
@@ -295,6 +308,7 @@ cohortsRouter.patch("/:id", async (req, res, next) => {
       const detail = await db.execute(sql`${COHORT_SELECT} WHERE c.id = ${row.id}`);
       return detail.rows[0];
     });
+    if (updated === "empty") return res.status(400).json({ error: "no fields to update" });
     if (!updated) return res.status(404).json({ error: "cohort not found" });
     res.json({ cohort: updated });
   } catch (err) {

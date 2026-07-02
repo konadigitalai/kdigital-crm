@@ -124,6 +124,16 @@ export async function matchOrCreatePartyByPhone(db: DbExec, e164: string): Promi
     RETURNING id
   `);
   const partyId = (r.rows[0] as { id: string }).id;
+
+  // Phase 1 Party Model dual-write — record the WhatsApp E.164 as a
+  // contact_point so future dedup / broadcast targeting can find this party
+  // by value (see contact_point_value_idx). Store the full E.164 with '+'.
+  const e164Canonical = e164.startsWith("+") ? e164 : `+${digitsOnly(e164)}`;
+  await db.execute(sql`
+    INSERT INTO contact_point (tenant_id, party_id, kind, value, label, is_primary)
+    VALUES (current_tenant(), ${partyId}, 'whatsapp', ${e164Canonical}, 'whatsapp', true)
+  `);
+
   return { partyId, created: true };
 }
 
@@ -252,7 +262,9 @@ export async function applyStatusUpdate(db: DbExec, s: ParsedStatusUpdate): Prom
 
 export interface RecordOutboundArgs {
   conversationId: string;
-  senderUserId: string | null;       // null = system / bot / automation
+  // app_user.id of the sender, or null for system/bot/automation. Phase 2
+  // Party Model: internally resolved to party.id before writing.
+  senderUserId: string | null;
   contentType: "text" | "template" | "image" | "audio" | "video" | "document";
   body: string | null;               // user-visible body OR rendered template
   templateName?: string | null;
@@ -269,6 +281,12 @@ export interface RecordOutboundArgs {
 /** Insert the wa_message row + bump conversation last_message_*.
  *  Returns the new message id. */
 export async function recordOutbound(db: DbExec, a: RecordOutboundArgs): Promise<string> {
+  // Phase 2: resolve app_user.id → party.id for the sender.
+  let senderPartyId: string | null = null;
+  if (a.senderUserId) {
+    const r = await db.execute(sql`SELECT party_id FROM app_user WHERE id = ${a.senderUserId} LIMIT 1`);
+    senderPartyId = (r.rows[0] as { party_id: string } | undefined)?.party_id ?? null;
+  }
   const r = await db.execute(sql`
     INSERT INTO wa_message (
       tenant_id, conversation_id, direction, sender_type,
@@ -280,7 +298,7 @@ export async function recordOutbound(db: DbExec, a: RecordOutboundArgs): Promise
     )
     VALUES (
       current_tenant(), ${a.conversationId}, 'outbound',
-      ${a.senderUserId ? "agent" : "system"}, ${a.senderUserId},
+      ${a.senderUserId ? "agent" : "system"}, ${senderPartyId},
       ${a.contentType}, ${a.body},
       ${a.templateName ?? null},
       ${a.templateVariables ? sql`${JSON.stringify(a.templateVariables)}::jsonb` : sql`NULL`},
