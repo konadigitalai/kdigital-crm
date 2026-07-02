@@ -12,6 +12,7 @@ import type { RunnableConfig } from "@langchain/core/runnables";
 import { withTenant } from "../db/app.js";
 import { makeChatModel } from "../lib/llm.js";
 import { runWithGraph, getCheckpointer, configurable } from "./runtime.js";
+import { resolveSentinelPartyId } from "../lib/party/resolve.js";
 
 const SYSTEM_PROMPT = `You are an outreach drafting assistant for an EdTech CRM (Digital Edify).
 Your job is to draft a single warm, concise follow-up message to a prospective learner.
@@ -62,7 +63,7 @@ async function loadOutreachContext(
       isUuid
         ? sql`
             SELECT wi.id AS "workItemId", wi.number, wi.party_id AS "partyId",
-                   p.name, l.program, l.city, l.score, l.heat,
+                   p.name, l.program, p.city, l.score, l.heat,     -- Phase 3: p.city was l.city
                    l.score_reason AS "scoreReason", l.stage, l.stage_label AS "stageLabel"
             FROM lead l
             JOIN work_item wi ON wi.id = l.work_item_id
@@ -71,7 +72,7 @@ async function loadOutreachContext(
             LIMIT 1`
         : sql`
             SELECT wi.id AS "workItemId", wi.number, wi.party_id AS "partyId",
-                   p.name, l.program, l.city, l.score, l.heat,
+                   p.name, l.program, p.city, l.score, l.heat,     -- Phase 3: p.city was l.city
                    l.score_reason AS "scoreReason", l.stage, l.stage_label AS "stageLabel"
             FROM lead l
             JOIN work_item wi ON wi.id = l.work_item_id
@@ -185,13 +186,15 @@ async function approvalGateNode(state: OutreachStateT, config: RunnableConfig) {
   `);
   const approvalId = (ar.rows[0] as { id: string }).id;
 
+  // Phase 3: agent-authored rows attribute to the tenant's sentinel party.
+  const actorPartyId = await resolveSentinelPartyId(db, tenantId);
   await db.execute(sql`
     INSERT INTO activity (
-      tenant_id, work_item_id, party_id, actor_type, actor_name,
+      tenant_id, work_item_id, party_id, actor_type, actor_party_id, actor_name,
       verb, detail, tag, icon_key, icon_bg, icon_stroke, payload, ts
     ) VALUES (
       ${tenantId}, ${ctx.workItemId}, ${ctx.partyId},
-      'agent', 'Outreach Agent',
+      'agent', ${actorPartyId}, 'Outreach Agent',
       'drafted a follow-up email for', ${`"${draft.subject}" — awaiting your approval.`},
       'need', 'spark',
       'rgba(199,25,122,.1)', '#C7197A',
@@ -201,9 +204,9 @@ async function approvalGateNode(state: OutreachStateT, config: RunnableConfig) {
   `);
 
   await db.execute(sql`
-    INSERT INTO audit_log (tenant_id, actor_type, action, target_type, target_id, context)
+    INSERT INTO audit_log (tenant_id, actor_type, actor_party_id, action, target_type, target_id, context)
     VALUES (
-      ${tenantId}, 'agent', 'outreach_drafted', 'approval', ${approvalId},
+      ${tenantId}, 'agent', ${actorPartyId}, 'outreach_drafted', 'approval', ${approvalId},
       ${JSON.stringify({ workItemId: ctx.workItemId, model: state.llmModel })}::jsonb
     )
   `);

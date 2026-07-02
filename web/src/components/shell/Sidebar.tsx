@@ -8,6 +8,7 @@ import { usePathname } from "next/navigation";
 import { Icon } from "@/components/ui/Icon";
 import { cn } from "@/lib/cn";
 import type { CurrentUser, RecentRun, SummaryResponse } from "@/lib/types";
+import { useLiveSummary } from "@/lib/live-summary";
 import { buildNavItems, filterNavItems, isActive } from "./navItems";
 
 export function Sidebar({
@@ -24,7 +25,10 @@ export function Sidebar({
   onCollapse?: () => void;
 }) {
   const pathname = usePathname();
-  const navItems = filterNavItems(buildNavItems(summary), currentUser);
+  // Server-fetched summary is the initial value; useLiveSummary swaps it for
+  // fresh data on every mutation event and route change.
+  const liveSummary = useLiveSummary(summary);
+  const navItems = filterNavItems(buildNavItems(liveSummary), currentUser);
 
   function onSignOut() {
     // Full-page nav: /auth/logout is auto-mounted by the Auth0 SDK

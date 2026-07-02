@@ -157,7 +157,13 @@ function Tab({
   return (
     <button
       type="button"
-      onClick={() => {
+      onClick={(e) => {
+        // Stop the click from bubbling further up the tree — otherwise the
+        // native mouseup arriving *after* setEditing() has mounted the
+        // dialog can hit the freshly-rendered backdrop and dismiss it
+        // (observed in a repro where clicking the active tab briefly showed
+        // "Edit view" then closed).
+        e.stopPropagation();
         if (active && onSecondaryClick) onSecondaryClick();
         else onClick();
       }}
@@ -301,45 +307,70 @@ function ViewDialog({
   const inputCls =
     "w-full rounded-[10px] border border-rule bg-paper px-3 py-2.5 text-[13.5px] text-ink placeholder:text-hint focus:border-brand-violet focus:outline-none focus:ring-2 focus:ring-brand-violet/20";
 
-  // Backdrop dismissal — only fires when both press and release happened on
-  // the backdrop itself. Without this, clicking a button inside the dialog
-  // that unmounts (e.g. FilterBar's "Add filter" turns into a chip) lets the
-  // synthesized click bubble up with target === backdrop — and the dialog
-  // closes mid-edit. Tracking the mousedown origin avoids that.
-  const backdropMousedown = useRef(false);
+  // Backdrop dismissal — arm on the FIRST *real* mousedown that lands on
+  // the backdrop (not the one from the click that opened the dialog), then
+  // close on the matching mouseup. Ignore the very first mousedown/up
+  // pair after mount because that's the tail of the opening click.
+  //
+  // Without the initial-arm delay, clicking a tab to open the dialog would
+  // see its own mouseup on the freshly-mounted backdrop and dismiss.
+  const backdropPressed = useRef(false);
+  const armedAt = useRef<number>(0);
+  useEffect(() => {
+    // Give the opening click's mouseup ~200ms to drain before we start
+    // accepting backdrop dismisses.
+    armedAt.current = Date.now() + 200;
+  }, []);
+  const onBackdropMouseDown = (e: React.MouseEvent) => {
+    if (Date.now() < armedAt.current) return;
+    backdropPressed.current = e.target === e.currentTarget;
+  };
+  const onBackdropMouseUp = (e: React.MouseEvent) => {
+    if (Date.now() < armedAt.current) return;
+    const shouldClose = backdropPressed.current && e.target === e.currentTarget;
+    backdropPressed.current = false;
+    if (shouldClose) onClose();
+  };
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/40 p-6 backdrop-blur-sm"
-      onMouseDown={(e) => {
-        backdropMousedown.current = e.target === e.currentTarget;
-      }}
-      onMouseUp={(e) => {
-        if (backdropMousedown.current && e.target === e.currentTarget) {
-          onClose();
-        }
-        backdropMousedown.current = false;
-      }}
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4 sm:p-6 backdrop-blur-sm"
+      onMouseDown={onBackdropMouseDown}
+      onMouseUp={onBackdropMouseUp}
     >
+      {/* Column-flex dialog: header stays put, body scrolls, footer sticks.
+          Stop mousedown/mouseup propagation so internal clicks never reach
+          the backdrop's dismiss handlers. */}
       <div
-        className="my-8 w-full max-w-[820px] rounded-2xl border border-rule bg-paper p-7 shadow-card"
-        onMouseDown={(e) => e.stopPropagation()}
+        className="flex w-full max-w-[820px] max-h-[calc(100vh-3rem)] flex-col rounded-2xl border border-rule bg-paper shadow-card"
+        onMouseDown={(e) => {
+          e.stopPropagation();
+          backdropPressed.current = false;
+        }}
+        onMouseUp={(e) => {
+          e.stopPropagation();
+          backdropPressed.current = false;
+        }}
       >
-        <div className="mb-5 flex items-start justify-between gap-4">
-          <div>
-            <h2 className="font-serif text-[24px] font-normal leading-tight tracking-[-.01em]">
-              {mode === "create" ? "Save view" : "Edit view"}
-            </h2>
-            <p className="mt-1 text-[12.5px] text-mute">
-              Pick the filters and columns that make this view, give it a name, and save.
-            </p>
+        {/* Fixed header */}
+        <div className="flex-none border-b border-rule px-7 pt-6 pb-5">
+          <div className="flex items-start justify-between gap-4">
+            <div>
+              <h2 className="font-serif text-[24px] font-normal leading-tight tracking-[-.01em]">
+                {mode === "create" ? "Save view" : "Edit view"}
+              </h2>
+              <p className="mt-1 text-[12.5px] text-mute">
+                Pick the filters and columns that make this view, give it a name, and save.
+              </p>
+            </div>
+            <button onClick={onClose} className="text-mute hover:text-ink" aria-label="Close">
+              <Icon name="plus" size={18} strokeWidth={2} className="rotate-45" />
+            </button>
           </div>
-          <button onClick={onClose} className="text-mute hover:text-ink" aria-label="Close">
-            <Icon name="plus" size={18} strokeWidth={2} className="rotate-45" />
-          </button>
         </div>
 
-        <form onSubmit={onSubmit} className="space-y-5">
+        <form onSubmit={onSubmit} className="flex min-h-0 flex-1 flex-col">
+          <div className="min-h-0 flex-1 space-y-5 overflow-y-auto px-7 py-6">
           {/* Name + visibility */}
           <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
             <label className="block">
@@ -522,30 +553,34 @@ function ViewDialog({
             </div>
           </section>
 
-          {error && (
-            <div className="rounded-md border border-state-warn/30 bg-state-warn/10 px-3 py-2 text-[12.5px] text-state-warn">
-              {error}
-            </div>
-          )}
+          </div>
 
-          <div className="flex items-center justify-between gap-3 border-t border-rule pt-4">
-            {mode === "edit" && onDeleted && (
-              <button
-                type="button"
-                onClick={onDelete}
-                disabled={busy}
-                className="rounded-md border border-state-warn/40 bg-paper px-3 py-1.5 text-[12px] font-semibold text-state-warn hover:bg-state-warn/10 disabled:opacity-50"
-              >
-                Delete view
-              </button>
+          {/* Sticky footer — error banner + actions, always visible */}
+          <div className="flex-none border-t border-rule px-7 py-4">
+            {error && (
+              <div className="mb-3 rounded-md border border-state-warn/30 bg-state-warn/10 px-3 py-2 text-[12.5px] text-state-warn">
+                {error}
+              </div>
             )}
-            <div className="ml-auto flex items-center gap-3">
-              <button type="button" onClick={onClose} disabled={busy} className="btn">
-                Cancel
-              </button>
-              <button type="submit" disabled={busy || !name.trim()} className="btn-grad disabled:opacity-60">
-                {busy ? "Saving…" : mode === "create" ? "Save view" : "Update"}
-              </button>
+            <div className="flex items-center justify-between gap-3">
+              {mode === "edit" && onDeleted ? (
+                <button
+                  type="button"
+                  onClick={onDelete}
+                  disabled={busy}
+                  className="rounded-md border border-state-warn/40 bg-paper px-3 py-1.5 text-[12px] font-semibold text-state-warn hover:bg-state-warn/10 disabled:opacity-50"
+                >
+                  Delete view
+                </button>
+              ) : <span />}
+              <div className="flex items-center gap-3">
+                <button type="button" onClick={onClose} disabled={busy} className="btn">
+                  Cancel
+                </button>
+                <button type="submit" disabled={busy || !name.trim()} className="btn-grad disabled:opacity-60">
+                  {busy ? "Saving…" : mode === "create" ? "Save view" : "Update"}
+                </button>
+              </div>
             </div>
           </div>
         </form>

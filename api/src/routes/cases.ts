@@ -2,6 +2,7 @@ import { Router } from "express";
 import { sql } from "drizzle-orm";
 import { withTenant } from "../db/app.js";
 import { emitEvent } from "../lib/events.js";
+import { partyIdFromAppUserId, resolveActorPartyId, resolveSentinelPartyId } from "../lib/party/resolve.js";
 
 export const casesRouter = Router();
 
@@ -89,7 +90,7 @@ casesRouter.get("/dashboard", async (req, res, next) => {
           COUNT(*) FILTER (WHERE t.due_at < NOW() AND t.status NOT IN ('closed','resolved','cancelled'))::int AS "overdue",
           COUNT(*) FILTER (WHERE t.closed_at >= NOW() - interval '7 days')::int          AS "closedThisWeek"
         FROM app_user u
-        LEFT JOIN work_item wi ON wi.assignee_id = u.id AND wi.type = 'support_case'
+        LEFT JOIN work_item wi ON wi.assignee_id = u.party_id AND wi.type = 'support_case'
         LEFT JOIN support_case t     ON t.work_item_id = wi.id
         WHERE u.active = true AND u.role IN ('admin','advisor','service_rep')
         GROUP BY u.id, u.name, u.role
@@ -105,7 +106,7 @@ casesRouter.get("/dashboard", async (req, res, next) => {
           (t.due_at IS NOT NULL AND t.due_at < NOW()) AS "isOverdue"
         FROM support_case t
         JOIN work_item wi  ON wi.id = t.work_item_id
-        LEFT JOIN app_user u ON u.id = wi.assignee_id
+        LEFT JOIN app_user u ON u.party_id = wi.assignee_id
         WHERE t.status NOT IN ('closed','resolved','cancelled')
         ORDER BY wi.created_at ASC
         LIMIT 5
@@ -119,7 +120,7 @@ casesRouter.get("/dashboard", async (req, res, next) => {
           t.resolution
         FROM support_case t
         JOIN work_item wi  ON wi.id = t.work_item_id
-        LEFT JOIN app_user u ON u.id = wi.assignee_id
+        LEFT JOIN app_user u ON u.party_id = wi.assignee_id
         WHERE t.status IN ('closed','resolved')
         ORDER BY COALESCE(t.closed_at, t.resolved_at) DESC NULLS LAST
         LIMIT 5
@@ -159,7 +160,11 @@ casesRouter.get("/", async (req, res, next) => {
     const rows = await withTenant(req.tenantId!, async (db) => {
       const conditions: ReturnType<typeof sql>[] = [];
       if (status)     conditions.push(sql`t.status = ${status}`);
-      if (assigneeId) conditions.push(sql`wi.assignee_id = ${assigneeId}`);
+      // Phase 2: wi.assignee_id stores party.id — resolve inbound app_user.id.
+      if (assigneeId) {
+        const partyId = await partyIdFromAppUserId(db, assigneeId);
+        conditions.push(sql`wi.assignee_id = ${partyId}`);
+      }
       if (category)   conditions.push(sql`t.category = ${category}`);
       if (priority)   conditions.push(sql`t.priority = ${priority}`);
       if (requesterKind) conditions.push(sql`t.requester_kind = ${requesterKind}`);
@@ -194,7 +199,7 @@ casesRouter.get("/", async (req, res, next) => {
           (t.due_at IS NOT NULL AND t.due_at < NOW() AND t.status NOT IN ('closed','resolved','cancelled')) AS "isOverdue"
         FROM support_case t
         JOIN work_item wi  ON wi.id = t.work_item_id
-        LEFT JOIN app_user u ON u.id = wi.assignee_id
+        LEFT JOIN app_user u ON u.party_id = wi.assignee_id
         ${where}
         ORDER BY
           CASE WHEN t.status IN ('closed','resolved','cancelled') THEN 1 ELSE 0 END,
@@ -244,8 +249,8 @@ casesRouter.get("/:idOrNumber", async (req, res, next) => {
                 p.phone           AS "partyPhone"
               FROM support_case t
               JOIN work_item wi   ON wi.id = t.work_item_id
-              LEFT JOIN app_user u  ON u.id = wi.assignee_id
-              LEFT JOIN app_user cu ON cu.id = t.created_by_id
+              LEFT JOIN app_user u  ON u.party_id = wi.assignee_id
+              LEFT JOIN app_user cu ON cu.party_id = t.created_by_id
               LEFT JOIN party p     ON p.id = t.party_id
               WHERE wi.id = ${idOrNumber} AND wi.type = 'support_case'
               LIMIT 1
@@ -274,8 +279,8 @@ casesRouter.get("/:idOrNumber", async (req, res, next) => {
                 p.phone           AS "partyPhone"
               FROM support_case t
               JOIN work_item wi   ON wi.id = t.work_item_id
-              LEFT JOIN app_user u  ON u.id = wi.assignee_id
-              LEFT JOIN app_user cu ON cu.id = t.created_by_id
+              LEFT JOIN app_user u  ON u.party_id = wi.assignee_id
+              LEFT JOIN app_user cu ON cu.party_id = t.created_by_id
               LEFT JOIN party p     ON p.id = t.party_id
               WHERE wi.number = ${idOrNumber} AND wi.type = 'support_case'
               LIMIT 1
@@ -379,16 +384,20 @@ casesRouter.post("/", async (req, res, next) => {
       }
 
       // Resolve creator: first admin in the tenant (mirrors `me`).
+      // Phase 2: created_by_id / assignee_id store party.id.
       const creatorR = await db.execute(sql`
-        SELECT id, name FROM app_user WHERE role = 'admin' AND active = true ORDER BY created_at LIMIT 1
+        SELECT party_id, name FROM app_user WHERE role = 'admin' AND active = true ORDER BY created_at LIMIT 1
       `);
-      const creator = creatorR.rows[0] as { id: string; name: string } | undefined;
+      const creator = creatorR.rows[0] as { party_id: string; name: string } | undefined;
 
       // Assignee — explicit if provided, else null (allowed; "unassigned").
       let assigneeName: string | null = null;
+      let assigneePartyId: string | null = null;
       if (assigneeId) {
-        const u = await db.execute(sql`SELECT name FROM app_user WHERE id = ${assigneeId} AND active = true`);
-        assigneeName = (u.rows[0] as { name: string } | undefined)?.name ?? null;
+        const u = await db.execute(sql`SELECT name, party_id FROM app_user WHERE id = ${assigneeId} AND active = true`);
+        const row = u.rows[0] as { name: string; party_id: string } | undefined;
+        assigneeName = row?.name ?? null;
+        assigneePartyId = row?.party_id ?? null;
         if (!assigneeName) return { kind: "bad-assignee" as const };
       }
 
@@ -399,7 +408,7 @@ casesRouter.post("/", async (req, res, next) => {
       // 1. work_item
       const wiR = await db.execute(sql`
         INSERT INTO work_item (tenant_id, number, type, party_id, assignee_id, state)
-        VALUES (current_tenant(), ${number}, 'support_case', ${partyId}, ${assigneeId}, 'open')
+        VALUES (current_tenant(), ${number}, 'support_case', ${partyId}, ${assigneePartyId}, 'open')
         RETURNING id
       `);
       const wiId = (wiR.rows[0] as { id: string }).id;
@@ -416,16 +425,22 @@ casesRouter.post("/", async (req, res, next) => {
           ${requesterName}, ${requesterEmail}, ${requesterPhone}, ${requesterKind}, ${partyId},
           ${subject}, ${description}, ${category}, ${priority}, 'open',
           ${dueAt ? dueAt.toISOString() : null}, ${remindAt ? remindAt.toISOString() : null},
-          ${creator?.id ?? null}
+          ${creator?.party_id ?? null}
         )
       `);
 
+      // Phase 3: actor is the acting user if we have one; else the creator
+      // party we resolved above. Falls back to sentinel if both are missing.
+      const actorPartyId = req.userId
+        ? await resolveActorPartyId(db, req.tenantId!, req.userId)
+        : (creator?.party_id ?? await resolveSentinelPartyId(db, req.tenantId!));
+
       // 3. activity row — created
       await db.execute(sql`
-        INSERT INTO activity (tenant_id, work_item_id, party_id, actor_type, actor_name, verb, detail, tag, payload, ts)
+        INSERT INTO activity (tenant_id, work_item_id, party_id, actor_type, actor_party_id, actor_name, verb, detail, tag, payload, ts)
         VALUES (
           current_tenant(), ${wiId}, ${partyId},
-          'user', ${creator?.name ?? "System"}, 'Case created',
+          'user', ${actorPartyId}, ${creator?.name ?? "System"}, 'Case created',
           ${`${subject} · ${CATEGORY_LABEL[category] ?? category} · ${PRIORITY_LABEL[priority] ?? priority}`},
           'you',
           ${JSON.stringify({ when: "Just now", kind: "create", category, priority })}::jsonb,
@@ -435,10 +450,10 @@ casesRouter.post("/", async (req, res, next) => {
 
       if (assigneeName) {
         await db.execute(sql`
-          INSERT INTO activity (tenant_id, work_item_id, party_id, actor_type, actor_name, verb, detail, tag, payload, ts)
+          INSERT INTO activity (tenant_id, work_item_id, party_id, actor_type, actor_party_id, actor_name, verb, detail, tag, payload, ts)
           VALUES (
             current_tenant(), ${wiId}, ${partyId},
-            'user', ${creator?.name ?? "System"}, 'Assigned',
+            'user', ${actorPartyId}, ${creator?.name ?? "System"}, 'Assigned',
             ${`Assignee: unassigned → ${assigneeName}`}, 'you',
             ${JSON.stringify({ when: "Just now", kind: "assign" })}::jsonb,
             NOW() + interval '1 second'
@@ -501,26 +516,29 @@ casesRouter.patch("/:idOrNumber", async (req, res, next) => {
     }
 
     const result = await withTenant(req.tenantId!, async (db) => {
+      const actorPartyId = await resolveActorPartyId(db, req.tenantId!, req.userId);
       const beforeR = await db.execute(
         lookupIsUuid
           ? sql`
               SELECT
                 wi.id, wi.party_id AS "partyId",
-                wi.assignee_id     AS "assigneeId",
+                u.id               AS "assigneeId",  -- app_user.id via party_id (Phase 2)
                 t.subject, t.description, t.category, t.priority, t.status,
                 t.due_at AS "dueAt", t.remind_at AS "remindAt"
               FROM support_case t
               JOIN work_item wi ON wi.id = t.work_item_id
+              LEFT JOIN app_user u ON u.party_id = wi.assignee_id
               WHERE wi.id = ${idOrNumber} AND wi.type = 'support_case'
             `
           : sql`
               SELECT
                 wi.id, wi.party_id AS "partyId",
-                wi.assignee_id     AS "assigneeId",
+                u.id               AS "assigneeId",  -- app_user.id via party_id (Phase 2)
                 t.subject, t.description, t.category, t.priority, t.status,
                 t.due_at AS "dueAt", t.remind_at AS "remindAt"
               FROM support_case t
               JOIN work_item wi ON wi.id = t.work_item_id
+              LEFT JOIN app_user u ON u.party_id = wi.assignee_id
               WHERE wi.number = ${idOrNumber} AND wi.type = 'support_case'
             `,
       );
@@ -547,15 +565,20 @@ casesRouter.patch("/:idOrNumber", async (req, res, next) => {
       }
 
       // Assignee change
+      // Phase 2: work_item.assignee_id stores party.id; client sends app_user.id.
       let newAssigneeName: string | null | undefined = undefined;
       let oldAssigneeName: string | null | undefined = undefined;
+      let newAssigneePartyId: string | null | undefined = undefined;
       if (b.assigneeId !== undefined) {
         const newId = b.assigneeId ? String(b.assigneeId) : null;
         if (newId) {
-          const u = await db.execute(sql`SELECT name FROM app_user WHERE id = ${newId}`);
-          newAssigneeName = (u.rows[0] as { name: string } | undefined)?.name ?? null;
+          const u = await db.execute(sql`SELECT name, party_id FROM app_user WHERE id = ${newId}`);
+          const row = u.rows[0] as { name: string; party_id: string } | undefined;
+          newAssigneeName = row?.name ?? null;
+          newAssigneePartyId = row?.party_id ?? null;
         } else {
           newAssigneeName = null;
+          newAssigneePartyId = null;
         }
         if (before.assigneeId) {
           const u = await db.execute(sql`SELECT name FROM app_user WHERE id = ${before.assigneeId as string}`);
@@ -563,7 +586,7 @@ casesRouter.patch("/:idOrNumber", async (req, res, next) => {
         } else {
           oldAssigneeName = null;
         }
-        await db.execute(sql`UPDATE work_item SET assignee_id = ${newId} WHERE id = ${wiId}`);
+        await db.execute(sql`UPDATE work_item SET assignee_id = ${newAssigneePartyId} WHERE id = ${wiId}`);
       }
 
       // Status mirror to work_item.state
@@ -618,10 +641,10 @@ casesRouter.patch("/:idOrNumber", async (req, res, next) => {
       for (let i = 0; i < lines.length; i++) {
         const L = lines[i]!;
         await db.execute(sql`
-          INSERT INTO activity (tenant_id, work_item_id, party_id, actor_type, actor_name, verb, detail, tag, payload, ts)
+          INSERT INTO activity (tenant_id, work_item_id, party_id, actor_type, actor_party_id, actor_name, verb, detail, tag, payload, ts)
           VALUES (
             current_tenant(), ${wiId}, ${partyId},
-            'user', 'You', ${L.verb}, ${L.detail}, 'you',
+            'user', ${actorPartyId}, 'You', ${L.verb}, ${L.detail}, 'you',
             ${JSON.stringify({ when: "Just now", kind: L.kind })}::jsonb,
             NOW() + (${i} || ' milliseconds')::interval
           )
@@ -648,6 +671,7 @@ casesRouter.post("/:idOrNumber/comments", async (req, res, next) => {
     if (!text) return res.status(400).json({ error: "text required" });
 
     const result = await withTenant(req.tenantId!, async (db) => {
+      const actorPartyId = await resolveActorPartyId(db, req.tenantId!, req.userId);
       const r = await db.execute(
         lookupIsUuid
           ? sql`SELECT id, party_id AS "partyId" FROM work_item WHERE id = ${idOrNumber} AND type = 'support_case'`
@@ -657,8 +681,8 @@ casesRouter.post("/:idOrNumber/comments", async (req, res, next) => {
       const wiId = (r.rows[0] as { id: string }).id;
       const partyId = (r.rows[0] as { partyId: string | null }).partyId;
       const ins = await db.execute(sql`
-        INSERT INTO activity (tenant_id, work_item_id, party_id, actor_type, actor_name, verb, detail, tag, payload, ts)
-        VALUES (current_tenant(), ${wiId}, ${partyId}, 'user', 'You', 'Comment', ${text}, 'you',
+        INSERT INTO activity (tenant_id, work_item_id, party_id, actor_type, actor_party_id, actor_name, verb, detail, tag, payload, ts)
+        VALUES (current_tenant(), ${wiId}, ${partyId}, 'user', ${actorPartyId}, 'You', 'Comment', ${text}, 'you',
                 ${JSON.stringify({ when: "Just now", kind: "comment" })}::jsonb, NOW())
         RETURNING id
       `);
@@ -686,6 +710,7 @@ casesRouter.post("/:idOrNumber/close", async (req, res, next) => {
     }
 
     const result = await withTenant(req.tenantId!, async (db) => {
+      const actorPartyId = await resolveActorPartyId(db, req.tenantId!, req.userId);
       const r = await db.execute(
         lookupIsUuid
           ? sql`
@@ -716,16 +741,16 @@ casesRouter.post("/:idOrNumber/close", async (req, res, next) => {
       await db.execute(sql`UPDATE work_item SET state = 'closed_won' WHERE id = ${row.id}`);
 
       await db.execute(sql`
-        INSERT INTO activity (tenant_id, work_item_id, party_id, actor_type, actor_name, verb, detail, tag, payload, ts)
-        VALUES (current_tenant(), ${row.id}, ${row.partyId}, 'user', 'You', 'Closed',
+        INSERT INTO activity (tenant_id, work_item_id, party_id, actor_type, actor_party_id, actor_name, verb, detail, tag, payload, ts)
+        VALUES (current_tenant(), ${row.id}, ${row.partyId}, 'user', ${actorPartyId}, 'You', 'Closed',
                 ${resolution}, 'you',
                 ${JSON.stringify({ when: "Just now", kind: "close", resolutionCode })}::jsonb, NOW())
       `);
 
       // Audit log
       await db.execute(sql`
-        INSERT INTO audit_log (tenant_id, actor_type, action, target_type, target_id, context)
-        VALUES (current_tenant(), 'user', 'case_closed', 'support_case', ${row.id},
+        INSERT INTO audit_log (tenant_id, actor_type, actor_party_id, action, target_type, target_id, context)
+        VALUES (current_tenant(), 'user', ${actorPartyId}, 'case_closed', 'support_case', ${row.id},
                 ${JSON.stringify({ resolutionCode })}::jsonb)
       `);
 
@@ -779,6 +804,7 @@ casesRouter.post("/:idOrNumber/reopen", async (req, res, next) => {
     const lookupIsUuid = isUuid(idOrNumber);
 
     const result = await withTenant(req.tenantId!, async (db) => {
+      const actorPartyId = await resolveActorPartyId(db, req.tenantId!, req.userId);
       const r = await db.execute(
         lookupIsUuid
           ? sql`
@@ -806,8 +832,8 @@ casesRouter.post("/:idOrNumber/reopen", async (req, res, next) => {
       await db.execute(sql`UPDATE work_item SET state = 'in_progress' WHERE id = ${row.id}`);
 
       await db.execute(sql`
-        INSERT INTO activity (tenant_id, work_item_id, party_id, actor_type, actor_name, verb, detail, tag, payload, ts)
-        VALUES (current_tenant(), ${row.id}, ${row.partyId}, 'user', 'You', 'Reopened',
+        INSERT INTO activity (tenant_id, work_item_id, party_id, actor_type, actor_party_id, actor_name, verb, detail, tag, payload, ts)
+        VALUES (current_tenant(), ${row.id}, ${row.partyId}, 'user', ${actorPartyId}, 'You', 'Reopened',
                 ${`Status: ${STATUS_LABEL[row.status]} → In progress`}, 'you',
                 ${JSON.stringify({ when: "Just now", kind: "reopen" })}::jsonb, NOW())
       `);

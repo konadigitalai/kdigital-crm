@@ -16,6 +16,7 @@ import { z } from "zod";
 import { HumanMessage, SystemMessage } from "@langchain/core/messages";
 import { withTenant } from "../db/app.js";
 import { makeChatModel } from "../lib/llm.js";
+import { resolveActorPartyId, partyIdFromAppUserId } from "../lib/party/resolve.js";
 import { loadLeadContext, renderLeadContextBlock } from "./lead-context.js";
 
 const VALID_ACTIONS = [
@@ -186,7 +187,7 @@ async function buildSnapshot(
         p.name,
         l.rating, l.score,
         l.program,
-        l.city,
+        p.city,             -- Phase 3: was l.city (denorm dropped)
         l.value,
         EXTRACT(EPOCH FROM (NOW() - la.last_ts)) / 86400 AS "daysSinceLastTouch",
         u.name AS "advisorName"
@@ -194,7 +195,7 @@ async function buildSnapshot(
       JOIN work_item wi ON wi.id = l.work_item_id
       JOIN party p      ON p.id  = wi.party_id
       LEFT JOIN last_act la ON la.work_item_id = l.work_item_id
-      LEFT JOIN app_user u  ON u.id = l.advisor_id
+      LEFT JOIN app_user u  ON u.party_id = l.advisor_id
       WHERE l.rating <> 'enrolled'
       ORDER BY
         CASE l.rating
@@ -259,7 +260,7 @@ async function buildSnapshot(
         t.created_at AS "createdAt"
       FROM support_case t
       JOIN work_item wi ON wi.id = t.work_item_id
-      LEFT JOIN app_user u ON u.id = wi.assignee_id
+      LEFT JOIN app_user u ON u.party_id = wi.assignee_id
       WHERE t.status NOT IN ('closed','resolved','cancelled')
       ORDER BY t.created_at DESC
       LIMIT 10
@@ -604,18 +605,24 @@ export async function askEdify(
 
   // Resolve session — verify ownership if one was supplied; otherwise create.
   const persisted = await withTenant(tenantId, async (db) => {
+    // Phase 2 Party Model: edify_chat_session.user_id and
+    // edify_chat_message.user_id both FK party.id now. Resolve the caller's
+    // app_user.id → party.id once here.
+    const userPartyId = await partyIdFromAppUserId(db, userId);
+    if (!userPartyId) throw new Error("askEdify: user has no party record");
+
     let resolvedSessionId = sessionId;
     if (resolvedSessionId) {
       const ok = await db.execute(sql`
         SELECT id FROM edify_chat_session
-        WHERE id = ${resolvedSessionId} AND user_id = ${userId}
+        WHERE id = ${resolvedSessionId} AND user_id = ${userPartyId}
       `);
       if (ok.rows.length === 0) resolvedSessionId = null; // fall through to create
     }
     if (!resolvedSessionId) {
       const newSession = await db.execute(sql`
         INSERT INTO edify_chat_session (tenant_id, user_id, title, last_at)
-        VALUES (${tenantId}, ${userId}, ${cleanQ.slice(0, 60)}, NOW())
+        VALUES (${tenantId}, ${userPartyId}, ${cleanQ.slice(0, 60)}, NOW())
         RETURNING id
       `);
       resolvedSessionId = (newSession.rows[0] as { id: string }).id;
@@ -631,7 +638,7 @@ export async function askEdify(
         tenant_id, user_id, session_id, question, answer, citations, suggested,
         model, tokens_in, tokens_out
       ) VALUES (
-        ${tenantId}, ${userId}, ${resolvedSessionId}, ${cleanQ}, ${validated.answer},
+        ${tenantId}, ${userPartyId}, ${resolvedSessionId}, ${cleanQ}, ${validated.answer},
         ${JSON.stringify(validated.citations)}::jsonb,
         ${validated.suggestedAction ? JSON.stringify(validated.suggestedAction) : null}::jsonb,
         ${resolvedModel}, ${usage.in}, ${usage.out}
@@ -644,10 +651,13 @@ export async function askEdify(
 
   // Audit log entry — useful when reviewing what the assistant has been asked.
   await withTenant(tenantId, async (db) => {
+    // Phase 3: the "actor" is the human user asking Edify (userId is the
+    // acting app_user.id passed in via configurable(state).userId).
+    const actorPartyId = await resolveActorPartyId(db, tenantId, userId);
     await db.execute(sql`
-      INSERT INTO audit_log (tenant_id, actor_type, action, target_type, target_id, context)
+      INSERT INTO audit_log (tenant_id, actor_type, actor_party_id, action, target_type, target_id, context)
       VALUES (
-        ${tenantId}, 'user', 'edify_asked', 'edify_chat_message', ${persisted.messageId},
+        ${tenantId}, 'user', ${actorPartyId}, 'edify_asked', 'edify_chat_message', ${persisted.messageId},
         ${JSON.stringify({ question: cleanQ.slice(0, 200), sessionId: persisted.sessionId, suggestedAction: validated.suggestedAction?.action ?? null, model: resolvedModel, tokensIn: usage.in, tokensOut: usage.out })}::jsonb
       )
     `);
@@ -673,6 +683,9 @@ export async function listEdifySessions(
 ): Promise<EdifySessionSummary[]> {
   const safeLimit = Math.min(200, Math.max(1, limit | 0 || 50));
   return await withTenant(tenantId, async (db) => {
+    // Phase 2: session.user_id stores party.id.
+    const userPartyId = await partyIdFromAppUserId(db, userId);
+    if (!userPartyId) return [];
     const r = await db.execute(sql`
       SELECT
         s.id,
@@ -682,7 +695,7 @@ export async function listEdifySessions(
         (SELECT COUNT(*)::int FROM edify_chat_message m WHERE m.session_id = s.id) AS "messageCount",
         (SELECT m.question FROM edify_chat_message m WHERE m.session_id = s.id ORDER BY m.asked_at DESC LIMIT 1) AS "preview"
       FROM edify_chat_session s
-      WHERE s.user_id = ${userId}
+      WHERE s.user_id = ${userPartyId}
       ORDER BY s.last_at DESC
       LIMIT ${safeLimit}
     `);
@@ -703,13 +716,15 @@ export async function getEdifySession(
   sessionId: string,
 ): Promise<{ session: EdifySessionSummary; messages: EdifyAnswer[] } | null> {
   return await withTenant(tenantId, async (db) => {
+    const userPartyId = await partyIdFromAppUserId(db, userId);
+    if (!userPartyId) return null;
     const sR = await db.execute(sql`
       SELECT
         id, title,
         created_at AS "createdAt",
         last_at    AS "lastAt"
       FROM edify_chat_session
-      WHERE id = ${sessionId} AND user_id = ${userId}
+      WHERE id = ${sessionId} AND user_id = ${userPartyId}
       LIMIT 1
     `);
     if (sR.rows.length === 0) return null;
@@ -751,9 +766,11 @@ export async function deleteEdifySession(
   sessionId: string,
 ): Promise<boolean> {
   return await withTenant(tenantId, async (db) => {
+    const userPartyId = await partyIdFromAppUserId(db, userId);
+    if (!userPartyId) return false;
     const r = await db.execute(sql`
       DELETE FROM edify_chat_session
-      WHERE id = ${sessionId} AND user_id = ${userId}
+      WHERE id = ${sessionId} AND user_id = ${userPartyId}
       RETURNING id
     `);
     return r.rows.length > 0;
@@ -769,10 +786,12 @@ export async function renameEdifySession(
   const t = title.trim().slice(0, 200);
   if (!t) throw new Error("title empty");
   return await withTenant(tenantId, async (db) => {
+    const userPartyId = await partyIdFromAppUserId(db, userId);
+    if (!userPartyId) return false;
     const r = await db.execute(sql`
       UPDATE edify_chat_session
       SET title = ${t}
-      WHERE id = ${sessionId} AND user_id = ${userId}
+      WHERE id = ${sessionId} AND user_id = ${userPartyId}
       RETURNING id
     `);
     return r.rows.length > 0;

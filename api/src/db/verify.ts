@@ -23,7 +23,7 @@ async function main() {
 
   // 2. Sample join — top hot leads with their party + work_item number
   const hot = await pool.query<{ number: string; name: string; city: string; score: number; stage: string; nba: string }>(`
-    SELECT wi.number, p.name, l.city, l.score, l.stage_label AS stage, l.nba_label AS nba
+    SELECT wi.number, p.name, p.city, l.score, l.stage_label AS stage, l.nba_label AS nba
     FROM lead l
     JOIN work_item wi ON wi.id = l.work_item_id
     JOIN party p      ON p.id  = wi.party_id

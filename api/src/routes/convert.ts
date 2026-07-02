@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { sql } from "drizzle-orm";
 import { withTenant } from "../db/app.js";
+import { resolveActorPartyId } from "../lib/party/resolve.js";
 
 export const convertRouter = Router();
 
@@ -21,6 +22,7 @@ convertRouter.post("/:idOrNumber/convert", async (req, res, next) => {
       ? String(req.body.pricePaid) : null;
 
     const result = await withTenant(req.tenantId!, async (db) => {
+      const actorPartyId = await resolveActorPartyId(db, req.tenantId!, req.userId);
       const leadR = await db.execute(
         isUuid
           ? sql`
@@ -109,17 +111,17 @@ convertRouter.post("/:idOrNumber/convert", async (req, res, next) => {
 
       // Activity + audit
       await db.execute(sql`
-        INSERT INTO activity (tenant_id, work_item_id, party_id, actor_type, actor_name, verb, detail, tag, payload, ts)
+        INSERT INTO activity (tenant_id, work_item_id, party_id, actor_type, actor_party_id, actor_name, verb, detail, tag, payload, ts)
         VALUES (current_tenant(), ${lead.workItemId}, ${lead.partyId},
-                'user', 'Conversion', 'Lead → Learner',
+                'user', ${actorPartyId}, 'Conversion', 'Lead → Learner',
                 ${`Converted ${lead.partyName} to a learner — enrolled into ${prog.name}.`},
                 'you',
                 ${JSON.stringify({ when: "Just now", quote: null, program: prog.name })}::jsonb,
                 NOW())
       `);
       await db.execute(sql`
-        INSERT INTO audit_log (tenant_id, actor_type, action, target_type, target_id, context)
-        VALUES (current_tenant(), 'user', 'lead_to_learner', 'work_item', ${lead.workItemId},
+        INSERT INTO audit_log (tenant_id, actor_type, actor_party_id, action, target_type, target_id, context)
+        VALUES (current_tenant(), 'user', ${actorPartyId}, 'lead_to_learner', 'work_item', ${lead.workItemId},
                 ${JSON.stringify({ partyId: lead.partyId, programId: prog.id })}::jsonb)
       `);
 

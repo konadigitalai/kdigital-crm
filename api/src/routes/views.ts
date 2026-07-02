@@ -21,6 +21,7 @@ import { Router } from "express";
 import { sql } from "drizzle-orm";
 import { withTenant } from "../db/app.js";
 import type { Permission } from "../lib/permissions.js";
+import { partyIdFromAppUserId } from "../lib/party/resolve.js";
 
 export const viewsRouter = Router();
 
@@ -57,14 +58,19 @@ viewsRouter.get("/", async (req, res, next) => {
     if (!isScope(scope)) return res.status(400).json({ error: "unsupported scope" });
 
     const rows = await withTenant(req.tenantId!, async (db) => {
+      // Phase 2: saved_view.owner_id stores party.id. Return app_user.id in
+      // the API response (wire compat).
+      const userPartyId = await partyIdFromAppUserId(db, req.userId!);
+      if (!userPartyId) return [];
       const r = await db.execute(sql`
         SELECT
-          id, tenant_id AS "tenantId", owner_id AS "ownerId",
+          id, tenant_id AS "tenantId",
+          (SELECT au.id FROM app_user au WHERE au.party_id = saved_view.owner_id LIMIT 1) AS "ownerId",
           scope, name, visibility, filter, columns,
           created_at AS "createdAt", updated_at AS "updatedAt"
         FROM saved_view
         WHERE scope = ${scope}
-          AND (owner_id = ${req.userId} OR visibility = 'shared')
+          AND (owner_id = ${userPartyId} OR visibility = 'shared')
         ORDER BY visibility DESC, lower(name)
       `);
       return r.rows;
@@ -101,13 +107,16 @@ viewsRouter.post("/", async (req, res, next) => {
     }
 
     const created = await withTenant(req.tenantId!, async (db) => {
+      const userPartyId = await partyIdFromAppUserId(db, req.userId!);
+      if (!userPartyId) throw new Error("saved view: user has no party record");
       const r = await db.execute(sql`
         INSERT INTO saved_view (tenant_id, owner_id, scope, name, visibility, filter, columns)
-        VALUES (current_tenant(), ${req.userId}, ${scope}, ${name}, ${visibility},
+        VALUES (current_tenant(), ${userPartyId}, ${scope}, ${name}, ${visibility},
                 ${JSON.stringify(filter)}::jsonb,
                 ${columnsSqlValue(columns)})
         RETURNING
-          id, tenant_id AS "tenantId", owner_id AS "ownerId",
+          id, tenant_id AS "tenantId",
+          (SELECT au.id FROM app_user au WHERE au.party_id = saved_view.owner_id LIMIT 1) AS "ownerId",
           scope, name, visibility, filter, columns,
           created_at AS "createdAt", updated_at AS "updatedAt"
       `);
@@ -143,12 +152,15 @@ viewsRouter.patch("/:id", async (req, res, next) => {
     }
 
     const result = await withTenant(req.tenantId!, async (db) => {
-      // Fetch current row to authorize.
+      // Fetch current row to authorize. Phase 2: owner_id stores party.id;
+      // resolve it back to app_user.id for the comparison against req.userId.
       const r = await db.execute(sql`
-        SELECT id, owner_id AS "ownerId", scope, visibility
+        SELECT id,
+               (SELECT au.id FROM app_user au WHERE au.party_id = saved_view.owner_id LIMIT 1) AS "ownerId",
+               scope, visibility
         FROM saved_view WHERE id = ${id}
       `);
-      const row = r.rows[0] as { ownerId: string; scope: string; visibility: string } | undefined;
+      const row = r.rows[0] as { ownerId: string | null; scope: string; visibility: string } | undefined;
       if (!row) return { kind: "not-found" as const };
       if (!isScope(row.scope)) return { kind: "bad-scope" as const };
 
@@ -177,7 +189,8 @@ viewsRouter.patch("/:id", async (req, res, next) => {
       const u = await db.execute(sql`
         UPDATE saved_view SET ${set} WHERE id = ${id}
         RETURNING
-          id, tenant_id AS "tenantId", owner_id AS "ownerId",
+          id, tenant_id AS "tenantId",
+          (SELECT au.id FROM app_user au WHERE au.party_id = saved_view.owner_id LIMIT 1) AS "ownerId",
           scope, name, visibility, filter, columns,
           created_at AS "createdAt", updated_at AS "updatedAt"
       `);
@@ -203,10 +216,13 @@ viewsRouter.delete("/:id", async (req, res, next) => {
     if (!isUuid(id)) return res.status(400).json({ error: "invalid id" });
 
     const result = await withTenant(req.tenantId!, async (db) => {
+      // Phase 2: owner_id stores party.id; resolve to app_user.id for the
+      // ownership check against req.userId.
       const r = await db.execute(sql`
-        SELECT owner_id AS "ownerId", scope, visibility FROM saved_view WHERE id = ${id}
+        SELECT (SELECT au.id FROM app_user au WHERE au.party_id = saved_view.owner_id LIMIT 1) AS "ownerId",
+               scope, visibility FROM saved_view WHERE id = ${id}
       `);
-      const row = r.rows[0] as { ownerId: string; scope: string; visibility: string } | undefined;
+      const row = r.rows[0] as { ownerId: string | null; scope: string; visibility: string } | undefined;
       if (!row) return { kind: "not-found" as const };
       if (!isScope(row.scope)) return { kind: "bad-scope" as const };
 

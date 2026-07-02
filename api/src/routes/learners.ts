@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { sql } from "drizzle-orm";
 import { withTenant } from "../db/app.js";
+import { resolveActorPartyId } from "../lib/party/resolve.js";
 
 export const learnersRouter = Router();
 
@@ -189,6 +190,7 @@ learnersRouter.post("/:partyId/courses", async (req, res, next) => {
     }
 
     const result = await withTenant(req.tenantId!, async (db) => {
+      const actorPartyId = await resolveActorPartyId(db, req.tenantId!, req.userId);
       // Must be a learner
       const isLearner = await db.execute(sql`
         SELECT 1 FROM party_role WHERE party_id = ${partyId} AND role = 'learner' AND valid_to IS NULL LIMIT 1
@@ -251,8 +253,8 @@ learnersRouter.post("/:partyId/courses", async (req, res, next) => {
           ? `Assigned course: ${added[0]!.courseName}`
           : `Assigned ${added.length} courses: ${added.map((a) => a.courseName).join(", ")}`;
         await db.execute(sql`
-          INSERT INTO activity (tenant_id, party_id, actor_type, actor_name, verb, detail, tag, payload, ts)
-          VALUES (current_tenant(), ${partyId}, 'user', 'You', 'Course assigned',
+          INSERT INTO activity (tenant_id, party_id, actor_type, actor_party_id, actor_name, verb, detail, tag, payload, ts)
+          VALUES (current_tenant(), ${partyId}, 'user', ${actorPartyId}, 'You', 'Course assigned',
                   ${detail}, 'you',
                   ${JSON.stringify({ when: "Just now", quote: null, courseIds: added.map((a) => a.courseId) })}::jsonb, NOW())
         `);
@@ -308,6 +310,7 @@ learnersRouter.delete("/:partyId/courses/:courseAssignmentId", async (req, res, 
     const id      = String(req.params.courseAssignmentId);
 
     const result = await withTenant(req.tenantId!, async (db) => {
+      const actorPartyId = await resolveActorPartyId(db, req.tenantId!, req.userId);
       // Capture context before the cascade so we can describe what got removed.
       const ctxR = await db.execute(sql`
         SELECT co.name AS "courseName",
@@ -330,8 +333,8 @@ learnersRouter.delete("/:partyId/courses/:courseAssignmentId", async (req, res, 
         ? ` (also dropped ${ctx.batchCount} batch assignment${ctx.batchCount === 1 ? "" : "s"})`
         : "";
       await db.execute(sql`
-        INSERT INTO activity (tenant_id, party_id, actor_type, actor_name, verb, detail, tag, payload, ts)
-        VALUES (current_tenant(), ${partyId}, 'user', 'You', 'Course removed',
+        INSERT INTO activity (tenant_id, party_id, actor_type, actor_party_id, actor_name, verb, detail, tag, payload, ts)
+        VALUES (current_tenant(), ${partyId}, 'user', ${actorPartyId}, 'You', 'Course removed',
                 ${`Unassigned course: ${ctx.courseName}${batchPart}`}, 'you',
                 ${JSON.stringify({ when: "Just now", quote: null, courseAssignmentId: id })}::jsonb, NOW())
       `);
@@ -356,6 +359,7 @@ learnersRouter.post("/:partyId/batches", async (req, res, next) => {
     if (!/^[0-9a-fA-F-]{36}$/.test(cohortId)) return res.status(400).json({ error: "cohortId required" });
 
     const result = await withTenant(req.tenantId!, async (db) => {
+      const actorPartyId = await resolveActorPartyId(db, req.tenantId!, req.userId);
       const isLearner = await db.execute(sql`
         SELECT 1 FROM party_role WHERE party_id = ${partyId} AND role = 'learner' AND valid_to IS NULL LIMIT 1
       `);
@@ -398,8 +402,8 @@ learnersRouter.post("/:partyId/batches", async (req, res, next) => {
       `);
 
       await db.execute(sql`
-        INSERT INTO activity (tenant_id, party_id, actor_type, actor_name, verb, detail, tag, payload, ts)
-        VALUES (current_tenant(), ${partyId}, 'user', 'You', 'Batch assigned',
+        INSERT INTO activity (tenant_id, party_id, actor_type, actor_party_id, actor_name, verb, detail, tag, payload, ts)
+        VALUES (current_tenant(), ${partyId}, 'user', ${actorPartyId}, 'You', 'Batch assigned',
                 ${`Assigned to ${cohort.name} (course: ${cohort.courseName}).`}, 'you',
                 ${JSON.stringify({ when: "Just now", quote: null, cohortId, courseId: cohort.courseId })}::jsonb, NOW())
       `);
@@ -462,6 +466,7 @@ learnersRouter.delete("/:partyId/batches/:assignmentId", async (req, res, next) 
     const actorName = req.user?.name?.trim() || "You";
 
     const result = await withTenant(req.tenantId!, async (db) => {
+      const actorPartyId = await resolveActorPartyId(db, req.tenantId!, req.userId);
       const ctxR = await db.execute(sql`
         SELECT c.name AS "cohortName",
                co.name AS "courseName"
@@ -484,8 +489,8 @@ learnersRouter.delete("/:partyId/batches/:assignmentId", async (req, res, next) 
         ? `Unassigned batch: ${ctx.cohortName} (course: ${ctx.courseName})`
         : `Unassigned batch: ${ctx.cohortName}`;
       await db.execute(sql`
-        INSERT INTO activity (tenant_id, party_id, actor_type, actor_name, verb, detail, tag, payload, ts)
-        VALUES (current_tenant(), ${partyId}, 'user', ${actorName}, 'Batch removed',
+        INSERT INTO activity (tenant_id, party_id, actor_type, actor_party_id, actor_name, verb, detail, tag, payload, ts)
+        VALUES (current_tenant(), ${partyId}, 'user', ${actorPartyId}, ${actorName}, 'Batch removed',
                 ${detail}, 'you',
                 ${JSON.stringify({ when: "Just now", quote: null, batchAssignmentId: assignmentId })}::jsonb, NOW())
       `);

@@ -5,6 +5,7 @@
 
 import { sql } from "drizzle-orm";
 import { db, pool } from "./client.js";
+import { provisionPartyForInternalUser } from "../lib/party/provision.js";
 import {
   activity,
   agent,
@@ -13,6 +14,7 @@ import {
   appUser,
   approval,
   cohort,
+  contactPoint,
   course,
   enrolment,
   lead,
@@ -166,9 +168,14 @@ async function main() {
     "onboarding_task", "service_case", "deal", "lead",
     "batch_assignment", "enrolment",
     "work_item", "cohort", "course", "program",
+    // Phase 1 party-model tables — depend on party, so delete first.
+    "contact_point", "party_external_id", "party_affiliation",
+    // Phase 4 party-model tables — same reason.
+    "party_duplicate_candidate", "party_merge_log", "party_consent", "party_match_rule",
     // user_group_member / user_group_permission / user_group / app_session
     // tables no longer exist post-Auth0 cutover (see post-0039 migration).
-    "party_role", "party", "app_user", "tenant",
+    // Phase 2: app_user.party_id FKs into party — delete app_user BEFORE party.
+    "party_role", "app_user", "party", "tenant",
   ]) {
     await pool.query(`DELETE FROM ${t}`);
   }
@@ -179,15 +186,28 @@ async function main() {
   const tenantId = t!.id;
   console.log("  tenant:", tenantId);
 
-  const [admin] = await db.insert(appUser).values({
-    tenantId, email: "manikanta@edify.io", name: "Manikanta", role: "admin",
-  }).returning();
-  const [advisorPriya] = await db.insert(appUser).values({
-    tenantId, email: "priya@edify.io", name: "Priya N.", role: "advisor",
-  }).returning();
-  const [advisorRahul] = await db.insert(appUser).values({
-    tenantId, email: "rahul@edify.io", name: "Rahul", role: "advisor",
-  }).returning();
+  // Phase 2 Party Model — every internal user is also a party. Use a single
+  // pool client (with tenant GUC set) so provisionPartyForInternalUser can
+  // upsert the party + primary contact_point atomically with the app_user.
+  const userClient = await pool.connect();
+  const seedInternalUser = async ({ email, name, role }: {
+    email: string; name: string | null; role: "admin" | "advisor" | "service_rep" | "readonly";
+  }): Promise<{ appUserId: string; partyId: string }> => {
+    const { partyId } = await provisionPartyForInternalUser(userClient, tenantId, email, name);
+    const r = await userClient.query<{ id: string }>(
+      `INSERT INTO app_user (tenant_id, party_id, email, name, role)
+       VALUES ($1, $2, $3, $4, $5)
+       RETURNING id`,
+      [tenantId, partyId, email, name, role],
+    );
+    return { appUserId: r.rows[0]!.id, partyId };
+  };
+
+  await userClient.query(`SELECT set_config('app.tenant_id', $1, false)`, [tenantId]);
+
+  const admin        = await seedInternalUser({ email: "manikanta@edify.io", name: "Manikanta", role: "admin" });
+  const advisorPriya = await seedInternalUser({ email: "priya@edify.io",     name: "Priya N.",   role: "advisor" });
+  const advisorRahul = await seedInternalUser({ email: "rahul@edify.io",     name: "Rahul",      role: "advisor" });
   void advisorRahul;
 
   // Service-rep employees who own cases. Manikanta is already the admin
@@ -199,10 +219,11 @@ async function main() {
     { name: "Akhil",   email: "akhil@edify.io",   role: "service_rep" as const },
     { name: "Roshni",  email: "roshni@edify.io",  role: "service_rep" as const },
   ];
-  const ticketAgents: Record<string, string> = { Manikanta: admin!.id };
+  // FK targets are now party.id (Phase 2 flip), so map by name to partyId.
+  const ticketAgents: Record<string, string> = { Manikanta: admin.partyId };
   for (const e of ticketAgentSpecs) {
-    const [u] = await db.insert(appUser).values({ tenantId, ...e }).returning();
-    ticketAgents[e.name] = u!.id;
+    const { partyId } = await seedInternalUser(e);
+    ticketAgents[e.name] = partyId;
   }
 
   // ── Super-user (crmadmin) — kept as a placeholder row so legacy data
@@ -210,12 +231,34 @@ async function main() {
   // this row will be backfilled with an auth0_sub the first time someone
   // signs in with the matching email (or operators can manually set it).
   console.log("→ creating super-user crmadmin@gmail.com…");
-  const [crmAdmin] = await db.insert(appUser).values({
-    tenantId,
-    email: "crmadmin@gmail.com",
-    name: "CRM Admin",
-    role: "admin",
-  }).returning();
+  const crmAdmin = await seedInternalUser({
+    email: "crmadmin@gmail.com", name: "CRM Admin", role: "admin",
+  });
+
+  userClient.release();
+
+  // Phase 3: create the tenant's sentinel party (post-0047 creates one per
+  // *existing* tenant at migrate time, but this seed creates a brand-new
+  // tenant, so we insert its sentinel here). Used as actor_party_id for
+  // every agent/ai-authored activity row below.
+  const sentinelIns = await pool.query<{ id: string }>(
+    `INSERT INTO party (tenant_id, kind, name, is_internal, is_system, identifiers, attributes)
+     VALUES ($1, 'org', 'System', true, true, '{}'::jsonb, '{}'::jsonb)
+     ON CONFLICT (tenant_id) WHERE is_system = true DO UPDATE SET is_system = EXCLUDED.is_system
+     RETURNING id`,
+    [tenantId],
+  );
+  const sentinelPartyId = sentinelIns.rows[0]!.id;
+  // Map actor name → party.id for user-authored activity rows in the
+  // support-case seed loop.
+  const partyIdByActorName: Record<string, string> = {
+    Manikanta: admin.partyId,
+    "Priya N.": advisorPriya.partyId,
+    Rahul: advisorRahul.partyId,
+  };
+  for (const [name, partyId] of Object.entries(ticketAgents)) {
+    partyIdByActorName[name] = partyId;
+  }
 
   // Group seeding is gone — Auth0 owns Roles + Permissions now. The
   // crmAdmin / admin / advisor users are only referenced for FK display
@@ -456,11 +499,11 @@ async function main() {
     const advisorName = L.advisor ?? (L.score >= 80 ? "Priya N." : L.score >= 50 ? "Rahul" : "Manikanta");
     const sourceLabel = SOURCE_LABEL[L.source] ?? L.source;
 
-    // Map advisor name → app_user.id
+    // Map advisor name → party.id (Phase 2 Party Model — FK now targets party).
     const advisorId =
-      advisorName === "Priya N."   ? advisorPriya!.id :
-      advisorName === "Rahul"      ? advisorRahul!.id :
-                                     admin!.id;
+      advisorName === "Priya N."   ? advisorPriya.partyId :
+      advisorName === "Rahul"      ? advisorRahul.partyId :
+                                     admin.partyId;
 
     // Party — email/phone/city as real columns now
     const [partyRow] = await db.insert(party).values({
@@ -469,6 +512,24 @@ async function main() {
       identifiers: sql`${JSON.stringify({ source: L.source })}::jsonb`,
       attributes: sql`${JSON.stringify({ initials: L.initials || initialsOf(L.name) })}::jsonb`,
     }).returning();
+
+    // Phase 1 Party Model dual-write — mirror email/phone into contact_point.
+    // NOTE: we intentionally do NOT write party_external_id here — L.source is
+    // a category enum ('web','instagram_ad',…), not a per-party external ID.
+    // Real external IDs (Instagram lead id, Razorpay customer id) come from
+    // the runtime routes (see leads.ts / whatsapp inbox).
+    if (email) {
+      await db.insert(contactPoint).values({
+        tenantId, partyId: partyRow!.id, kind: "email",
+        value: email, label: "primary", isPrimary: true,
+      });
+    }
+    if (phone) {
+      await db.insert(contactPoint).values({
+        tenantId, partyId: partyRow!.id, kind: "phone",
+        value: phone, label: "primary", isPrimary: true,
+      });
+    }
 
     await db.insert(partyRole).values({ tenantId, partyId: partyRow!.id, role: "lead" });
 
@@ -487,7 +548,8 @@ async function main() {
       score: L.score, scoreReason: L.scoreReason,
       scoreLabel: L.scoreLabel ?? HEAT_LABEL[L.heat],
       scoreDesc:  L.scoreDesc  ?? HEAT_DESC[L.heat],
-      heat: L.heat, city: L.city,
+      heat: L.heat,
+      // Phase 3: lead.city denorm dropped — city already lives on party.city set above.
       program: L.program,                       // text (denormalized)
       programId: programIds[L.program] ?? null, // FK
       value: L.value,
@@ -557,9 +619,15 @@ async function main() {
         }));
 
     for (const e of timeline) {
+      // Phase 3: AI/agent rows attribute to sentinel; user rows attribute to
+      // the advisor party (which is what `e.by` names for lead timelines).
+      const actorPartyId = e.kind === "ai"
+        ? sentinelPartyId
+        : (partyIdByActorName[e.by] ?? advisorId);
       await db.insert(activity).values({
         tenantId, workItemId: wi!.id, partyId: partyRow!.id,
         actorType: e.kind === "ai" ? "agent" : "user",
+        actorPartyId,
         actorName: e.by,
         verb: e.tagLabel,
         detail: e.text,
@@ -570,6 +638,72 @@ async function main() {
     }
 
     leadByNumber[number] = { workItemId: wi!.id, partyId: partyRow!.id };
+  }
+
+  // ── Phase 4: default match rules for this tenant (mirrors what
+  // post-0052-party-match-rule.sql inserts for *existing* tenants at
+  // migrate time — but the seed creates a brand-new tenant, so we
+  // re-run the same INSERT here).
+  console.log("→ party match rules…");
+  await pool.query(`
+    INSERT INTO party_match_rule (tenant_id, name, kind, config, weight)
+    VALUES
+      ($1, 'Exact external system ID', 'exact_external_id', '{}'::jsonb, 100),
+      ($1, 'Exact primary email',      'exact_email',       '{}'::jsonb, 90),
+      ($1, 'E.164 phone match',        'e164_phone',        '{}'::jsonb, 85),
+      ($1, 'Fuzzy name + same city',   'fuzzy_name_city',   '{"pg_trgm_threshold":0.7}'::jsonb, 50)
+  `, [tenantId]);
+
+  // ── Phase 4: consent rows for a handful of leads so the WhatsApp
+  // broadcast UI has something to work with out of the box.
+  console.log("→ consent rows…");
+  const seededPartyIds = Object.values(leadByNumber).map((v) => v.partyId);
+  // Mark 3 leads opt-in for WhatsApp, 1 opt-out, rest unknown (blocked
+  // under strict enforcement — exactly the state we want for the demo).
+  for (let i = 0; i < Math.min(3, seededPartyIds.length); i++) {
+    await pool.query(
+      `INSERT INTO party_consent (tenant_id, party_id, channel, opt_in, source)
+       VALUES ($1, $2, 'whatsapp', true, 'signup')`,
+      [tenantId, seededPartyIds[i]],
+    );
+    await pool.query(
+      `INSERT INTO party_consent (tenant_id, party_id, channel, opt_in, source)
+       VALUES ($1, $2, 'email', true, 'signup')`,
+      [tenantId, seededPartyIds[i]],
+    );
+  }
+  if (seededPartyIds.length > 3) {
+    await pool.query(
+      `INSERT INTO party_consent (tenant_id, party_id, channel, opt_in, source)
+       VALUES ($1, $2, 'whatsapp', false, 'unsubscribe')`,
+      [tenantId, seededPartyIds[3]],
+    );
+  }
+
+  // ── Phase 4: deliberate duplicate pair so a fresh scan always finds
+  // at least one candidate. Same email as the first seeded lead.
+  console.log("→ duplicate-lead demo pair…");
+  const firstLead = seededPartyIds[0];
+  if (firstLead) {
+    const firstEmailR = await pool.query<{ email: string }>(
+      `SELECT email FROM party WHERE id = $1`,
+      [firstLead],
+    );
+    const dupEmail = firstEmailR.rows[0]?.email;
+    if (dupEmail) {
+      const dupR = await pool.query<{ id: string }>(
+        `INSERT INTO party (tenant_id, kind, name, email, is_internal)
+         VALUES ($1, 'person', 'Duplicate Test Person', $2, false)
+         RETURNING id`,
+        [tenantId, dupEmail],
+      );
+      const dupId = dupR.rows[0]!.id;
+      await pool.query(
+        `INSERT INTO contact_point (tenant_id, party_id, kind, value, label, is_primary)
+         VALUES ($1, $2, 'email', $3, 'primary', true)`,
+        [tenantId, dupId, dupEmail],
+      );
+    }
   }
 
   // ── Agent run cards (each is a work_item type=agent_run + agent_run row)
@@ -595,9 +729,13 @@ async function main() {
     const ts = new Date(now.getTime() - f.offsetMin * 60_000);
     const wiId = f.leadNumber ? leadByNumber[f.leadNumber]?.workItemId : undefined;
     const partyId = f.leadNumber ? leadByNumber[f.leadNumber]?.partyId : undefined;
+    // Phase 3: attribute to sentinel for agent actors; else look up by name.
+    const actorPartyId = f.actorType === "agent" || f.actorType === "system"
+      ? sentinelPartyId
+      : (partyIdByActorName[f.actorName ?? ""] ?? sentinelPartyId);
     await db.insert(activity).values({
       tenantId, workItemId: wiId, partyId,
-      actorType: f.actorType, actorName: f.actorName,
+      actorType: f.actorType, actorPartyId, actorName: f.actorName,
       verb: f.verb, detail: f.detail,
       tag: f.tag, iconKey: f.iconKey, iconBg: f.iconBg, iconStroke: f.iconStroke,
       payload: sql`${JSON.stringify({ subject: f.subject, verbAfter: (f as any).verbAfter ?? null })}::jsonb`,
@@ -789,7 +927,7 @@ async function main() {
         ? "in_progress"
         : "open";
 
-    const assigneeId = ticketAgents[T.assigneeName] ?? admin!.id;
+    const assigneeId = ticketAgents[T.assigneeName] ?? admin.partyId;
 
     const [wi] = await db.insert(workItem).values({
       tenantId,
@@ -822,7 +960,7 @@ async function main() {
       resolutionCode: T.resolutionCode ?? undefined,
       resolvedAt: isResolved ? new Date(NOW + T.dueOffsetHours * 3600_000 - 1800_000) : undefined,
       closedAt:   isClosed   ? new Date(NOW + T.dueOffsetHours * 3600_000 - 1500_000) : undefined,
-      createdById: admin!.id,
+      createdById: admin.partyId,
     });
 
     // Activity row — case created
@@ -831,6 +969,7 @@ async function main() {
       workItemId: wi!.id,
       partyId: T.partyId ?? undefined,
       actorType: "user",
+      actorPartyId: admin.partyId, // Manikanta created every case in the seed
       actorName: "Manikanta",
       verb: "Case created",
       detail: T.subject,
@@ -845,6 +984,7 @@ async function main() {
       workItemId: wi!.id,
       partyId: T.partyId ?? undefined,
       actorType: "user",
+      actorPartyId: admin.partyId,
       actorName: "Manikanta",
       verb: "Assigned",
       detail: `Assignee: unassigned → ${T.assigneeName}`,
@@ -859,6 +999,7 @@ async function main() {
         workItemId: wi!.id,
         partyId: T.partyId ?? undefined,
         actorType: "user",
+        actorPartyId: partyIdByActorName[T.assigneeName] ?? admin.partyId,
         actorName: T.assigneeName,
         verb: "Status",
         detail: "Status: open → in_progress",
@@ -874,6 +1015,7 @@ async function main() {
         workItemId: wi!.id,
         partyId: T.partyId ?? undefined,
         actorType: "user",
+        actorPartyId: partyIdByActorName[T.assigneeName] ?? admin.partyId,
         actorName: T.assigneeName,
         verb: isClosed ? "Closed" : "Resolved",
         detail: T.resolution ?? "",

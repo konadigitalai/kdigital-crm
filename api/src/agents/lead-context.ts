@@ -75,7 +75,7 @@ export async function loadLeadContext(
         wi.created_at      AS "leadCreatedAt",
         p.name, p.email AS "partyEmail", p.phone AS "partyPhone",
         p.identifiers, p.attributes AS "partyAttributes",
-        l.program, l.city, l.source, l.source_label AS "sourceLabel",
+        l.program, p.city, l.source, l.source_label AS "sourceLabel",  -- Phase 3: p.city was l.city
         l.stage, l.stage_label AS "stageLabel",
         l.value, l.description,
         l.score AS "prevScore", l.heat AS "prevHeat", l.rating AS "rating",
@@ -94,7 +94,7 @@ export async function loadLeadContext(
       FROM lead l
       JOIN work_item wi ON wi.id = l.work_item_id
       JOIN party p      ON p.id  = wi.party_id
-      LEFT JOIN app_user u ON u.id = l.advisor_id`;
+      LEFT JOIN app_user u ON u.party_id = l.advisor_id`;
     const r = await db.execute(
       isUuid
         ? sql`${baseSql} WHERE wi.id = ${idOrNumber} LIMIT 1`

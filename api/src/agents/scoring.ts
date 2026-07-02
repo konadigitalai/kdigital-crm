@@ -17,6 +17,7 @@ import { withTenant } from "../db/app.js";
 import { makeChatModel } from "../lib/llm.js";
 import { runWithGraph, getCheckpointer, configurable } from "./runtime.js";
 import { loadLeadContext, renderLeadContextBlock, type LeadContext } from "./lead-context.js";
+import { resolveSentinelPartyId } from "../lib/party/resolve.js";
 
 const SYSTEM_PROMPT = `You are a sales lead scoring assistant for an EdTech CRM (Digital Edify).
 
@@ -158,13 +159,15 @@ async function writeBackNode(state: ScoringStateT, config: RunnableConfig) {
 
   const delta =
     ctx.prevScore != null ? `${ctx.prevScore} → ${score.score}` : `→ ${score.score}`;
+  // Phase 3: agent-authored rows attribute to the tenant's sentinel party.
+  const actorPartyId = await resolveSentinelPartyId(db, tenantId);
   await db.execute(sql`
     INSERT INTO activity (
-      tenant_id, work_item_id, party_id, actor_type, actor_name,
+      tenant_id, work_item_id, party_id, actor_type, actor_party_id, actor_name,
       verb, detail, tag, icon_key, icon_bg, icon_stroke, payload, ts
     ) VALUES (
       ${tenantId}, ${ctx.workItemId}, ${ctx.partyId},
-      'agent', 'Lead Scoring Agent',
+      'agent', ${actorPartyId}, 'Lead Scoring Agent',
       're-scored', ${`Score ${delta} (rating: ${ctx.rating}). ${score.scoreDesc}`},
       'auto', 'star',
       'rgba(107,31,184,.1)', '#6B1FB8',
@@ -174,9 +177,9 @@ async function writeBackNode(state: ScoringStateT, config: RunnableConfig) {
   `);
 
   await db.execute(sql`
-    INSERT INTO audit_log (tenant_id, actor_type, action, target_type, target_id, context)
+    INSERT INTO audit_log (tenant_id, actor_type, actor_party_id, action, target_type, target_id, context)
     VALUES (
-      ${tenantId}, 'agent', 'lead_rescored', 'work_item', ${ctx.workItemId},
+      ${tenantId}, 'agent', ${actorPartyId}, 'lead_rescored', 'work_item', ${ctx.workItemId},
       ${JSON.stringify({ before: ctx.prevScore, after: score.score, rating: ctx.rating, model: state.llmModel })}::jsonb
     )
   `);

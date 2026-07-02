@@ -7,6 +7,7 @@
 import { Router } from "express";
 import { sql } from "drizzle-orm";
 import { withTenant } from "../db/app.js";
+import { partyIdFromAppUserId } from "../lib/party/resolve.js";
 
 export const leavesRouter = Router();
 
@@ -22,19 +23,27 @@ leavesRouter.get("/", async (req, res, next) => {
       return res.status(403).json({ error: "Cannot read another user's leaves" });
     }
     const rows = await withTenant(req.tenantId!, async (db) => {
+      // Phase 2: leave_day.user_id stores party.id — resolve the caller's
+      // (or the queried) app_user.id first.
+      const targetPartyId = await partyIdFromAppUserId(db, targetUserId);
+      if (!targetPartyId) return [];
       if (from && to) {
         const r = await db.execute(sql`
-          SELECT id, user_id AS "userId", date, kind, half_day AS "halfDay", note, created_at AS "createdAt"
+          SELECT id,
+                 (SELECT au.id FROM app_user au WHERE au.party_id = leave_day.user_id LIMIT 1) AS "userId",
+                 date, kind, half_day AS "halfDay", note, created_at AS "createdAt"
           FROM leave_day
-          WHERE user_id = ${targetUserId} AND date BETWEEN ${from} AND ${to}
+          WHERE user_id = ${targetPartyId} AND date BETWEEN ${from} AND ${to}
           ORDER BY date
         `);
         return r.rows;
       }
       const r = await db.execute(sql`
-        SELECT id, user_id AS "userId", date, kind, half_day AS "halfDay", note, created_at AS "createdAt"
+        SELECT id,
+               (SELECT au.id FROM app_user au WHERE au.party_id = leave_day.user_id LIMIT 1) AS "userId",
+               date, kind, half_day AS "halfDay", note, created_at AS "createdAt"
         FROM leave_day
-        WHERE user_id = ${targetUserId}
+        WHERE user_id = ${targetPartyId}
         ORDER BY date DESC
         LIMIT 100
       `);
@@ -57,11 +66,15 @@ leavesRouter.post("/", async (req, res, next) => {
     if (!HALF.has(halfDay)) return res.status(400).json({ error: "halfDay invalid" });
 
     const created = await withTenant(req.tenantId!, async (db) => {
+      const userPartyId = await partyIdFromAppUserId(db, req.userId!);
+      if (!userPartyId) throw new Error("leave: user has no party record");
       const r = await db.execute(sql`
         INSERT INTO leave_day (tenant_id, user_id, date, kind, half_day, note)
-        VALUES (${req.tenantId}, ${req.userId}, ${date}, ${kind}, ${halfDay}, ${note})
+        VALUES (${req.tenantId}, ${userPartyId}, ${date}, ${kind}, ${halfDay}, ${note})
         ON CONFLICT (user_id, date) DO UPDATE SET kind = EXCLUDED.kind, half_day = EXCLUDED.half_day, note = EXCLUDED.note
-        RETURNING id, user_id AS "userId", date, kind, half_day AS "halfDay", note, created_at AS "createdAt"
+        RETURNING id,
+                  (SELECT au.id FROM app_user au WHERE au.party_id = leave_day.user_id LIMIT 1) AS "userId",
+                  date, kind, half_day AS "halfDay", note, created_at AS "createdAt"
       `);
       return r.rows[0];
     });
@@ -78,17 +91,21 @@ leavesRouter.patch("/:id", async (req, res, next) => {
     if (b.kind !== undefined && !KINDS.has(String(b.kind))) return res.status(400).json({ error: "kind invalid" });
     if (b.halfDay !== undefined && !HALF.has(String(b.halfDay))) return res.status(400).json({ error: "halfDay invalid" });
     const out = await withTenant(req.tenantId!, async (db) => {
+      const userPartyId = await partyIdFromAppUserId(db, req.userId!);
+      if (!userPartyId) return { kind: "forbidden" as const };
       const own = await db.execute(sql`SELECT user_id FROM leave_day WHERE id = ${id}`);
       const ownerRow = own.rows[0] as { user_id: string } | undefined;
       if (!ownerRow) return { kind: "not-found" as const };
-      if (ownerRow.user_id !== req.userId) return { kind: "forbidden" as const };
+      if (ownerRow.user_id !== userPartyId) return { kind: "forbidden" as const };
       const r = await db.execute(sql`
         UPDATE leave_day SET
           kind = COALESCE(${b.kind ?? null}, kind),
           half_day = COALESCE(${b.halfDay ?? null}, half_day),
           note = COALESCE(${b.note ?? null}, note)
         WHERE id = ${id}
-        RETURNING id, user_id AS "userId", date, kind, half_day AS "halfDay", note, created_at AS "createdAt"
+        RETURNING id,
+                  (SELECT au.id FROM app_user au WHERE au.party_id = leave_day.user_id LIMIT 1) AS "userId",
+                  date, kind, half_day AS "halfDay", note, created_at AS "createdAt"
       `);
       return { kind: "ok" as const, leave: r.rows[0] };
     });
@@ -104,8 +121,10 @@ leavesRouter.delete("/:id", async (req, res, next) => {
   try {
     const id = String(req.params.id);
     const out = await withTenant(req.tenantId!, async (db) => {
+      const userPartyId = await partyIdFromAppUserId(db, req.userId!);
+      if (!userPartyId) return false;
       const r = await db.execute(sql`
-        DELETE FROM leave_day WHERE id = ${id} AND user_id = ${req.userId} RETURNING id
+        DELETE FROM leave_day WHERE id = ${id} AND user_id = ${userPartyId} RETURNING id
       `);
       return r.rows.length > 0;
     });

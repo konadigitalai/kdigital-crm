@@ -8,6 +8,7 @@ import { createLead, getCatalog } from "@/lib/api";
 import type { CatalogResponse, LeadRating } from "@/lib/types";
 import { LEAD_RATINGS } from "@/lib/types";
 import { ratingStyles } from "@/lib/ui";
+import { emitCrmMutation } from "@/lib/live-summary";
 
 export function NewLeadButton({
   defaultRating,
@@ -99,6 +100,7 @@ function Dialog({ defaultRating, onClose }: { defaultRating?: LeadRating; onClos
         advisorId: advisorId || undefined,
         nbaLabel: nbaLabel.trim() || undefined,
       });
+      emitCrmMutation("lead.created");
       router.refresh();
       router.push(`/records/${created.number}`);
       onClose();
@@ -110,142 +112,153 @@ function Dialog({ defaultRating, onClose }: { defaultRating?: LeadRating; onClos
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/40 p-6 backdrop-blur-sm"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4 sm:p-6 backdrop-blur-sm"
       onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
     >
+      {/* Dialog is a column-flex box with a max-height, so header/footer stay
+          fixed and only the middle grows a scrollbar. */}
       <div
         ref={dialogRef}
-        className="my-12 w-full max-w-[640px] rounded-2xl border border-rule bg-paper p-7 shadow-card"
+        className="flex w-full max-w-[640px] max-h-[calc(100vh-3rem)] flex-col rounded-2xl border border-rule bg-paper shadow-card"
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="mb-6 flex items-start justify-between gap-4">
-          <div>
-            <h2 className="font-serif text-[28px] font-normal leading-tight tracking-[-.01em]">New lead</h2>
-            <p className="mt-1 text-[13px] text-mute">
-              Agents will pick this up the moment it lands — score, draft outreach, and book a demo.
-            </p>
+        {/* Fixed header */}
+        <div className="flex-none border-b border-rule px-7 pt-6 pb-5">
+          <div className="flex items-start justify-between gap-4">
+            <div>
+              <h2 className="font-serif text-[28px] font-normal leading-tight tracking-[-.01em]">New lead</h2>
+              <p className="mt-1 text-[13px] text-mute">
+                Agents will pick this up the moment it lands — score, draft outreach, and book a demo.
+              </p>
+            </div>
+            <button onClick={onClose} className="text-mute hover:text-ink" aria-label="Close">
+              <Icon name="plus" size={18} strokeWidth={2} className="rotate-45" />
+            </button>
           </div>
-          <button onClick={onClose} className="text-mute hover:text-ink" aria-label="Close">
-            <Icon name="plus" size={18} strokeWidth={2} className="rotate-45" />
-          </button>
         </div>
 
-        <form onSubmit={submit} className="space-y-5">
-          <Field label="Full name" required>
-            <input className={inputCls} value={name} onChange={(e) => setName(e.target.value)} placeholder="Aarav Mehta" autoFocus />
-          </Field>
+        {/* Scrollable body — form fields live here. onSubmit is on the outer
+            <form> below so the footer's submit button still triggers it. */}
+        <form onSubmit={submit} className="flex min-h-0 flex-1 flex-col">
+          <div className="min-h-0 flex-1 space-y-5 overflow-y-auto px-7 py-6">
+            <Field label="Full name" required>
+              <input className={inputCls} value={name} onChange={(e) => setName(e.target.value)} placeholder="Aarav Mehta" autoFocus />
+            </Field>
 
-          <div className="grid grid-cols-2 gap-4">
-            <Field label="Email">
-              <input className={inputCls} value={email} type="email" onChange={(e) => setEmail(e.target.value)} placeholder="aarav@gmail.com" />
-            </Field>
-            <Field label="Phone">
-              <input className={inputCls} value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="+91 98••• ••••" />
-            </Field>
-          </div>
+            <div className="grid grid-cols-2 gap-4">
+              <Field label="Email">
+                <input className={inputCls} value={email} type="email" onChange={(e) => setEmail(e.target.value)} placeholder="aarav@gmail.com" />
+              </Field>
+              <Field label="Phone">
+                <input className={inputCls} value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="+91 98••• ••••" />
+              </Field>
+            </div>
 
-          <div className="grid grid-cols-2 gap-4">
-            <Field label="City">
-              <input className={inputCls} value={city} onChange={(e) => setCity(e.target.value)} placeholder="Bengaluru" />
-            </Field>
-            <Field label="Source">
-              <select className={inputCls} value={source} onChange={(e) => setSource(e.target.value)}>
-                {catalog?.sources.map((s) => (
-                  <option key={s.key} value={s.key}>{s.label}</option>
+            <div className="grid grid-cols-2 gap-4">
+              <Field label="City">
+                <input className={inputCls} value={city} onChange={(e) => setCity(e.target.value)} placeholder="Bengaluru" />
+              </Field>
+              <Field label="Source">
+                <select className={inputCls} value={source} onChange={(e) => setSource(e.target.value)}>
+                  {catalog?.sources.map((s) => (
+                    <option key={s.key} value={s.key}>{s.label}</option>
+                  ))}
+                </select>
+              </Field>
+            </div>
+
+            <div className="grid grid-cols-2 gap-4">
+              <Field label="Program">
+                <select className={inputCls} value={program} onChange={(e) => setProgram(e.target.value)} disabled={!catalog}>
+                  {catalog?.programs.length === 0 ? (
+                    <option value="">— no programs yet —</option>
+                  ) : catalog?.programs.map((p) => (
+                    <option key={p.id} value={p.name}>{p.name}</option>
+                  ))}
+                </select>
+              </Field>
+              <Field label="Price quoted (₹)">
+                <input
+                  className={inputCls}
+                  inputMode="decimal"
+                  value={value}
+                  onChange={(e) => {
+                    // Digits-only with one optional decimal — same rule the API enforces.
+                    const cleaned = e.target.value.replace(/[^\d.]/g, "").replace(/(\..*)\./g, "$1");
+                    setValue(cleaned);
+                  }}
+                  placeholder="149000"
+                />
+              </Field>
+            </div>
+
+            <Field label="Advisor">
+              <select className={inputCls} value={advisorId} onChange={(e) => setAdvisorId(e.target.value)}>
+                <option value="">— auto-assign —</option>
+                {catalog?.advisors.map((a) => (
+                  <option key={a.id} value={a.id}>{a.name}{a.role !== "advisor" ? ` · ${a.role}` : ""}</option>
                 ))}
               </select>
             </Field>
-          </div>
 
-          <div className="grid grid-cols-2 gap-4">
-            <Field label="Program">
-              <select className={inputCls} value={program} onChange={(e) => setProgram(e.target.value)} disabled={!catalog}>
-                {catalog?.programs.length === 0 ? (
-                  <option value="">— no programs yet —</option>
-                ) : catalog?.programs.map((p) => (
-                  <option key={p.id} value={p.name}>{p.name}</option>
-                ))}
-              </select>
+            <Field label="Rating">
+              <div className="flex flex-wrap gap-2">
+                {LEAD_RATINGS.map((r) => {
+                  const s = ratingStyles[r];
+                  const on = rating === r;
+                  return (
+                    <button
+                      type="button" key={r}
+                      onClick={() => setRating(r)}
+                      className={cn(
+                        "inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-[12px] font-semibold transition",
+                        on
+                          ? cn(s.bg, s.text, "ring-2 ring-offset-1 ring-offset-paper", s.text.replace("text-", "ring-"))
+                          : "border border-rule bg-paper text-mute hover:border-rule2",
+                      )}
+                    >
+                      <span className={cn("h-1.5 w-1.5 rounded-full", on ? s.dot : "bg-rule2")} />
+                      {s.label}
+                    </button>
+                  );
+                })}
+              </div>
             </Field>
-            <Field label="Price quoted (₹)">
+
+            <Field label={`Initial score · ${score}`}>
+              <input
+                type="range" min={0} max={100} value={score}
+                onChange={(e) => setScore(Number(e.target.value))}
+                className="w-full accent-brand-violet"
+              />
+              <span className="mt-1 block text-[11px] text-mute">
+                The Lead Scoring Agent will refine this once the lead has activity.
+              </span>
+            </Field>
+
+            <Field label="Next-best-action label (optional)">
               <input
                 className={inputCls}
-                inputMode="decimal"
-                value={value}
-                onChange={(e) => {
-                  // Digits-only with one optional decimal — same rule the API enforces.
-                  const cleaned = e.target.value.replace(/[^\d.]/g, "").replace(/(\..*)\./g, "$1");
-                  setValue(cleaned);
-                }}
-                placeholder="149000"
+                value={nbaLabel}
+                onChange={(e) => setNbaLabel(e.target.value)}
+                placeholder="Leave blank — the NBA agent will fill this in"
               />
             </Field>
           </div>
 
-          <Field label="Advisor">
-            <select className={inputCls} value={advisorId} onChange={(e) => setAdvisorId(e.target.value)}>
-              <option value="">— auto-assign —</option>
-              {catalog?.advisors.map((a) => (
-                <option key={a.id} value={a.id}>{a.name}{a.role !== "advisor" ? ` · ${a.role}` : ""}</option>
-              ))}
-            </select>
-          </Field>
-
-          <Field label="Rating">
-            <div className="flex flex-wrap gap-2">
-              {LEAD_RATINGS.map((r) => {
-                const s = ratingStyles[r];
-                const on = rating === r;
-                return (
-                  <button
-                    type="button" key={r}
-                    onClick={() => setRating(r)}
-                    className={cn(
-                      "inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-[12px] font-semibold transition",
-                      on
-                        ? cn(s.bg, s.text, "ring-2 ring-offset-1 ring-offset-paper", s.text.replace("text-", "ring-"))
-                        : "border border-rule bg-paper text-mute hover:border-rule2",
-                    )}
-                  >
-                    <span className={cn("h-1.5 w-1.5 rounded-full", on ? s.dot : "bg-rule2")} />
-                    {s.label}
-                  </button>
-                );
-              })}
+          {/* Sticky footer — error banner + actions, always visible while scrolling */}
+          <div className="flex-none border-t border-rule px-7 py-4">
+            {error && (
+              <div className="mb-3 rounded-lg border border-state-warn/30 bg-state-warn/10 px-3 py-2 text-[12px] text-state-warn">
+                {error}
+              </div>
+            )}
+            <div className="flex items-center justify-end gap-3">
+              <button type="button" onClick={onClose} className="btn">Cancel</button>
+              <button type="submit" disabled={submitting} className="btn-grad disabled:opacity-60">
+                {submitting ? "Creating…" : "Create lead"}
+              </button>
             </div>
-          </Field>
-
-          <Field label={`Initial score · ${score}`}>
-            <input
-              type="range" min={0} max={100} value={score}
-              onChange={(e) => setScore(Number(e.target.value))}
-              className="w-full accent-brand-violet"
-            />
-            <span className="mt-1 block text-[11px] text-mute">
-              The Lead Scoring Agent will refine this once the lead has activity.
-            </span>
-          </Field>
-
-          <Field label="Next-best-action label (optional)">
-            <input
-              className={inputCls}
-              value={nbaLabel}
-              onChange={(e) => setNbaLabel(e.target.value)}
-              placeholder="Leave blank — the NBA agent will fill this in"
-            />
-          </Field>
-
-          {error && (
-            <div className="rounded-lg border border-state-warn/30 bg-state-warn/10 px-3 py-2 text-[12px] text-state-warn">
-              {error}
-            </div>
-          )}
-
-          <div className="flex items-center justify-end gap-3 pt-2">
-            <button type="button" onClick={onClose} className="btn">Cancel</button>
-            <button type="submit" disabled={submitting} className="btn-grad disabled:opacity-60">
-              {submitting ? "Creating…" : "Create lead"}
-            </button>
           </div>
         </form>
       </div>

@@ -8,6 +8,7 @@ import { createCase, getCatalog, getLeads, getLearners } from "@/lib/api";
 import type {
   CatalogResponse, Lead, LearnerSummary, CaseCategory, CasePriority, CaseRequesterKind,
 } from "@/lib/types";
+import { emitCrmMutation } from "@/lib/live-summary";
 
 export function NewCaseButton({
   label = "New case",
@@ -132,6 +133,7 @@ function Dialog({ onClose }: { onClose: () => void }) {
         dueAt: dueAt ? new Date(dueAt).toISOString() : undefined,
         remindAt: remindAt ? new Date(remindAt).toISOString() : undefined,
       });
+      emitCrmMutation("case.created");
       router.refresh();
       router.push(`/cases/${created.number}`);
       onClose();
