@@ -15,6 +15,7 @@ import { ScoreRing } from "@/components/ui/ScoreRing";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 import { cn } from "@/lib/cn";
 import { bulkDeleteLeads, bulkUpdateLeads, deleteLead, updateLead, type BulkLeadPatch } from "@/lib/api";
+import { emitCrmMutation } from "@/lib/live-summary";
 import { avatarGradClass, ratingStyles } from "@/lib/ui";
 import type { CatalogResponse, Lead, LeadRating } from "@/lib/types";
 import { LEAD_RATINGS } from "@/lib/types";
@@ -590,6 +591,7 @@ export function PipelineListView({
     setError(null);
     try {
       await deleteLead(lead.id);
+      emitCrmMutation("lead.deleted");
       router.refresh();
     } catch (err) {
       // Roll back: server didn't accept the delete, but we've removed it
@@ -624,6 +626,7 @@ export function PipelineListView({
         );
         // refresh will repopulate any failures.
       }
+      if (result.deleted > 0) emitCrmMutation("lead.deleted-bulk");
       setSelected(new Set());
       router.refresh();
     } catch (err) {

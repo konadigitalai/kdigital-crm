@@ -6,6 +6,7 @@ import { Icon } from "@/components/ui/Icon";
 import { closeCase } from "@/lib/api";
 import { cn } from "@/lib/cn";
 import type { CatalogResponse, CaseResolutionCode } from "@/lib/types";
+import { emitCrmMutation } from "@/lib/live-summary";
 
 const FALLBACK_CODES: { key: CaseResolutionCode; label: string }[] = [
   { key: "fixed",     label: "Fixed" },
@@ -44,6 +45,7 @@ export function CloseCaseDialog({
     setSubmitting(true);
     try {
       await closeCase(number, { resolution: resolution.trim(), resolutionCode });
+      emitCrmMutation("case.closed");
       router.refresh();
       onClose();
     } catch (err) {

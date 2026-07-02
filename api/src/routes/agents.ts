@@ -8,6 +8,7 @@ import { suggestNba } from "../agents/nba.js";
 import { runForecast, getLatestForecast } from "../agents/forecast.js";
 import { askEdify, listEdifySessions, getEdifySession, deleteEdifySession, renameEdifySession } from "../agents/edify.js";
 import { metaFor } from "../lib/agent-meta.js";
+import { partyIdFromAppUserId } from "../lib/party/resolve.js";
 
 export const agentsRouter = Router();
 
@@ -338,7 +339,12 @@ agentsRouter.post(
   requirePermission("agents.run"),
   async (req, res, next) => {
     try {
-      const snapshot = await runForecast(req.tenantId!, req.userId ?? null);
+      // Phase 2: forecast_snapshot.generated_by now FKs party.id — resolve
+      // the caller's app_user.id (from req.userId) to their party.id first.
+      const generatedByPartyId = req.userId
+        ? await withTenant(req.tenantId!, (db) => partyIdFromAppUserId(db, req.userId!))
+        : null;
+      const snapshot = await runForecast(req.tenantId!, generatedByPartyId);
       res.json(snapshot);
     } catch (err) {
       next(err);
