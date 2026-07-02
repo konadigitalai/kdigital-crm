@@ -8,6 +8,9 @@ export const summaryRouter = Router();
 summaryRouter.get("/", async (req, res, next) => {
   try {
     const data = await withTenant(req.tenantId!, async (db) => {
+      // Count only *currently active* leads — a soft-deleted lead has its
+      // `lead` party_role end-dated. The lead table row is preserved for
+      // audit, but shouldn't inflate the sidebar badge.
       const overall = await db.execute(sql`
         SELECT
           COUNT(*)::int                                            AS "total",
@@ -19,6 +22,12 @@ summaryRouter.get("/", async (req, res, next) => {
           (SELECT COUNT(*)::int FROM approval WHERE status = 'pending') AS "pendingApprovals",
           (SELECT COUNT(*)::int FROM agent_run WHERE live = true)       AS "liveAgents"
         FROM lead l
+        JOIN work_item wi ON wi.id = l.work_item_id
+        JOIN party p      ON p.id  = wi.party_id
+        WHERE EXISTS (
+          SELECT 1 FROM party_role pr
+          WHERE pr.party_id = p.id AND pr.role = 'lead' AND pr.valid_to IS NULL
+        )
       `);
 
       const byStage = await db.execute(sql`

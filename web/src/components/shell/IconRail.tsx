@@ -11,6 +11,7 @@ import { createPortal } from "react-dom";
 import { Icon } from "@/components/ui/Icon";
 import { cn } from "@/lib/cn";
 import type { CurrentUser, SummaryResponse } from "@/lib/types";
+import { useLiveSummary } from "@/lib/live-summary";
 import { buildNavItems, filterNavItems, isActive } from "./navItems";
 
 export function IconRail({
@@ -26,7 +27,10 @@ export function IconRail({
   onExpandSidebar?: () => void;
 }) {
   const pathname = usePathname();
-  const items = filterNavItems(buildNavItems(summary), currentUser);
+  // Server-fetched summary is the initial value; useLiveSummary swaps it for
+  // fresh data on every mutation event and route change.
+  const liveSummary = useLiveSummary(summary);
+  const items = filterNavItems(buildNavItems(liveSummary), currentUser);
   const [menuOpen, setMenuOpen] = useState(false);
 
   function onSignOut() {

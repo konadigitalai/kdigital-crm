@@ -10,6 +10,7 @@ import { useRouter } from "next/navigation";
 import { Icon } from "@/components/ui/Icon";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 import { deleteLead } from "@/lib/api";
+import { emitCrmMutation } from "@/lib/live-summary";
 
 export function DeleteLeadButton({
   leadNumber,
@@ -29,6 +30,7 @@ export function DeleteLeadButton({
     setError(null);
     try {
       await deleteLead(leadNumber);
+      emitCrmMutation("lead.deleted");
       setConfirmOpen(false);
       // Bounce back to the list — the deleted lead won't render there.
       startTransition(() => {
