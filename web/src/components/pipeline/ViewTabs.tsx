@@ -22,6 +22,7 @@ import { Icon } from "@/components/ui/Icon";
 import { cn } from "@/lib/cn";
 import { createSavedView, deleteSavedView, updateSavedView } from "@/lib/api";
 import { FilterBar } from "@/components/filter/FilterBar";
+import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 import type { FilterField, FilterState } from "@/components/filter/types";
 import type { CurrentUser, SavedView, SavedViewVisibility } from "@/lib/types";
 
@@ -230,6 +231,7 @@ function ViewDialog({
   const [visible, setVisible] = useState<string[]>(initialColumns);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -292,7 +294,6 @@ function ViewDialog({
 
   async function onDelete() {
     if (!view || !onDeleted) return;
-    if (!confirm(`Delete the view "${view.name}"? This cannot be undone.`)) return;
     setBusy(true);
     setError(null);
     try {
@@ -566,7 +567,7 @@ function ViewDialog({
               {mode === "edit" && onDeleted ? (
                 <button
                   type="button"
-                  onClick={onDelete}
+                  onClick={() => setConfirmingDelete(true)}
                   disabled={busy}
                   className="rounded-md border border-state-warn/40 bg-paper px-3 py-1.5 text-[12px] font-semibold text-state-warn hover:bg-state-warn/10 disabled:opacity-50"
                 >
@@ -585,6 +586,19 @@ function ViewDialog({
           </div>
         </form>
       </div>
+
+      <ConfirmDialog
+        open={confirmingDelete}
+        title={`Delete the view "${view?.name ?? ""}"?`}
+        body="This cannot be undone."
+        confirmLabel="Delete view"
+        variant="danger"
+        onCancel={() => setConfirmingDelete(false)}
+        onConfirm={async () => {
+          setConfirmingDelete(false);
+          await onDelete();
+        }}
+      />
     </div>
   );
 }
