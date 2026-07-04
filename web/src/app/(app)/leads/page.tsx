@@ -1,5 +1,4 @@
 import { Topbar } from "@/components/shell/Topbar";
-import { Icon } from "@/components/ui/Icon";
 import { getCatalog, getCurrentUser, getLeads, getSavedViews, getSummary } from "@/lib/api";
 import { requirePagePermission } from "@/lib/guards";
 import { NewLeadButton } from "@/components/leads/NewLeadDialog";
@@ -38,21 +37,6 @@ export default async function LeadsPage() {
             {canWrite && <NewLeadButton label="New lead" />}
           </div>
         </div>
-
-        {o.pendingApprovals > 0 && (
-          <div className="mb-5 flex items-center gap-4 rounded-[14px] border border-rule2 p-[16px_20px]" style={{ background: "linear-gradient(120deg,rgba(31,63,207,.06),rgba(199,25,122,.05))" }}>
-            <div className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-[11px] bg-grad">
-              <Icon name="star" size={18} strokeWidth={1.8} className="text-white" />
-            </div>
-            <div className="flex-1 text-[14px] leading-[1.45] text-ink2">
-              <b className="font-bold text-ink">Lead Scoring Agent:</b> {o.hotOvernight} lead{o.hotOvernight === 1 ? "" : "s"} crossed the "hot" threshold overnight.{" "}
-              {o.pendingApprovals} already have drafted follow-ups waiting — approving them now could save ~3 hours.
-            </div>
-            <button className="whitespace-nowrap rounded-full bg-ink px-4 py-[9px] text-[12.5px] font-semibold text-white">
-              Review {o.pendingApprovals} draft{o.pendingApprovals === 1 ? "" : "s"} →
-            </button>
-          </div>
-        )}
 
         <LeadsBoard
           initialLeads={leads}

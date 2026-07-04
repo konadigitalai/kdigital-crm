@@ -14,7 +14,7 @@ export default async function AdminProgramsPage() {
       <Topbar
         crumb={
           <>
-            <Link href="/admin/programs" className="cursor-pointer hover:text-ink">Admin</Link>
+            <Link href="/settings" className="cursor-pointer hover:text-ink">Settings</Link>
             <span className="text-hint">/</span>
             <b className="font-semibold text-ink">Programs</b>
           </>
