@@ -39,6 +39,12 @@ const ALL_CARDS: SettingsCard[] = [
     title: "Users & roles (Auth0)",
     blurb: "Manage users, groups, and permissions in the Auth0 dashboard.",
     requires: "users.manage" },
+  { section: "Workspace",
+    href: "/admin/advisors",
+    icon: "users",
+    title: "Advisors",
+    blurb: "Add / edit / deactivate advisors that leads get assigned to.",
+    requires: "users.manage" },
 
   // Operations — academic structure
   { section: "Operations", href: "/admin/stacks",   icon: "chart", title: "Stacks",

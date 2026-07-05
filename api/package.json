@@ -17,6 +17,7 @@
     "db:reset": "tsx src/db/reset.ts",
     "db:backup-catalog": "tsx src/db/backup-catalog.ts",
     "db:cleanup-fake-users": "tsx src/db/cleanup-fake-users.ts",
+    "db:export-prod-catalog": "tsx src/db/export-prod-catalog.ts",
     "drizzle:generate": "drizzle-kit generate"
   },
   "dependencies": {

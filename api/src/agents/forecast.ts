@@ -23,6 +23,7 @@ const RATING_PROB: Record<string, number> = {
   "new lead": 0.05,
   "attempted": 0.10,
   "cold": 0.05,
+  "lukewarm": 0.12,
   "warm": 0.20,
   "hot": 0.45,
   "superhot": 0.75,
@@ -246,7 +247,8 @@ async function aggregate(tenantId: string): Promise<ForecastNumbers> {
       ORDER BY
         CASE l.rating
           WHEN 'superhot' THEN 0 WHEN 'hot' THEN 1 WHEN 'warm' THEN 2
-          WHEN 'attempted' THEN 3 WHEN 'new lead' THEN 4 ELSE 5
+          WHEN 'lukewarm' THEN 3
+          WHEN 'attempted' THEN 4 WHEN 'new lead' THEN 5 ELSE 6
         END,
         l.score DESC NULLS LAST
       LIMIT 25

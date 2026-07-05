@@ -103,6 +103,8 @@ export default async function RecordPage({
     registeredDate: attrs.registeredDate ?? null,
     nextFollowupAt: attrs.nextFollowupAt ?? null,
     demoAttendedAt: attrs.demoAttendedAt ?? null,
+    visitedDate:    attrs.visitedDate    ?? null,
+    visitingDate:   attrs.visitingDate   ?? null,
     paymentProofUrl: attrs.paymentProofUrl ?? null,
     score: lead.score,
     heat: lead.heat,
@@ -416,6 +418,24 @@ export default async function RecordPage({
                 field="demoAttendedAt"
                 ariaLabel="Demo attended date"
                 kind={{ kind: "date", value: attrs.demoAttendedAt ?? null }}
+                valueClass="font-mono text-[13px] text-ink2"
+              />
+            </DetailRow>
+            <DetailRow label="Visited">
+              <InlineLeadField
+                leadNumber={lead.number}
+                field="visitedDate"
+                ariaLabel="Visited date"
+                kind={{ kind: "date", value: attrs.visitedDate ?? null }}
+                valueClass="font-mono text-[13px] text-ink2"
+              />
+            </DetailRow>
+            <DetailRow label="Visiting">
+              <InlineLeadField
+                leadNumber={lead.number}
+                field="visitingDate"
+                ariaLabel="Visiting date"
+                kind={{ kind: "date", value: attrs.visitingDate ?? null }}
                 valueClass="font-mono text-[13px] text-ink2"
               />
             </DetailRow>

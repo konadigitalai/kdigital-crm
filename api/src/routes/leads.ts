@@ -31,6 +31,8 @@ function humanFieldLabel(field: string): string {
     registeredDate: "Registered date",
     nextFollowupAt: "Next follow-up date",
     demoAttendedAt: "Demo attended date",
+    visitedDate:    "Visited date",
+    visitingDate:   "Visiting date",
     heat: "Heat",
     stage: "Stage",
     program: "Program",
@@ -167,7 +169,7 @@ leadsRouter.post("/", async (req, res, next) => {
     const heat: Heat = (b.heat as Heat) ?? deriveHeat(score);
     if (!["hot","warm","cold"].includes(heat)) errors.push("heat invalid");
     const rating = b.rating ? String(b.rating) : "new lead";
-    if (!["new lead","attempted","cold","warm","hot","superhot","enrolled"].includes(rating)) {
+    if (!["new lead","attempted","cold","lukewarm","warm","hot","superhot","enrolled"].includes(rating)) {
       errors.push("rating invalid");
     }
     const nbaLabel = b.nbaLabel ? String(b.nbaLabel).trim() : "Reach out today";
@@ -429,6 +431,8 @@ leadsRouter.get("/", async (req, res, next) => {
           l.nba_ghost        AS "nbaGhost",
           l.next_followup_at AS "nextFollowupAt",
           l.demo_attended_at AS "demoAttendedAt",
+          l.visited_date     AS "visitedDate",
+          l.visiting_date    AS "visitingDate",
           l.delivery_mode    AS "deliveryMode",
           l.time_zone        AS "timeZone",
           l.fee_paid         AS "feePaid",
@@ -472,7 +476,7 @@ leadsRouter.patch("/:idOrNumber", async (req, res, next) => {
     if (b.heat !== undefined && !["hot","warm","cold"].includes(String(b.heat))) {
       return res.status(400).json({ error: "heat invalid" });
     }
-    if (b.rating !== undefined && !["new lead","attempted","cold","warm","hot","superhot","enrolled"].includes(String(b.rating))) {
+    if (b.rating !== undefined && !["new lead","attempted","cold","lukewarm","warm","hot","superhot","enrolled"].includes(String(b.rating))) {
       return res.status(400).json({ error: "rating invalid" });
     }
 
@@ -495,6 +499,8 @@ leadsRouter.patch("/:idOrNumber", async (req, res, next) => {
                      l.due_date AS "dueDate", l.registered_date AS "registeredDate",
                      l.next_followup_at AS "nextFollowupAt",
                      l.demo_attended_at AS "demoAttendedAt",
+                     l.visited_date     AS "visitedDate",
+                     l.visiting_date    AS "visitingDate",
                      l.time_zone AS "timeZone",
                      l.delivery_mode AS "deliveryMode",
                      l.payment_proof_url AS "paymentProofUrl",
@@ -515,6 +521,8 @@ leadsRouter.patch("/:idOrNumber", async (req, res, next) => {
                      l.due_date AS "dueDate", l.registered_date AS "registeredDate",
                      l.next_followup_at AS "nextFollowupAt",
                      l.demo_attended_at AS "demoAttendedAt",
+                     l.visited_date     AS "visitedDate",
+                     l.visiting_date    AS "visitingDate",
                      l.time_zone AS "timeZone",
                      l.delivery_mode AS "deliveryMode",
                      l.payment_proof_url AS "paymentProofUrl",
@@ -654,6 +662,10 @@ leadsRouter.patch("/:idOrNumber", async (req, res, next) => {
         leadSets.push(sql`next_followup_at = ${b.nextFollowupAt || null}`);
       if (b.demoAttendedAt !== undefined)
         leadSets.push(sql`demo_attended_at = ${b.demoAttendedAt || null}`);
+      if (b.visitedDate !== undefined)
+        leadSets.push(sql`visited_date = ${b.visitedDate || null}`);
+      if (b.visitingDate !== undefined)
+        leadSets.push(sql`visiting_date = ${b.visitingDate || null}`);
       if (b.paymentProofUrl !== undefined)
         leadSets.push(sql`payment_proof_url = ${b.paymentProofUrl ? String(b.paymentProofUrl).trim() : null}`);
       let newProgramName: string | null = null;
@@ -735,6 +747,8 @@ leadsRouter.patch("/:idOrNumber", async (req, res, next) => {
         ["registeredDate", "registeredDate"],
         ["nextFollowupAt", "nextFollowupAt"],
         ["demoAttendedAt", "demoAttendedAt"],
+        ["visitedDate",    "visitedDate"],
+        ["visitingDate",   "visitingDate"],
       ] as const) {
         if (b[in_] === undefined) continue;
         if (dayOf(before[prev]) !== dayOf(b[in_])) {
@@ -801,7 +815,8 @@ leadsRouter.patch("/:idOrNumber", async (req, res, next) => {
             return `${label}: ${c.from ?? "—"} → ${c.to}`;
           }
           if (c.field === "dueDate" || c.field === "registeredDate"
-              || c.field === "nextFollowupAt" || c.field === "demoAttendedAt") {
+              || c.field === "nextFollowupAt" || c.field === "demoAttendedAt"
+              || c.field === "visitedDate"   || c.field === "visitingDate") {
             const d = (v: unknown) => v ? new Date(String(v)).toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" }) : "—";
             return `${label}: ${d(c.from)} → ${d(c.to)}`;
           }
@@ -1066,7 +1081,8 @@ leadsRouter.post("/:idOrNumber/comms", async (req, res, next) => {
 //
 // Body: { ids: string[]   // work_item ids (UUIDs)
 //         patch: { rating?, programId?, advisorId?, source?, deliveryMode?,
-//                  timeZone?, nextFollowupAt?, demoAttendedAt? } }
+//                  timeZone?, nextFollowupAt?, demoAttendedAt?,
+//                  visitedDate?, visitingDate? } }
 //
 // Validation mirrors PATCH /leads/:id but is scoped to the eight bulk-safe
 // fields. Per-lead failures don't abort the rest; the response tallies up
@@ -1084,7 +1100,7 @@ leadsRouter.post("/bulk", async (req, res, next) => {
       }
     }
 
-    const ALLOWED = ["rating","programId","advisorId","source","deliveryMode","timeZone","nextFollowupAt","demoAttendedAt"];
+    const ALLOWED = ["rating","programId","advisorId","source","deliveryMode","timeZone","nextFollowupAt","demoAttendedAt","visitedDate","visitingDate"];
     const unknownKeys = Object.keys(patch).filter((k) => !ALLOWED.includes(k));
     if (unknownKeys.length) {
       return res.status(400).json({ error: `unsupported bulk fields: ${unknownKeys.join(", ")}` });
@@ -1092,7 +1108,7 @@ leadsRouter.post("/bulk", async (req, res, next) => {
     if (Object.keys(patch).length === 0) {
       return res.status(400).json({ error: "patch is empty" });
     }
-    if (patch.rating !== undefined && !["new lead","attempted","cold","warm","hot","superhot","enrolled"].includes(String(patch.rating))) {
+    if (patch.rating !== undefined && !["new lead","attempted","cold","lukewarm","warm","hot","superhot","enrolled"].includes(String(patch.rating))) {
       return res.status(400).json({ error: "rating invalid" });
     }
     if (patch.deliveryMode !== undefined && patch.deliveryMode !== null && patch.deliveryMode !== "") {
@@ -1107,7 +1123,7 @@ leadsRouter.post("/bulk", async (req, res, next) => {
         return res.status(400).json({ error: `${k} must be a UUID or null` });
       }
     }
-    for (const k of ["nextFollowupAt","demoAttendedAt"] as const) {
+    for (const k of ["nextFollowupAt","demoAttendedAt","visitedDate","visitingDate"] as const) {
       const v = patch[k];
       if (v !== undefined && v !== null && v !== "" && !/^\d{4}-\d{2}-\d{2}$/.test(String(v))) {
         return res.status(400).json({ error: `${k} must be YYYY-MM-DD or null` });
@@ -1190,6 +1206,12 @@ leadsRouter.post("/bulk", async (req, res, next) => {
           }
           if (patch.demoAttendedAt !== undefined) {
             sets.push(sql`demo_attended_at = ${patch.demoAttendedAt ? String(patch.demoAttendedAt) : null}`);
+          }
+          if (patch.visitedDate !== undefined) {
+            sets.push(sql`visited_date = ${patch.visitedDate ? String(patch.visitedDate) : null}`);
+          }
+          if (patch.visitingDate !== undefined) {
+            sets.push(sql`visiting_date = ${patch.visitingDate ? String(patch.visitingDate) : null}`);
           }
 
           if (sets.length === 0) {
