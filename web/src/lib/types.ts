@@ -207,6 +207,7 @@ export type LeadRating =
   | "new lead"
   | "attempted"
   | "cold"
+  | "lukewarm"
   | "warm"
   | "hot"
   | "superhot"
@@ -215,6 +216,7 @@ export const LEAD_RATINGS: LeadRating[] = [
   "new lead",
   "attempted",
   "cold",
+  "lukewarm",
   "warm",
   "hot",
   "superhot",
@@ -243,6 +245,8 @@ export interface Lead {
   // Phase H+: cadence dates (also exposed for filtering on /leads).
   nextFollowupAt: string | null;
   demoAttendedAt: string | null;
+  visitedDate:    string | null;   // when the lead already visited the centre
+  visitingDate:   string | null;   // when the lead is scheduled to visit
   // Pipeline-list editable fields. These are nullable because the slim
   // /leads endpoint doesn't surface them; the pipeline endpoint does.
   email?: string | null;
@@ -329,6 +333,32 @@ export interface AdminUser {
   active: boolean;
   has_password: boolean;
   groups: { id: string; name: string }[];
+}
+
+// ─── Advisors (Manage Advisors admin page) ────────────────────────────────
+// These are app_user rows with role 'admin' | 'advisor'. `auth0Sub` is null
+// until the person actually signs in via Auth0 for the first time.
+
+export type AdvisorRole = "admin" | "advisor";
+
+export interface Advisor {
+  id: string;
+  partyId: string;
+  email: string;
+  name: string | null;
+  phone: string | null;
+  role: AdvisorRole;
+  active: boolean;
+  auth0Sub: string | null;
+  createdAt: string;
+  leadCount: number;
+}
+
+export interface AdvisorInput {
+  name:  string;
+  email: string;
+  phone?: string | null;
+  role?: AdvisorRole;
 }
 
 export interface UserGroupSummary {
@@ -1092,6 +1122,8 @@ export interface RecordResponse {
       registeredDate?: string | null;
       nextFollowupAt?: string | null;
       demoAttendedAt?: string | null;
+      visitedDate?: string | null;
+      visitingDate?: string | null;
       paymentProofUrl?: string | null;
       // Phase H+: contact details split out + lead-level display tz
       phoneCountryCode?: string | null;

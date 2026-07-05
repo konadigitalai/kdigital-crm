@@ -24,6 +24,7 @@ import { learnersRouter } from "./routes/learners.js";
 import { approvalsRouter } from "./routes/approvals.js";
 import { casesRouter } from "./routes/cases.js";
 import { usersRouter } from "./routes/users.js";
+import { advisorsRouter } from "./routes/advisors.js";
 import { groupsRouter } from "./routes/groups.js";
 import { leavesRouter } from "./routes/leaves.js";
 import { eventsRouter } from "./routes/events.js";
@@ -63,16 +64,22 @@ app.use(express.json({ limit: "6mb" }));
 // CORS_ORIGIN can be a single origin or a comma-separated allowlist (e.g.
 // the prod Vercel domain plus any custom domain). Credentialed requests
 // require an exact echoed origin — wildcards are rejected by the browser.
+//
+// When the incoming origin ISN'T on the allowlist we don't set the header at
+// all. The browser then produces a clean "no Access-Control-Allow-Origin
+// header present" error, which is easier to diagnose than the previous
+// behaviour of echoing back a different (wrong) origin.
 const corsAllowed = (process.env.CORS_ORIGIN ?? "http://localhost:3000")
   .split(",")
   .map((s) => s.trim())
   .filter(Boolean);
 app.use((req, res, next) => {
   const reqOrigin = req.headers.origin;
-  const allowed = reqOrigin && corsAllowed.includes(reqOrigin) ? reqOrigin : corsAllowed[0]!;
-  res.header("Access-Control-Allow-Origin", allowed);
+  if (reqOrigin && corsAllowed.includes(reqOrigin)) {
+    res.header("Access-Control-Allow-Origin", reqOrigin);
+    res.header("Access-Control-Allow-Credentials", "true");
+  }
   res.header("Vary", "Origin");
-  res.header("Access-Control-Allow-Credentials", "true");
   res.header("Access-Control-Allow-Methods", "GET,POST,PATCH,PUT,DELETE,OPTIONS");
   res.header("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Intake-Key");
   if (req.method === "OPTIONS") return res.sendStatus(204);
@@ -149,6 +156,9 @@ app.use("/stacks",   writeOnly("admin.programs.manage"), stacksRouter);
 app.use("/cohorts",  writeOnly("admin.batches.manage"),  cohortsRouter);
 app.use("/courses",  writeOnly("admin.courses.manage"),  coursesRouter);
 app.use("/users",    requirePermission("users.manage"),  usersRouter);
+// Manage Advisors — CRUD around app_user rows with role admin|advisor.
+// Reuses users.manage since it's the same governance surface.
+app.use("/advisors", requirePermission("users.manage"),  advisorsRouter);
 app.use("/groups",   requirePermission("groups.manage"), groupsRouter);
 // Phase G — every route gates per-handler so we can mix self/admin permissions.
 app.use("/leaves",      leavesRouter);

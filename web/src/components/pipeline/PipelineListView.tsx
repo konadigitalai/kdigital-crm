@@ -33,6 +33,7 @@ export type ColumnKey =
   | "program" | "advisor" | "source" | "value"
   | "score" | "deliveryMode" | "timeZone"
   | "nextFollowupAt" | "demoAttendedAt"
+  | "visitedDate" | "visitingDate"
   | "feePaid" | "feeDue" | "dueDate" | "registeredDate"
   | "description" | "createdAt";
 
@@ -78,6 +79,8 @@ const COLUMNS: ColumnDef[] = [
   { key: "timeZone",        label: "Time zone",        width: "150px", type: "select-tz" },
   { key: "nextFollowupAt",  label: "Next follow-up",   width: "150px", type: "date" },
   { key: "demoAttendedAt",  label: "Demo attended",    width: "150px", type: "date" },
+  { key: "visitedDate",     label: "Visited",          width: "140px", type: "date" },
+  { key: "visitingDate",    label: "Visiting",         width: "140px", type: "date" },
   { key: "feePaid",         label: "Fee paid (₹)",     width: "120px", type: "money" },
   { key: "feeDue",          label: "Fee due (₹)",      width: "120px", type: "money" },
   { key: "dueDate",         label: "Due date",         width: "140px", type: "date" },
@@ -243,6 +246,8 @@ function initialValueFor(l: Lead, col: ColumnDef): string {
     case "registeredDate": return dateInputValue(l.registeredDate);
     case "nextFollowupAt": return dateInputValue(l.nextFollowupAt);
     case "demoAttendedAt": return dateInputValue(l.demoAttendedAt);
+    case "visitedDate":    return dateInputValue(l.visitedDate);
+    case "visitingDate":   return dateInputValue(l.visitingDate);
     case "email":          return l.email ?? "";
     case "city":           return l.city ?? "";
     case "value":          return l.value ?? "";
@@ -285,6 +290,8 @@ function buildLocalPatch(
     case "registeredDate":  return { registeredDate: nullable };
     case "nextFollowupAt":  return { nextFollowupAt: nullable };
     case "demoAttendedAt":  return { demoAttendedAt: nullable };
+    case "visitedDate":     return { visitedDate:    nullable };
+    case "visitingDate":    return { visitingDate:   nullable };
     case "rating":          return { rating: (draft || "warm") as Lead["rating"] };
     case "program": {
       const p = catalog.programs.find((x) => x.id === draft);
@@ -978,6 +985,8 @@ function CellIdle({ column, lead }: { column: ColumnDef; lead: Lead }) {
     case "timeZone":       return <span>{TZ_OPTIONS.find((o) => o.value === lead.timeZone)?.label ?? lead.timeZone ?? "—"}</span>;
     case "nextFollowupAt": return <span className="font-mono text-[11px]">{fmtDate(lead.nextFollowupAt)}</span>;
     case "demoAttendedAt": return <span className="font-mono text-[11px]">{fmtDate(lead.demoAttendedAt)}</span>;
+    case "visitedDate":    return <span className="font-mono text-[11px]">{fmtDate(lead.visitedDate)}</span>;
+    case "visitingDate":   return <span className="font-mono text-[11px]">{fmtDate(lead.visitingDate)}</span>;
     case "feePaid":        return <span className="font-mono text-[11px]">{fmtINR(lead.feePaid)}</span>;
     case "feeDue":         return <span className="font-mono text-[11px]">{fmtINR(lead.feeDue)}</span>;
     case "dueDate":        return <span className="font-mono text-[11px]">{fmtDate(lead.dueDate)}</span>;
@@ -1544,7 +1553,8 @@ function ArrowGlyph({ dir }: { dir: "up" | "down" }) {
 type BulkField =
   | "rating" | "programId" | "advisorId" | "source"
   | "deliveryMode" | "timeZone"
-  | "nextFollowupAt" | "demoAttendedAt";
+  | "nextFollowupAt" | "demoAttendedAt"
+  | "visitedDate" | "visitingDate";
 
 interface BulkFieldSpec {
   key: BulkField;
@@ -1562,6 +1572,8 @@ const BULK_FIELDS: BulkFieldSpec[] = [
   { key: "timeZone",       label: "Time zone",      kind: "tz"       },
   { key: "nextFollowupAt", label: "Next follow-up", kind: "date"     },
   { key: "demoAttendedAt", label: "Demo attended",  kind: "date"     },
+  { key: "visitedDate",    label: "Visited",        kind: "date"     },
+  { key: "visitingDate",   label: "Visiting",       kind: "date"     },
 ];
 
 function BulkUpdateDialog({
@@ -1586,6 +1598,8 @@ function BulkUpdateDialog({
     timeZone: "",
     nextFollowupAt: "",
     demoAttendedAt: "",
+    visitedDate:    "",
+    visitingDate:   "",
   });
 
   function toggleField(k: BulkField) {
@@ -1614,6 +1628,8 @@ function BulkUpdateDialog({
         case "timeZone":       out.timeZone       = v || null; break;
         case "nextFollowupAt": out.nextFollowupAt = v || null; break;
         case "demoAttendedAt": out.demoAttendedAt = v || null; break;
+        case "visitedDate":    out.visitedDate    = v || null; break;
+        case "visitingDate":   out.visitingDate   = v || null; break;
       }
     }
     return out;
@@ -1791,6 +1807,8 @@ function bulkPatchToLocalPatch(patch: BulkLeadPatch, catalog: CatalogResponse): 
   if (patch.timeZone       !== undefined) out.timeZone = patch.timeZone ?? null;
   if (patch.nextFollowupAt !== undefined) out.nextFollowupAt = patch.nextFollowupAt ?? null;
   if (patch.demoAttendedAt !== undefined) out.demoAttendedAt = patch.demoAttendedAt ?? null;
+  if (patch.visitedDate    !== undefined) out.visitedDate    = patch.visitedDate    ?? null;
+  if (patch.visitingDate   !== undefined) out.visitingDate   = patch.visitingDate   ?? null;
   if (patch.programId !== undefined) {
     const p = catalog.programs.find((x) => x.id === patch.programId);
     out.programId = patch.programId ?? null;
