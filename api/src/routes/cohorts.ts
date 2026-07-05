@@ -44,6 +44,10 @@ function daysSqlValue(days: WeekDay[] | null) {
   return sql`ARRAY[${sql.join(parts, sql`, `)}]::text[]`;
 }
 
+// A batch is tied to a course; that course may live under many programs via
+// program_course. There is no single "program" label for a batch anymore, so
+// programId / programName / programEnabled are omitted here. UIs that need
+// context should show the course.
 const COHORT_SELECT = sql`
   SELECT
     c.id,
@@ -59,11 +63,7 @@ const COHORT_SELECT = sql`
     c.enabled,
     c.course_id   AS "courseId",
     co.name       AS "courseName",
-    co.code       AS "courseCode",
     co.enabled    AS "courseEnabled",
-    co.program_id AS "programId",
-    p.name        AS "programName",
-    p.enabled     AS "programEnabled",
     c.trainer_id    AS "trainerId",
     tu.name         AS "trainerName",
     c.co_trainer_id AS "coTrainerId",
@@ -75,7 +75,6 @@ const COHORT_SELECT = sql`
     (SELECT COUNT(*)::int FROM batch_assignment ba WHERE ba.cohort_id = c.id AND ba.status = 'active')   AS "activeCount"
   FROM cohort c
   LEFT JOIN course   co ON co.id = c.course_id
-  LEFT JOIN program  p  ON p.id  = co.program_id
   LEFT JOIN app_user tu ON tu.party_id = c.trainer_id
   LEFT JOIN app_user cu ON cu.party_id = c.co_trainer_id
 `;
@@ -85,7 +84,7 @@ cohortsRouter.get("/", async (req, res, next) => {
     const rows = await withTenant(req.tenantId!, async (db) => {
       const r = await db.execute(sql`
         ${COHORT_SELECT}
-        ORDER BY c.enabled DESC, p.name NULLS LAST, co.name NULLS LAST, c.start_date NULLS LAST, c.name
+        ORDER BY c.enabled DESC, co.name NULLS LAST, c.start_date NULLS LAST, c.name
       `);
       return r.rows;
     });

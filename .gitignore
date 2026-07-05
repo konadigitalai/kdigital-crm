@@ -36,3 +36,9 @@ dev.log
 
 # Drizzle local snapshots are committed; only ignore studio cache
 .drizzle/
+
+# Local scratch files (not part of the repo — don't commit)
+*.xlsx
+~$*
+Product Documents/
+

@@ -14,9 +14,10 @@ async function main() {
 
   console.log("\n── Course coverage ──");
   const c = await pool.query(`
-    SELECT p.name AS program, COALESCE(string_agg(c.name, ', ' ORDER BY c.name), '—') AS courses
+    SELECT p.name AS program, COALESCE(string_agg(co.name, ', ' ORDER BY pc.rank), '—') AS courses
     FROM program p
-    LEFT JOIN course c ON c.program_id = p.id
+    LEFT JOIN program_course pc ON pc.program_id = p.id
+    LEFT JOIN course co ON co.id = pc.course_id
     GROUP BY p.id, p.name
     ORDER BY p.name
   `);
@@ -26,15 +27,14 @@ async function main() {
 
   console.log("\n── Cohort (batch) wiring ──");
   const k = await pool.query(`
-    SELECT p.name AS program, co.name AS course, c.name AS batch, c.status, c.slot
+    SELECT co.name AS course, c.name AS batch, c.status, c.slot
     FROM cohort c
     LEFT JOIN course co ON co.id = c.course_id
-    LEFT JOIN program p ON p.id = co.program_id
-    ORDER BY p.name, co.name, c.start_date NULLS LAST
+    ORDER BY co.name, c.start_date NULLS LAST
     LIMIT 8
   `);
-  for (const r of k.rows as Array<{ program: string|null; course: string|null; batch: string; status: string; slot: string|null }>) {
-    console.log(`  ${(r.program ?? '?').padEnd(25)} / ${(r.course ?? '?').padEnd(10)} / ${r.batch.padEnd(40)} ${r.status} ${r.slot ?? ''}`);
+  for (const r of k.rows as Array<{ course: string|null; batch: string; status: string; slot: string|null }>) {
+    console.log(`  ${(r.course ?? '?').padEnd(10)} / ${r.batch.padEnd(40)} ${r.status} ${r.slot ?? ''}`);
   }
 
   console.log("\n── Enrolments + batch_assignments ──");

@@ -607,35 +607,68 @@ export interface SavedViewInput {
   columns: string[] | null;
 }
 
+// Catalog v2 — Stack → Program → Course (many-to-many). Every program belongs
+// to one stack; programs link to reusable courses via the program_course
+// junction. Courses are just name + description now.
+
+export interface Stack {
+  id: string;
+  name: string;
+  description: string | null;
+  enabled: boolean;
+  programCount: number;
+}
+
+export type DurationUnit = "weeks" | "months";
+
+export interface ProgramCourseRef {
+  id: string;
+  name: string;
+  rank: number;
+}
+
 export interface Program {
   id: string;
   name: string;
-  track: string | null;
+  description: string | null;
   price: string | null;
+  durationValue: number | null;
+  durationUnit: DurationUnit | null;
   enabled: boolean;
+  stackId: string;
+  stackName: string | null;
   leadCount: number;
   courseCount: number;
   batchCount: number;
   enrolmentCount: number;
+  courses: ProgramCourseRef[];
+}
+
+export interface ProgramInput {
+  name: string;
+  stackId: string;
+  description?: string | null;
+  price?: string | null;
+  durationValue?: number | null;
+  durationUnit?: DurationUnit | null;
+  courseIds?: string[];
+  enabled?: boolean;
 }
 
 export interface Course {
   id: string;
   name: string;
-  code: string | null;
+  description: string | null;
   enabled: boolean;
-  programId: string;
-  programName: string;
-  programEnabled: boolean;
+  programCount: number;
   batchCount: number;
   runningBatchCount: number;
   activeLearners: number;
 }
 
 export interface CourseInput {
-  programId: string;
   name: string;
-  code?: string | null;
+  description?: string | null;
   enabled?: boolean;
 }
 
@@ -655,14 +688,11 @@ export interface Batch {
   seats: number | null;
   status: BatchStatus;
   enabled: boolean;
-  // Course is the canonical parent of a batch; program is denormalized for labels.
+  // Course is the canonical parent of a batch. A course can live under many
+  // programs, so there's no single program label on the batch anymore.
   courseId: string | null;
   courseName: string | null;
-  courseCode: string | null;
   courseEnabled: boolean | null;
-  programId: string | null;
-  programName: string | null;
-  programEnabled: boolean | null;
   enrolmentCount: number;
   activeCount: number;
   // Phase H — structured trainer assignment + cadence (powers the calendar).
@@ -678,7 +708,6 @@ export interface Batch {
 export interface BatchSession {
   cohortId: string;
   title: string;
-  programName: string | null;
   courseName: string | null;
   startAt: string;
   endAt: string;
@@ -718,13 +747,11 @@ export interface CourseAssignment {
   enrolmentId: string;
   courseId: string;
   courseName: string;
-  courseCode: string | null;
+  courseDescription: string | null;
   /** Whether the underlying course is enabled. Drives the learner page's
    *  static active/inactive badge — the lifecycle of the assignment itself
    *  (active/dropped/etc.) isn't exposed in the learner UI any more. */
   courseEnabled: boolean;
-  programId: string;
-  programName: string;
 }
 
 export interface ProgramEnrolment {
@@ -754,9 +781,6 @@ export interface BatchAssignment {
   batchStatus: BatchStatus;
   courseId: string;
   courseName: string;
-  courseCode: string | null;
-  programId: string;
-  programName: string;
 }
 
 export interface LearnerRecord {
@@ -769,12 +793,35 @@ export interface LearnerRecord {
     attributes: { initials?: string };
     learnerSince: string;
     leadSince: string | null;
+    // Fee ledger (single per learner, see post-0055/0056/0057-party-fee-*.sql).
+    // feeDue is NOT stored — clients compute it as (feeQuoted − feePaid).
+    // paymentProofs is the canonical ordered list of receipts (each item is a
+    // plain URL or a data: URL). paymentProofUrl mirrors proofs[0] for one
+    // release so any legacy reader stays coherent.
+    feeQuoted:       string | null;
+    feePaid:         string | null;
+    dueDate:         string | null;
+    paymentStatus:   PaymentStatus | null;
+    paymentProofUrl: string | null;
+    paymentProofs:   string[];
+    feeNotes:        string | null;
   };
   enrolments: ProgramEnrolment[];
   courseAssignments: CourseAssignment[];
   assignments: BatchAssignment[];
   timeline: TimelineRow[];
   originLead: { number: string; workItemId: string; score: number; heat: Heat; description: string | null } | null;
+}
+
+export type PaymentStatus = "pending" | "paid" | "refund" | "on_hold";
+
+export interface LearnerFeeInput {
+  feeQuoted?:     string | null;
+  feePaid?:       string | null;
+  dueDate?:       string | null;
+  paymentStatus?: PaymentStatus | null;
+  paymentProofs?: string[];
+  feeNotes?:      string | null;
 }
 
 export interface BatchInput {
@@ -798,8 +845,8 @@ export interface BatchInput {
 }
 
 export interface CatalogResponse {
-  programs: { id: string; name: string; track: string | null; price: string | null }[];
-  courses: { id: string; name: string; code: string | null; programId: string; programName: string }[];
+  programs: { id: string; name: string; price: string | null; stackId: string | null; stackName: string | null }[];
+  courses: { id: string; name: string; description: string | null }[];
   advisors: { id: string; name: string; email: string; role: string }[];
   employees: { id: string; name: string; email: string; role: string }[];
   staff: { id: string; name: string; email: string; role: string }[];

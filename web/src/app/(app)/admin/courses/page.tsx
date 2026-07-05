@@ -1,14 +1,13 @@
 import Link from "next/link";
 import { Topbar } from "@/components/shell/Topbar";
 import { Icon } from "@/components/ui/Icon";
-import { getCourses, getPrograms } from "@/lib/api";
+import { getCourses } from "@/lib/api";
 import { requirePagePermission } from "@/lib/guards";
 import { CoursesTable } from "@/components/admin/CoursesTable";
 
 export default async function AdminCoursesPage() {
   await requirePagePermission("admin.courses.manage");
-  const [courses, programs] = await Promise.all([getCourses(), getPrograms()]);
-  const activePrograms = programs.filter((p) => p.enabled);
+  const courses = await getCourses();
 
   return (
     <>
@@ -28,8 +27,8 @@ export default async function AdminCoursesPage() {
           <div>
             <h1 className="font-serif text-[40px] font-normal leading-none tracking-[-.01em]">Courses</h1>
             <p className="mt-2 max-w-[640px] text-[13.5px] text-mute">
-              Each program contains multiple courses. Each course is delivered as one or more batches.
-              Inactive courses are hidden from new batch assignments.
+              A course is a reusable module — programs pick which courses to include. Each course is
+              delivered as one or more batches. Inactive courses are hidden from new batch assignments.
             </p>
           </div>
         </div>
@@ -39,12 +38,12 @@ export default async function AdminCoursesPage() {
             <Icon name="info" size={16} strokeWidth={1.8} />
           </span>
           <div>
-            <b className="font-bold text-ink">Examples.</b> AI &amp; Data Science → <i>Python, SQL, Power BI, Data Science, AI</i>.
-            Each of those is a course, and each course has batches (morning/evening etc).
+            <b className="font-bold text-ink">One course, many programs.</b>{" "}
+            Create <i>Python</i> or <i>SQL</i> once — then include it in <i>AI &amp; Data Science</i>, <i>Full Stack + AI</i>, and any future program that needs it.
           </div>
         </div>
 
-        <CoursesTable initial={courses} programs={activePrograms} />
+        <CoursesTable initial={courses} />
       </div>
     </>
   );

@@ -1,17 +1,14 @@
 import { Topbar } from "@/components/shell/Topbar";
 import { Icon } from "@/components/ui/Icon";
-import { getCourses, getPrograms, getStacks } from "@/lib/api";
+import { getStacks } from "@/lib/api";
 import { requirePagePermission } from "@/lib/guards";
-import { ProgramsTable } from "@/components/admin/ProgramsTable";
+import { StacksTable } from "@/components/admin/StacksTable";
 import Link from "next/link";
 
-export default async function AdminProgramsPage() {
+export default async function AdminStacksPage() {
+  // Stacks reuse admin.programs.manage until a dedicated permission is added.
   await requirePagePermission("admin.programs.manage");
-  const [programs, stacks, courses] = await Promise.all([
-    getPrograms(),
-    getStacks(),
-    getCourses(),
-  ]);
+  const stacks = await getStacks();
 
   return (
     <>
@@ -20,7 +17,7 @@ export default async function AdminProgramsPage() {
           <>
             <Link href="/settings" className="cursor-pointer hover:text-ink">Settings</Link>
             <span className="text-hint">/</span>
-            <b className="font-semibold text-ink">Programs</b>
+            <b className="font-semibold text-ink">Stacks</b>
           </>
         }
         status="Synced"
@@ -29,10 +26,9 @@ export default async function AdminProgramsPage() {
       <div className="px-9 pb-[60px] pt-7">
         <div className="mb-[22px] flex items-end justify-between gap-6">
           <div>
-            <h1 className="font-serif text-[40px] font-normal leading-none tracking-[-.01em]">Programs</h1>
+            <h1 className="font-serif text-[40px] font-normal leading-none tracking-[-.01em]">Edify Stacks</h1>
             <p className="mt-2 max-w-[640px] text-[13.5px] text-mute">
-              Every program belongs to a stack, has a price and duration, and picks its courses. Inactive
-              programs are hidden from new-lead dropdowns but their history (leads, batches, enrolments) stays intact.
+              Stacks are the top-level bucket every program lives under. Every program must be assigned to exactly one stack.
             </p>
           </div>
         </div>
@@ -42,12 +38,12 @@ export default async function AdminProgramsPage() {
             <Icon name="info" size={16} strokeWidth={1.8} />
           </span>
           <div>
-            <b className="font-bold text-ink">Programs are the sellable unit.</b>{" "}
-            Batches attach to courses; a course can live under many programs at once.
+            <b className="font-bold text-ink">Stacks group programs.</b>{" "}
+            A stack does not gate what a program contains — courses are shared across programs directly.
           </div>
         </div>
 
-        <ProgramsTable initial={programs} stacks={stacks} courses={courses} />
+        <StacksTable initial={stacks} />
       </div>
     </>
   );

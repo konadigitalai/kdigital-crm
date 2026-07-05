@@ -32,12 +32,10 @@ const STATUS_CLS: Record<BatchStatus, string> = {
 const SLOTS: BatchSlot[] = ["morning", "afternoon", "evening"];
 
 function buildFields(rows: Batch[]): FilterField[] {
-  const programs = [...new Set(rows.map((r) => r.programName).filter(Boolean))] as string[];
   const courses  = [...new Set(rows.map((r) => r.courseName ).filter(Boolean))] as string[];
   return [
     { key: "name",    label: "Batch name", type: "text",   get: (b: Batch) => b.name },
     { key: "code",    label: "Code",       type: "text",   get: (b: Batch) => b.code },
-    { key: "program", label: "Program",    type: "enum",   options: programs.map((p) => ({ value: p, label: p })), get: (b: Batch) => b.programName },
     { key: "course",  label: "Course",     type: "enum",   options: courses.map((c) => ({ value: c, label: c })),  get: (b: Batch) => b.courseName },
     { key: "slot",    label: "Slot",       type: "enum",
       options: SLOTS.map((s) => ({ value: s, label: s[0]!.toUpperCase() + s.slice(1) })),
@@ -81,11 +79,7 @@ export function BatchesTable({ initial, courses, staff }: { initial: Batch[]; co
         {
           ...created,
           courseName: c?.name ?? null,
-          courseCode: c?.code ?? null,
           courseEnabled: c?.enabled ?? null,
-          programId: c?.programId ?? null,
-          programName: c?.programName ?? null,
-          programEnabled: c?.programEnabled ?? null,
           enrolmentCount: 0,
           activeCount: 0,
         },
@@ -161,7 +155,7 @@ export function BatchesTable({ initial, courses, staff }: { initial: Batch[]; co
       <div className="overflow-hidden rounded-2xl border border-rule bg-paper">
         <Row hdr>
           <div>Batch</div>
-          <div>Course / Program</div>
+          <div>Course</div>
           <div>Slot</div>
           <div>Status</div>
           <div className="text-center">Active</div>
@@ -193,7 +187,6 @@ export function BatchesTable({ initial, courses, staff }: { initial: Batch[]; co
               </div>
               <div className="min-w-0">
                 <div className="truncate text-[13px] font-medium text-ink2">{b.courseName ?? "—"}</div>
-                <div className="mono-cap mt-0.5 truncate text-[9.5px] tracking-[.04em] text-mute">{b.programName ?? ""}</div>
               </div>
               <div className="text-[12.5px] capitalize text-ink2">{b.slot ?? "—"}</div>
               <div>
@@ -257,9 +250,6 @@ function fmtDate(d: string | null): string | null {
 
 function sortBatches(a: Batch, b: Batch) {
   if (a.enabled !== b.enabled) return a.enabled ? -1 : 1;
-  const ap = (a.programName ?? "");
-  const bp = (b.programName ?? "");
-  if (ap !== bp) return ap.localeCompare(bp);
   const ac = (a.courseName ?? "");
   const bc = (b.courseName ?? "");
   if (ac !== bc) return ac.localeCompare(bc);
@@ -400,7 +390,7 @@ function BatchFormDialog({
           <Field label="Course" required>
             <select className={inputCls} value={courseId} onChange={(e) => setCourseId(e.target.value)} disabled={!!initial}>
               {courses.map((c) => (
-                <option key={c.id} value={c.id}>{c.programName} → {c.name}</option>
+                <option key={c.id} value={c.id}>{c.name}</option>
               ))}
             </select>
           </Field>

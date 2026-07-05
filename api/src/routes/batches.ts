@@ -15,7 +15,6 @@ type WeekDay = typeof WEEKDAYS[number];
 interface CohortRow {
   id: string;
   name: string;
-  programName: string | null;
   courseName: string | null;
   startDate: Date | null;
   endDate: Date | null;
@@ -72,7 +71,6 @@ batchesRouter.get("/sessions", requirePermission("events.manage.self"), async (r
         SELECT
           c.id,
           c.name,
-          p.name AS "programName",
           co.name AS "courseName",
           c.start_date AS "startDate",
           c.end_date   AS "endDate",
@@ -85,7 +83,6 @@ batchesRouter.get("/sessions", requirePermission("events.manage.self"), async (r
           to_char(c.end_time,   'HH24:MI:SS') AS "endTime"
         FROM cohort c
         LEFT JOIN course   co ON co.id = c.course_id
-        LEFT JOIN program  p  ON p.id  = co.program_id
         LEFT JOIN app_user tu ON tu.party_id = c.trainer_id
         LEFT JOIN app_user cu ON cu.party_id = c.co_trainer_id
         WHERE (c.trainer_id = ${mePartyId} OR c.co_trainer_id = ${mePartyId})
@@ -121,7 +118,6 @@ batchesRouter.get("/sessions", requirePermission("events.manage.self"), async (r
         sessions.push({
           cohortId: c.id,
           title: c.name,
-          programName: c.programName,
           courseName: c.courseName,
           startAt: istLocalToISO(date, c.startTime!),
           endAt:   istLocalToISO(date, c.endTime!),
@@ -129,7 +125,7 @@ batchesRouter.get("/sessions", requirePermission("events.manage.self"), async (r
           isCoTrainer:  c.coTrainerId === me,
           trainerName:   c.trainerName,
           coTrainerName: c.coTrainerName,
-          location: [c.programName, c.courseName].filter(Boolean).join(" · ") || null,
+          location: c.courseName ?? null,
         });
       }
     }

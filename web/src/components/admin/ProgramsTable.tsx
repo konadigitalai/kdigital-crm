@@ -5,22 +5,23 @@ import { useRouter } from "next/navigation";
 import { Icon } from "@/components/ui/Icon";
 import { cn } from "@/lib/cn";
 import { createProgram, updateProgram } from "@/lib/api";
-import type { Program } from "@/lib/types";
+import type { Course, DurationUnit, Program, ProgramInput, Stack } from "@/lib/types";
 import { FilterBar } from "@/components/filter/FilterBar";
 import { useFilter } from "@/components/filter/useFilter";
 import type { FilterField } from "@/components/filter/types";
 
 function buildFields(rows: Program[]): FilterField[] {
-  const tracks = [...new Set(rows.map((r) => r.track).filter(Boolean))] as string[];
+  const stacks = [...new Set(rows.map((r) => r.stackName).filter(Boolean))] as string[];
   return [
-    { key: "name",          label: "Name",        type: "text",   get: (p: Program) => p.name },
-    { key: "track",         label: "Track",       type: "enum",   options: tracks.map((t) => ({ value: t, label: t })), get: (p: Program) => p.track },
-    { key: "price",         label: "Price",       type: "number", get: (p: Program) => p.price ? Number(p.price) : null },
-    { key: "enabled",       label: "Active",      type: "boolean", get: (p: Program) => p.enabled },
-    { key: "leadCount",     label: "Leads",       type: "number", get: (p: Program) => p.leadCount },
-    { key: "courseCount",   label: "Courses",     type: "number", get: (p: Program) => p.courseCount },
-    { key: "batchCount",    label: "Batches",     type: "number", get: (p: Program) => p.batchCount },
-    { key: "enrolmentCount",label: "Enrolments",  type: "number", get: (p: Program) => p.enrolmentCount },
+    { key: "name",           label: "Name",       type: "text",   get: (p: Program) => p.name },
+    { key: "stack",          label: "Stack",      type: "enum",   options: stacks.map((s) => ({ value: s, label: s })), get: (p: Program) => p.stackName },
+    { key: "price",          label: "Price",      type: "number", get: (p: Program) => p.price ? Number(p.price) : null },
+    { key: "duration",       label: "Duration",   type: "number", get: (p: Program) => p.durationValue },
+    { key: "enabled",        label: "Active",     type: "boolean",get: (p: Program) => p.enabled },
+    { key: "leadCount",      label: "Leads",      type: "number", get: (p: Program) => p.leadCount },
+    { key: "courseCount",    label: "Courses",    type: "number", get: (p: Program) => p.courseCount },
+    { key: "batchCount",     label: "Batches",    type: "number", get: (p: Program) => p.batchCount },
+    { key: "enrolmentCount", label: "Enrolments", type: "number", get: (p: Program) => p.enrolmentCount },
   ];
 }
 
@@ -29,7 +30,11 @@ type Mode =
   | { kind: "creating" }
   | { kind: "editing"; program: Program };
 
-export function ProgramsTable({ initial }: { initial: Program[] }) {
+export function ProgramsTable({
+  initial, stacks, courses,
+}: {
+  initial: Program[]; stacks: Stack[]; courses: Course[];
+}) {
   const router = useRouter();
   const [programs, setPrograms] = useState<Program[]>(initial);
   const [mode, setMode] = useState<Mode>({ kind: "idle" });
@@ -39,16 +44,16 @@ export function ProgramsTable({ initial }: { initial: Program[] }) {
   const fields = useMemo(() => buildFields(programs), [programs]);
   const [filtered, filterState, setFilterState] = useFilter(programs, fields);
 
+  const activeStacks = stacks.filter((s) => s.enabled);
+  const activeCourses = courses.filter((c) => c.enabled);
+
   function reload() { router.refresh(); }
 
-  async function onCreate(name: string, track: string | null, price: string | null) {
+  async function onCreate(input: ProgramInput) {
     setBusy("create"); setError(null);
     try {
-      const created = await createProgram({ name, track: track ?? undefined, price: price ?? undefined });
-      setPrograms((p) => [
-        ...p,
-        { ...created, price, enabled: true, leadCount: 0, courseCount: 0, batchCount: 0, enrolmentCount: 0 },
-      ].sort(sortPrograms));
+      const created = await createProgram(input);
+      setPrograms((all) => [...all, created].sort(sortPrograms));
       setMode({ kind: "idle" });
       reload();
     } catch (err) {
@@ -58,13 +63,11 @@ export function ProgramsTable({ initial }: { initial: Program[] }) {
     }
   }
 
-  async function onUpdate(p: Program, name: string, track: string | null, price: string | null) {
+  async function onUpdate(p: Program, patch: Partial<ProgramInput>) {
     setBusy(p.id); setError(null);
     try {
-      const updated = await updateProgram(p.id, { name, track, price });
-      setPrograms((all) =>
-        all.map((x) => (x.id === p.id ? { ...x, ...updated } : x)).sort(sortPrograms)
-      );
+      const updated = await updateProgram(p.id, patch);
+      setPrograms((all) => all.map((x) => (x.id === p.id ? { ...x, ...updated } : x)).sort(sortPrograms));
       setMode({ kind: "idle" });
       reload();
     } catch (err) {
@@ -74,13 +77,11 @@ export function ProgramsTable({ initial }: { initial: Program[] }) {
     }
   }
 
-  async function onToggleEnabled(p: Program) {
+  async function onToggle(p: Program) {
     setBusy(p.id); setError(null);
     try {
       const updated = await updateProgram(p.id, { enabled: !p.enabled });
-      setPrograms((all) =>
-        all.map((x) => (x.id === p.id ? { ...x, ...updated } : x)).sort(sortPrograms)
-      );
+      setPrograms((all) => all.map((x) => (x.id === p.id ? { ...x, ...updated } : x)).sort(sortPrograms));
       reload();
     } catch (err) {
       setError((err as Error).message);
@@ -93,10 +94,14 @@ export function ProgramsTable({ initial }: { initial: Program[] }) {
     <>
       <div className="mb-4 flex items-center justify-between">
         <div className="text-[13px] text-mute">
-          {programs.length} program{programs.length === 1 ? "" : "s"} ·{" "}
-          {programs.filter((p) => p.enabled).length} active
+          {programs.length} program{programs.length === 1 ? "" : "s"} · {programs.filter((p) => p.enabled).length} active
         </div>
-        <button onClick={() => setMode({ kind: "creating" })} className="btn-grad">
+        <button
+          onClick={() => activeStacks.length > 0 && setMode({ kind: "creating" })}
+          disabled={activeStacks.length === 0}
+          title={activeStacks.length === 0 ? "Create a stack first" : ""}
+          className="btn-grad disabled:opacity-50"
+        >
           <Icon name="plus" size={14} strokeWidth={2.2} /> New program
         </button>
       </div>
@@ -115,8 +120,9 @@ export function ProgramsTable({ initial }: { initial: Program[] }) {
       <div className="overflow-hidden rounded-2xl border border-rule bg-paper">
         <Row hdr>
           <div>Program</div>
+          <div>Stack</div>
           <div className="text-right">Price</div>
-          <div className="text-center">Leads</div>
+          <div>Duration</div>
           <div className="text-center">Courses</div>
           <div className="text-center">Batches</div>
           <div className="text-center">Enrolments</div>
@@ -134,28 +140,25 @@ export function ProgramsTable({ initial }: { initial: Program[] }) {
                 <div className="flex items-center gap-2">
                   <span className="text-[14px] font-semibold tracking-[-.005em]">{p.name}</span>
                   {!p.enabled && (
-                    <span className="mono-cap rounded-full bg-warm2 px-2 py-0.5 text-[9px] font-semibold text-mute">
-                      inactive
-                    </span>
+                    <span className="mono-cap rounded-full bg-warm2 px-2 py-0.5 text-[9px] font-semibold text-mute">inactive</span>
                   )}
                 </div>
-                {p.track && (
-                  <div className="mono-cap mt-0.5 text-[9.5px] tracking-[.04em] text-mute">{p.track}</div>
-                )}
               </div>
+              <div className="text-[13px] text-ink2 truncate">{p.stackName ?? <span className="text-mute">—</span>}</div>
               <div className="text-right font-mono text-[13px] text-ink2">
                 {p.price ? `₹${Number(p.price).toLocaleString("en-IN")}` : <span className="text-mute">—</span>}
               </div>
-              <div className="text-center text-[13px]">
-                {p.leadCount > 0 ? (
-                  <span className="rounded-full bg-[rgba(199,25,122,.1)] px-2 py-0.5 font-mono text-[11px] font-semibold text-brand-magenta">
-                    {p.leadCount}
-                  </span>
-                ) : (
-                  <span className="text-mute">—</span>
-                )}
+              <div className="text-[13px] text-ink2">
+                {p.durationValue != null && p.durationUnit
+                  ? `${p.durationValue} ${p.durationUnit}`
+                  : <span className="text-mute">—</span>}
               </div>
-              <div className="text-center text-[13px]">{p.courseCount > 0 ? p.courseCount : <span className="text-mute">—</span>}</div>
+              <div
+                className="text-center text-[13px]"
+                title={p.courses.map((c) => c.name).join(", ") || undefined}
+              >
+                {p.courseCount > 0 ? p.courseCount : <span className="text-mute">—</span>}
+              </div>
               <div className="text-center text-[13px]">{p.batchCount > 0 ? p.batchCount : <span className="text-mute">—</span>}</div>
               <div className="text-center text-[13px]">{p.enrolmentCount > 0 ? p.enrolmentCount : <span className="text-mute">—</span>}</div>
               <div className="flex items-center justify-end gap-1.5">
@@ -165,11 +168,7 @@ export function ProgramsTable({ initial }: { initial: Program[] }) {
                 >
                   Edit
                 </button>
-                <ToggleSwitch
-                  enabled={p.enabled}
-                  busy={busy === p.id}
-                  onClick={() => onToggleEnabled(p)}
-                />
+                <ToggleSwitch enabled={p.enabled} busy={busy === p.id} onClick={() => onToggle(p)} />
               </div>
             </Row>
           ))
@@ -186,8 +185,10 @@ export function ProgramsTable({ initial }: { initial: Program[] }) {
         <ProgramFormDialog
           title="New program"
           submitLabel="Create"
+          stacks={activeStacks}
+          courses={activeCourses}
           onClose={() => setMode({ kind: "idle" })}
-          onSubmit={(name, track, price) => onCreate(name, track, price)}
+          onSubmit={(input) => onCreate(input)}
           busy={busy === "create"}
         />
       )}
@@ -195,11 +196,11 @@ export function ProgramsTable({ initial }: { initial: Program[] }) {
         <ProgramFormDialog
           title="Edit program"
           submitLabel="Save"
-          initialName={mode.program.name}
-          initialTrack={mode.program.track ?? ""}
-          initialPrice={mode.program.price ?? ""}
+          stacks={activeStacks}
+          courses={activeCourses}
+          initial={mode.program}
           onClose={() => setMode({ kind: "idle" })}
-          onSubmit={(name, track, price) => onUpdate(mode.program, name, track, price)}
+          onSubmit={(input) => onUpdate(mode.program, input)}
           busy={busy === mode.program.id}
         />
       )}
@@ -243,7 +244,7 @@ function Row({ hdr = false, dimmed = false, children }: { hdr?: boolean; dimmed?
           : "py-3.5",
         dimmed && !hdr && "bg-warm/40",
       )}
-      style={{ gridTemplateColumns: "2.4fr 110px 80px 90px 90px 110px 200px" }}
+      style={{ gridTemplateColumns: "1.8fr 1.2fr 110px 100px 80px 80px 100px 200px" }}
     >
       {children}
     </div>
@@ -261,7 +262,7 @@ function DialogShell({
       onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
     >
       <div
-        className="my-12 w-full max-w-[560px] rounded-2xl border border-rule bg-paper p-7 shadow-card"
+        className="my-12 w-full max-w-[640px] rounded-2xl border border-rule bg-paper p-7 shadow-card"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="mb-6 flex items-start justify-between gap-4">
@@ -280,38 +281,178 @@ function DialogShell({
 }
 
 function ProgramFormDialog({
-  title, submitLabel, initialName = "", initialTrack = "", initialPrice = "", onClose, onSubmit, busy,
+  title, submitLabel, stacks, courses, initial, onClose, onSubmit, busy,
 }: {
   title: string; submitLabel: string;
-  initialName?: string; initialTrack?: string; initialPrice?: string;
+  stacks: Stack[]; courses: Course[];
+  initial?: Program;
   onClose: () => void;
-  onSubmit: (name: string, track: string | null, price: string | null) => void;
+  onSubmit: (input: ProgramInput) => void;
   busy: boolean;
 }) {
-  const [name, setName] = useState(initialName);
-  const [track, setTrack] = useState(initialTrack);
-  const [price, setPrice] = useState(initialPrice);
+  const [stackId, setStackId] = useState(initial?.stackId ?? stacks[0]?.id ?? "");
+  const [name, setName] = useState(initial?.name ?? "");
+  const [description, setDescription] = useState(initial?.description ?? "");
+  const [price, setPrice] = useState(initial?.price ?? "");
+  const [durationValue, setDurationValue] = useState(initial?.durationValue?.toString() ?? "");
+  const [durationUnit, setDurationUnit] = useState<DurationUnit>(initial?.durationUnit ?? "months");
+  const [pickedCourseIds, setPickedCourseIds] = useState<Set<string>>(
+    new Set(initial?.courses.map((c) => c.id) ?? []),
+  );
+  const [courseFilter, setCourseFilter] = useState("");
+
+  const filteredCourses = useMemo(() => {
+    const q = courseFilter.trim().toLowerCase();
+    if (!q) return courses;
+    return courses.filter((c) =>
+      c.name.toLowerCase().includes(q) || (c.description ?? "").toLowerCase().includes(q),
+    );
+  }, [courses, courseFilter]);
+
+  function toggleCourse(id: string) {
+    setPickedCourseIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
   return (
-    <DialogShell title={title} onClose={onClose}>
+    <DialogShell
+      title={title}
+      subtitle="A program has a stack, a price, a duration, and one or more courses."
+      onClose={onClose}
+    >
       <form
         onSubmit={(e) => {
           e.preventDefault();
-          if (!name.trim()) return;
-          onSubmit(name.trim(), track.trim() || null, price.trim() || null);
+          if (!name.trim() || !stackId) return;
+          const dv = durationValue.trim() ? Number(durationValue.trim()) : null;
+          onSubmit({
+            name: name.trim(),
+            stackId,
+            description: description.trim() || null,
+            price: price.trim() || null,
+            durationValue: dv,
+            durationUnit: dv != null ? durationUnit : null,
+            courseIds: [...pickedCourseIds],
+          });
         }}
         className="space-y-4"
       >
-        <Field label="Name" required>
-          <input className={inputCls} value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Cloud Engineering · AWS" autoFocus />
-        </Field>
         <div className="grid grid-cols-2 gap-4">
-          <Field label="Track">
-            <input className={inputCls} value={track} onChange={(e) => setTrack(e.target.value)} placeholder="e.g. Engineering" />
+          <Field label="Stack" required>
+            <select value={stackId} onChange={(e) => setStackId(e.target.value)} className={inputCls}>
+              {stacks.length === 0 && <option value="">— No active stacks —</option>}
+              {stacks.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+            </select>
           </Field>
+          <Field label="Name" required>
+            <input className={inputCls} value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Full AI Stack" autoFocus />
+          </Field>
+        </div>
+
+        <div className="grid grid-cols-2 gap-4">
           <Field label="Price (₹)">
             <input className={inputCls} value={price} onChange={(e) => setPrice(e.target.value)} placeholder="e.g. 119000" />
           </Field>
+          <Field label="Duration">
+            <div className="flex gap-2">
+              <input
+                className={cn(inputCls, "flex-1")}
+                value={durationValue}
+                onChange={(e) => setDurationValue(e.target.value)}
+                placeholder="e.g. 6"
+                inputMode="numeric"
+              />
+              <select
+                className={cn(inputCls, "w-[110px]")}
+                value={durationUnit}
+                onChange={(e) => setDurationUnit(e.target.value as DurationUnit)}
+              >
+                <option value="weeks">weeks</option>
+                <option value="months">months</option>
+              </select>
+            </div>
+          </Field>
         </div>
+
+        <Field label="Description">
+          <textarea
+            className={cn(inputCls, "min-h-[70px] resize-y")}
+            value={description}
+            onChange={(e) => setDescription(e.target.value)}
+            placeholder="One-liner shown alongside the program in pickers."
+          />
+        </Field>
+
+        <div>
+          <span className="mono-cap mb-1.5 flex items-center justify-between text-[10px] font-semibold tracking-[.12em] text-mute">
+            <span>Courses ({pickedCourseIds.size} selected)</span>
+            {pickedCourseIds.size > 0 && (
+              <button
+                type="button"
+                onClick={() => setPickedCourseIds(new Set())}
+                className="text-[10px] font-semibold text-brand-violet hover:underline"
+              >
+                Clear
+              </button>
+            )}
+          </span>
+
+          <div className="mb-2 flex items-center gap-2 rounded-full border border-rule bg-warm/50 px-3 py-2 text-[13px] text-ink2 focus-within:border-brand-violet">
+            <Icon name="search" size={13} strokeWidth={2} className="text-mute" />
+            <input
+              value={courseFilter}
+              onChange={(e) => setCourseFilter(e.target.value)}
+              placeholder="Filter courses…"
+              className="w-full bg-transparent outline-none placeholder:text-hint"
+            />
+          </div>
+
+          <div className="max-h-[240px] overflow-y-auto rounded-[10px] border border-rule bg-warm/20 p-2">
+            {courses.length === 0 && (
+              <div className="p-3 text-center text-[12.5px] text-mute">
+                No active courses yet — create one from the Courses admin.
+              </div>
+            )}
+            {courses.length > 0 && filteredCourses.length === 0 && (
+              <div className="p-3 text-center text-[12.5px] text-mute">No courses match &quot;{courseFilter}&quot;.</div>
+            )}
+            <div className="flex flex-col gap-1.5">
+              {filteredCourses.map((c) => {
+                const checked = pickedCourseIds.has(c.id);
+                return (
+                  <label
+                    key={c.id}
+                    className={cn(
+                      "flex cursor-pointer items-center gap-3 rounded-[8px] border p-2 transition",
+                      checked ? "border-brand-violet bg-grad-soft" : "border-rule bg-paper hover:border-rule2",
+                    )}
+                  >
+                    <input type="checkbox" className="sr-only" checked={checked} onChange={() => toggleCourse(c.id)} />
+                    <span
+                      className={cn(
+                        "flex h-4 w-4 flex-shrink-0 items-center justify-center rounded-[4px] border-2 transition",
+                        checked ? "border-brand-violet bg-brand-violet" : "border-rule2",
+                      )}
+                    >
+                      {checked && <Icon name="check" size={11} strokeWidth={3} className="text-white" />}
+                    </span>
+                    <div className="min-w-0 flex-1">
+                      <div className="text-[13px] font-semibold tracking-[-.005em]">{c.name}</div>
+                      {c.description && (
+                        <div className="mt-0.5 truncate text-[11.5px] text-mute">{c.description}</div>
+                      )}
+                    </div>
+                  </label>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+
         <div className="flex items-center justify-end gap-3 pt-2">
           <button type="button" onClick={onClose} className="btn">Cancel</button>
           <button type="submit" disabled={busy} className="btn-grad disabled:opacity-60">

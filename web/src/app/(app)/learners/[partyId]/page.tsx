@@ -13,6 +13,7 @@ import { AddCourseButton } from "@/components/learner/AddCourseDialog";
 import { UnassignCourseButton } from "@/components/learner/UnassignCourseButton";
 import { UnassignBatchButton } from "@/components/learner/UnassignBatchButton";
 import { LearnerDescription } from "@/components/learner/LearnerDescription";
+import { FeeLedgerCard } from "@/components/learner/FeeLedgerCard";
 import { TimelineTabs } from "@/components/record/TimelineTabs";
 import { ShareToSlackButton } from "@/components/share/ShareToSlackButton";
 
@@ -140,6 +141,18 @@ export default async function LearnerRecordPage({ params }: { params: Promise<{ 
             </div>
           </div>
 
+          <FeeLedgerCard
+            partyId={party.id}
+            initial={{
+              feeQuoted:     party.feeQuoted,
+              feePaid:       party.feePaid,
+              dueDate:       party.dueDate,
+              paymentStatus: party.paymentStatus,
+              paymentProofs: party.paymentProofs ?? [],
+              feeNotes:      party.feeNotes,
+            }}
+          />
+
           {[...groups.values()].length === 0 ? (
             <div className="rounded-2xl border border-dashed border-rule p-10 text-center text-[13px] text-mute">
               No programs yet.
@@ -157,7 +170,6 @@ export default async function LearnerRecordPage({ params }: { params: Promise<{ 
                     <div className="mt-0.5 text-[18px] font-bold tracking-[-.005em]">{g.enrolment.programName}</div>
                     <div className="mt-1 flex items-center gap-3 text-[12px] text-mute">
                       <span>Enrolled {fmtDate(g.enrolment.enrolledAt)}</span>
-                      {g.enrolment.pricePaid && <span>· ₹{Number(g.enrolment.pricePaid).toLocaleString("en-IN")}</span>}
                     </div>
                   </div>
                   <div className="flex items-center gap-2">
@@ -190,11 +202,6 @@ export default async function LearnerRecordPage({ params }: { params: Promise<{ 
                           <div className="mb-3 flex items-center gap-2">
                             <div className="mono-cap text-[10px] font-semibold tracking-[.14em] text-mute">Course</div>
                             <div className="text-[14px] font-semibold tracking-[-.005em]">{c.assignment.courseName}</div>
-                            {c.assignment.courseCode && (
-                              <span className="mono-cap rounded-full bg-warm2 px-2 py-0.5 text-[9px] font-semibold text-mute">
-                                {c.assignment.courseCode}
-                              </span>
-                            )}
                             <span className="ml-2 font-mono text-[10px] text-mute">
                               {c.batches.length} batch{c.batches.length === 1 ? "" : "es"}
                             </span>
@@ -325,10 +332,7 @@ export default async function LearnerRecordPage({ params }: { params: Promise<{ 
           {originLead && (
             <div className="acard mb-3.5">
               <H4>Origin</H4>
-              <Field k="Lead number" v={originLead.number} />
-              <Field k="Score"       v={String(originLead.score)} />
-              <Field k="Heat"        v={originLead.heat} />
-              <Link href={`/records/${originLead.number}?asLead=1`} className="mt-3 inline-flex items-center gap-1.5 text-[12px] font-semibold text-brand-violet">
+              <Link href={`/records/${originLead.number}?asLead=1`} className="inline-flex items-center gap-1.5 text-[12px] font-semibold text-brand-violet">
                 View lead record →
               </Link>
             </div>
