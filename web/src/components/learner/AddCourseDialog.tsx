@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+
 import { useRouter } from "next/navigation";
 import { Icon } from "@/components/ui/Icon";
 import { cn } from "@/lib/cn";
@@ -72,26 +73,16 @@ function Dialog({
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
 
-  // Group courses by program for visual orientation; "Standalone" group at the
-  // bottom for courses without a program tag.
-  const grouped = useMemo(() => {
+  // Courses live across many programs now — a flat, searchable list is
+  // simpler than grouping by program (which was cosmetic anyway).
+  const visibleCourses = useMemo(() => {
     if (!courses) return null;
     const q = filter.trim().toLowerCase();
-    const filtered = q
-      ? courses.filter((c) =>
-          c.name.toLowerCase().includes(q) ||
-          (c.code ?? "").toLowerCase().includes(q) ||
-          (c.programName ?? "").toLowerCase().includes(q),
-        )
-      : courses;
-    const m = new Map<string, Course[]>();
-    for (const c of filtered) {
-      const key = c.programName ?? "— Unattached —";
-      const arr = m.get(key) ?? [];
-      arr.push(c);
-      m.set(key, arr);
-    }
-    return m;
+    if (!q) return courses;
+    return courses.filter((c) =>
+      c.name.toLowerCase().includes(q) ||
+      (c.description ?? "").toLowerCase().includes(q),
+    );
   }, [courses, filter]);
 
   function toggle(id: string) {
@@ -103,14 +94,14 @@ function Dialog({
     });
   }
 
-  function selectAll(courses: Course[]) {
+  function selectAll(pool: Course[]) {
     setPicked((prev) => {
       const next = new Set(prev);
-      const allOn = courses.every((c) => next.has(c.id));
+      const allOn = pool.every((c) => next.has(c.id));
       if (allOn) {
-        for (const c of courses) next.delete(c.id);
+        for (const c of pool) next.delete(c.id);
       } else {
-        for (const c of courses) next.add(c.id);
+        for (const c of pool) next.add(c.id);
       }
       return next;
     });
@@ -163,7 +154,7 @@ function Dialog({
             <input
               value={filter}
               onChange={(e) => setFilter(e.target.value)}
-              placeholder="Filter by course, code, or program…"
+              placeholder="Filter by course name or description…"
               className="w-full bg-transparent outline-none placeholder:text-hint"
             />
           </div>
@@ -175,23 +166,19 @@ function Dialog({
             </div>
           )}
 
-          {grouped && courses !== null && courses.length > 0 && (
+          {visibleCourses && courses !== null && courses.length > 0 && (
             <div className="max-h-[400px] overflow-y-auto pr-1">
-              {[...grouped.entries()].length === 0 ? (
+              {visibleCourses.length === 0 ? (
                 <div className="rounded-lg border border-rule p-3 text-center text-[12.5px] text-mute">
-                  No courses match "{filter}".
+                  No courses match &quot;{filter}&quot;.
                 </div>
               ) : (
-                [...grouped.entries()].map(([groupName, items]) => (
-                  <CourseGroup
-                    key={groupName}
-                    name={groupName}
-                    courses={items}
-                    pickedIds={picked}
-                    onToggle={toggle}
-                    onToggleAll={() => selectAll(items)}
-                  />
-                ))
+                <CourseList
+                  courses={visibleCourses}
+                  pickedIds={picked}
+                  onToggle={toggle}
+                  onToggleAll={() => selectAll(visibleCourses)}
+                />
               )}
             </div>
           )}
@@ -221,10 +208,9 @@ function Dialog({
   );
 }
 
-function CourseGroup({
-  name, courses, pickedIds, onToggle, onToggleAll,
+function CourseList({
+  courses, pickedIds, onToggle, onToggleAll,
 }: {
-  name: string;
   courses: Course[];
   pickedIds: Set<string>;
   onToggle: (id: string) => void;
@@ -233,9 +219,8 @@ function CourseGroup({
   const allOn = courses.every((c) => pickedIds.has(c.id));
   const someOn = courses.some((c) => pickedIds.has(c.id));
   return (
-    <div className="mb-4 last:mb-0">
-      <div className="mb-2 flex items-center justify-between">
-        <div className="mono-cap text-[10px] font-semibold tracking-[.14em] text-brand-violet">{name}</div>
+    <div>
+      <div className="mb-2 flex items-center justify-end">
         <button
           type="button"
           onClick={onToggleAll}
@@ -266,8 +251,8 @@ function CourseGroup({
               </span>
               <div className="min-w-0 flex-1">
                 <div className="text-[13px] font-semibold tracking-[-.005em]">{c.name}</div>
-                <div className="mono-cap mt-0.5 text-[9.5px] tracking-[.04em] text-mute">
-                  {c.code ? `${c.code} · ` : ""}
+                <div className="mt-0.5 text-[11.5px] text-mute">
+                  {c.description ? `${c.description} · ` : ""}
                   {c.batchCount} batch{c.batchCount === 1 ? "" : "es"}, {c.runningBatchCount} running
                 </div>
               </div>

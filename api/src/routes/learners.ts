@@ -77,30 +77,27 @@ learnersRouter.get("/:partyId", async (req, res, next) => {
 
       // Course assignments — the gate. Includes co.enabled so the learner
       // page can render a static active/inactive badge for each course.
-      // The course-assignment status (active|dropped|deferred|completed) is
-      // not surfaced to the learner UI any more — that lifecycle is managed
-      // on the Courses module.
+      // Course no longer carries a code or a program FK; a course lives under
+      // many programs via program_course. programId/programName come from the
+      // learner's enrolment when the client needs them.
       const courseAssignments = await db.execute(sql`
         SELECT
           ca.id, ca.status, ca.created_at AS "assignedAt",
           ca.enrolment_id AS "enrolmentId",
-          co.id      AS "courseId",
-          co.name    AS "courseName",
-          co.code    AS "courseCode",
-          co.enabled AS "courseEnabled",
-          pg.id      AS "programId",
-          pg.name    AS "programName"
+          co.id           AS "courseId",
+          co.name         AS "courseName",
+          co.description  AS "courseDescription",
+          co.enabled      AS "courseEnabled"
         FROM course_assignment ca
-        JOIN course  co ON co.id = ca.course_id
-        LEFT JOIN program pg ON pg.id = co.program_id
+        JOIN course co ON co.id = ca.course_id
         WHERE ca.party_id = ${partyId}
-        ORDER BY pg.name, co.name
+        ORDER BY co.name
       `);
 
       const batchAssignments = await db.execute(sql`
         SELECT
           ba.id, ba.status, ba.created_at AS "assignedAt",
-          ba.enrolment_id        AS "enrolmentId",
+          ba.enrolment_id         AS "enrolmentId",
           ba.course_assignment_id AS "courseAssignmentId",
           c.id   AS "cohortId",
           c.name AS "cohortName",
@@ -109,16 +106,12 @@ learnersRouter.get("/:partyId", async (req, res, next) => {
           c.start_date AS "startDate", c.end_date AS "endDate",
           c.status AS "batchStatus",
           co.id   AS "courseId",
-          co.name AS "courseName",
-          co.code AS "courseCode",
-          pg.id   AS "programId",
-          pg.name AS "programName"
+          co.name AS "courseName"
         FROM batch_assignment ba
-        JOIN cohort  c  ON c.id  = ba.cohort_id
-        LEFT JOIN course  co ON co.id = c.course_id
-        LEFT JOIN program pg ON pg.id = co.program_id
+        JOIN cohort c       ON c.id  = ba.cohort_id
+        LEFT JOIN course co ON co.id = c.course_id
         WHERE ba.party_id = ${partyId}
-        ORDER BY pg.name, co.name, c.start_date NULLS LAST, c.name
+        ORDER BY co.name, c.start_date NULLS LAST, c.name
       `);
 
       const timeline = await db.execute(sql`
@@ -368,14 +361,13 @@ learnersRouter.post("/:partyId/batches", async (req, res, next) => {
       // Cohort + its course
       const c = await db.execute(sql`
         SELECT c.id, c.name, c.code, c.enabled, c.status, c.course_id AS "courseId",
-               co.name AS "courseName", co.program_id AS "programId", pg.name AS "programName"
+               co.name AS "courseName"
         FROM cohort c
-        LEFT JOIN course  co ON co.id = c.course_id
-        LEFT JOIN program pg ON pg.id = co.program_id
+        LEFT JOIN course co ON co.id = c.course_id
         WHERE c.id = ${cohortId}
       `);
       if (!c.rows[0]) return { kind: "cohort-missing" as const };
-      const cohort = c.rows[0] as { id: string; name: string; code: string|null; enabled: boolean; status: string; courseId: string|null; courseName: string|null; programId: string|null; programName: string|null };
+      const cohort = c.rows[0] as { id: string; name: string; code: string|null; enabled: boolean; status: string; courseId: string|null; courseName: string|null };
       if (!cohort.enabled) return { kind: "cohort-inactive" as const };
       if (!cohort.courseId) return { kind: "cohort-no-course" as const };
 

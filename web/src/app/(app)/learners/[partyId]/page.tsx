@@ -190,11 +190,6 @@ export default async function LearnerRecordPage({ params }: { params: Promise<{ 
                           <div className="mb-3 flex items-center gap-2">
                             <div className="mono-cap text-[10px] font-semibold tracking-[.14em] text-mute">Course</div>
                             <div className="text-[14px] font-semibold tracking-[-.005em]">{c.assignment.courseName}</div>
-                            {c.assignment.courseCode && (
-                              <span className="mono-cap rounded-full bg-warm2 px-2 py-0.5 text-[9px] font-semibold text-mute">
-                                {c.assignment.courseCode}
-                              </span>
-                            )}
                             <span className="ml-2 font-mono text-[10px] text-mute">
                               {c.batches.length} batch{c.batches.length === 1 ? "" : "es"}
                             </span>

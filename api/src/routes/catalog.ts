@@ -12,13 +12,17 @@ catalogRouter.get("/", async (req, res, next) => {
       // Catalog is the bag of options the lead form / convert dialog needs.
       // No batches here — batches are picked on the learner record page.
       const programs = await db.execute(sql`
-        SELECT id, name, track, price FROM program WHERE enabled = true ORDER BY name
+        SELECT p.id, p.name, p.price, p.stack_id AS "stackId", s.name AS "stackName"
+        FROM program p
+        LEFT JOIN stack s ON s.id = p.stack_id
+        WHERE p.enabled = true
+        ORDER BY s.name NULLS LAST, p.name
       `);
       const courses = await db.execute(sql`
-        SELECT co.id, co.name, co.code, co.program_id AS "programId", p.name AS "programName"
-        FROM course co JOIN program p ON p.id = co.program_id
-        WHERE co.enabled = true AND p.enabled = true
-        ORDER BY p.name, co.name
+        SELECT co.id, co.name, co.description
+        FROM course co
+        WHERE co.enabled = true
+        ORDER BY co.name
       `);
       const advisors = await db.execute(sql`
         SELECT id, name, email, role FROM app_user

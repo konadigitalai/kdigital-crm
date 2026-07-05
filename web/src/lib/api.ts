@@ -10,11 +10,12 @@ import type {
   Case, CaseDashboard, CaseDetail, CaseResolutionCode,
   CreateCaseInput, DeletedLead, EdifyAnswer, EdifySessionSummary, EnrolmentStatus, EventRsvp, FeedItem,
   ForecastSnapshot, GroupsResponse, Lead, LeaveDay, LeaveHalfDay, LeaveKind, LearnerRecord, LearnerSummary,
-  PipelineColumn, Program, RecentRun, RecordResponse,
+  PipelineColumn, Program, ProgramInput, RecentRun, RecordResponse,
   SavedView, SavedViewInput, SavedViewScope,
   ShareSurface,
   SlackDelivery, SlackRule, SlackRuleInput,
   SlackSharePreview, SlackShareTarget, SlackShareTargetInput, SlackShareTargetsResponse,
+  Stack,
   SummaryResponse,
 } from "./types";
 
@@ -233,17 +234,34 @@ export async function getPrograms(): Promise<Program[]> {
   return programs;
 }
 
-export async function createProgram(input: { name: string; track?: string; price?: string }): Promise<Program> {
+export async function createProgram(input: ProgramInput): Promise<Program> {
   const { program } = await post<{ program: Program }>("/programs", input);
   return program;
 }
 
-export async function updateProgram(
-  id: string,
-  patch: { name?: string; track?: string | null; price?: string | null; enabled?: boolean },
-): Promise<Program> {
+export async function updateProgram(id: string, patch: Partial<ProgramInput>): Promise<Program> {
   const { program } = await send<{ program: Program }>("PATCH", `/programs/${id}`, patch);
   return program;
+}
+
+// ── Stacks ────────────────────────────────────────────────────────────────
+
+export async function getStacks(): Promise<Stack[]> {
+  const { stacks } = await get<{ stacks: Stack[] }>("/stacks");
+  return stacks;
+}
+
+export async function createStack(input: { name: string; description?: string | null }): Promise<Stack> {
+  const { stack } = await post<{ stack: Stack }>("/stacks", input);
+  return stack;
+}
+
+export async function updateStack(
+  id: string,
+  patch: { name?: string; description?: string | null; enabled?: boolean },
+): Promise<Stack> {
+  const { stack } = await send<{ stack: Stack }>("PATCH", `/stacks/${id}`, patch);
+  return stack;
 }
 
 // ── Lead edit / actions ───────────────────────────────────────────────────

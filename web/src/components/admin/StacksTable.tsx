@@ -4,45 +4,43 @@ import { useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Icon } from "@/components/ui/Icon";
 import { cn } from "@/lib/cn";
-import { createCourse, updateCourse } from "@/lib/api";
-import type { Course } from "@/lib/types";
+import { createStack, updateStack } from "@/lib/api";
+import type { Stack } from "@/lib/types";
 import { FilterBar } from "@/components/filter/FilterBar";
 import { useFilter } from "@/components/filter/useFilter";
 import type { FilterField } from "@/components/filter/types";
 
 function buildFields(): FilterField[] {
   return [
-    { key: "name",             label: "Course",      type: "text",   get: (c: Course) => c.name },
-    { key: "description",      label: "Description", type: "text",   get: (c: Course) => c.description },
-    { key: "enabled",          label: "Active",      type: "boolean",get: (c: Course) => c.enabled },
-    { key: "programCount",     label: "Programs",    type: "number", get: (c: Course) => c.programCount },
-    { key: "batchCount",       label: "Batches",     type: "number", get: (c: Course) => c.batchCount },
-    { key: "activeLearners",   label: "Active learners", type: "number", get: (c: Course) => c.activeLearners },
+    { key: "name",         label: "Name",        type: "text",   get: (s: Stack) => s.name },
+    { key: "description",  label: "Description", type: "text",   get: (s: Stack) => s.description },
+    { key: "enabled",      label: "Active",      type: "boolean",get: (s: Stack) => s.enabled },
+    { key: "programCount", label: "Programs",    type: "number", get: (s: Stack) => s.programCount },
   ];
 }
 
 type Mode =
   | { kind: "idle" }
   | { kind: "creating" }
-  | { kind: "editing"; course: Course };
+  | { kind: "editing"; stack: Stack };
 
-export function CoursesTable({ initial }: { initial: Course[] }) {
+export function StacksTable({ initial }: { initial: Stack[] }) {
   const router = useRouter();
-  const [courses, setCourses] = useState<Course[]>(initial);
+  const [stacks, setStacks] = useState<Stack[]>(initial);
   const [mode, setMode] = useState<Mode>({ kind: "idle" });
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const fields = useMemo(() => buildFields(), []);
-  const [filtered, filterState, setFilterState] = useFilter(courses, fields);
+  const [filtered, filterState, setFilterState] = useFilter(stacks, fields);
 
   function reload() { router.refresh(); }
 
   async function onCreate(name: string, description: string | null) {
     setBusy("create"); setError(null);
     try {
-      const created = await createCourse({ name, description });
-      setCourses((all) => [...all, created].sort(sortCourses));
+      const created = await createStack({ name, description });
+      setStacks((all) => [...all, created].sort(sortStacks));
       setMode({ kind: "idle" });
       reload();
     } catch (err) {
@@ -52,11 +50,11 @@ export function CoursesTable({ initial }: { initial: Course[] }) {
     }
   }
 
-  async function onUpdate(c: Course, name: string, description: string | null) {
-    setBusy(c.id); setError(null);
+  async function onUpdate(s: Stack, name: string, description: string | null) {
+    setBusy(s.id); setError(null);
     try {
-      const updated = await updateCourse(c.id, { name, description });
-      setCourses((all) => all.map((x) => (x.id === c.id ? { ...x, ...updated } : x)).sort(sortCourses));
+      const updated = await updateStack(s.id, { name, description });
+      setStacks((all) => all.map((x) => (x.id === s.id ? { ...x, ...updated } : x)).sort(sortStacks));
       setMode({ kind: "idle" });
       reload();
     } catch (err) {
@@ -66,11 +64,11 @@ export function CoursesTable({ initial }: { initial: Course[] }) {
     }
   }
 
-  async function onToggle(c: Course) {
-    setBusy(c.id); setError(null);
+  async function onToggle(s: Stack) {
+    setBusy(s.id); setError(null);
     try {
-      const updated = await updateCourse(c.id, { enabled: !c.enabled });
-      setCourses((all) => all.map((x) => (x.id === c.id ? { ...x, ...updated } : x)).sort(sortCourses));
+      const updated = await updateStack(s.id, { enabled: !s.enabled });
+      setStacks((all) => all.map((x) => (x.id === s.id ? { ...x, ...updated } : x)).sort(sortStacks));
       reload();
     } catch (err) {
       setError((err as Error).message);
@@ -83,10 +81,10 @@ export function CoursesTable({ initial }: { initial: Course[] }) {
     <>
       <div className="mb-4 flex items-center justify-between">
         <div className="text-[13px] text-mute">
-          {courses.length} course{courses.length === 1 ? "" : "s"} · {courses.filter((c) => c.enabled).length} active
+          {stacks.length} stack{stacks.length === 1 ? "" : "s"} · {stacks.filter((s) => s.enabled).length} active
         </div>
         <button onClick={() => setMode({ kind: "creating" })} className="btn-grad">
-          <Icon name="plus" size={14} strokeWidth={2.2} /> New course
+          <Icon name="plus" size={14} strokeWidth={2.2} /> New stack
         </button>
       </div>
 
@@ -95,52 +93,48 @@ export function CoursesTable({ initial }: { initial: Course[] }) {
           fields={fields}
           state={filterState}
           onChange={setFilterState}
-          placeholder="Filter courses by field…"
-          totalRows={courses.length}
+          placeholder="Filter stacks by field…"
+          totalRows={stacks.length}
           filteredRows={filtered.length}
         />
       </div>
 
       <div className="overflow-hidden rounded-2xl border border-rule bg-paper">
         <Row hdr>
-          <div>Course</div>
+          <div>Stack</div>
           <div>Description</div>
           <div className="text-center">Programs</div>
-          <div className="text-center">Batches</div>
-          <div className="text-center">Running</div>
-          <div className="text-center">Learners</div>
           <div className="text-right">Actions</div>
         </Row>
         {filtered.length === 0 ? (
           <div className="px-[22px] py-10 text-center text-[13px] text-mute">
-            {courses.length === 0 ? "No courses yet." : "No courses match the current filter."}
+            {stacks.length === 0 ? "No stacks yet — add your first." : "No stacks match the current filter."}
           </div>
         ) : (
-          filtered.map((c) => (
-            <Row key={c.id} dimmed={!c.enabled}>
+          filtered.map((s) => (
+            <Row key={s.id} dimmed={!s.enabled}>
               <div className="min-w-0">
                 <div className="flex items-center gap-2">
-                  <span className="text-[14px] font-semibold tracking-[-.005em]">{c.name}</span>
-                  {!c.enabled && (
+                  <span className="text-[14px] font-semibold tracking-[-.005em]">{s.name}</span>
+                  {!s.enabled && (
                     <span className="mono-cap rounded-full bg-warm2 px-2 py-0.5 text-[9px] font-semibold text-mute">inactive</span>
                   )}
                 </div>
               </div>
               <div className="min-w-0 truncate text-[13px] text-ink2">
-                {c.description ?? <span className="text-mute">—</span>}
+                {s.description ?? <span className="text-mute">—</span>}
               </div>
-              <div className="text-center text-[13px]">{c.programCount > 0 ? c.programCount : <span className="text-mute">—</span>}</div>
-              <div className="text-center text-[13px]">{c.batchCount > 0 ? c.batchCount : <span className="text-mute">—</span>}</div>
-              <div className="text-center text-[13px]">{c.runningBatchCount > 0 ? c.runningBatchCount : <span className="text-mute">—</span>}</div>
-              <div className="text-center text-[13px]">{c.activeLearners > 0 ? c.activeLearners : <span className="text-mute">—</span>}</div>
+              <div className="text-center text-[13px]">
+                {s.programCount > 0 ? s.programCount : <span className="text-mute">—</span>}
+              </div>
               <div className="flex items-center justify-end gap-1.5">
                 <button
-                  onClick={() => setMode({ kind: "editing", course: c })}
+                  onClick={() => setMode({ kind: "editing", stack: s })}
                   className="rounded-md border border-rule bg-paper px-2.5 py-1 text-[11.5px] font-semibold text-ink2 hover:border-brand-violet hover:text-brand-violet"
                 >
                   Edit
                 </button>
-                <ToggleSwitch enabled={c.enabled} busy={busy === c.id} onClick={() => onToggle(c)} />
+                <ToggleSwitch enabled={s.enabled} busy={busy === s.id} onClick={() => onToggle(s)} />
               </div>
             </Row>
           ))
@@ -154,30 +148,30 @@ export function CoursesTable({ initial }: { initial: Course[] }) {
       )}
 
       {mode.kind === "creating" && (
-        <CourseFormDialog
-          title="New course"
+        <StackFormDialog
+          title="New stack"
           submitLabel="Create"
           onClose={() => setMode({ kind: "idle" })}
-          onSubmit={(name, description) => onCreate(name, description)}
+          onSubmit={onCreate}
           busy={busy === "create"}
         />
       )}
       {mode.kind === "editing" && (
-        <CourseFormDialog
-          title="Edit course"
+        <StackFormDialog
+          title="Edit stack"
           submitLabel="Save"
-          initialName={mode.course.name}
-          initialDescription={mode.course.description ?? ""}
+          initialName={mode.stack.name}
+          initialDescription={mode.stack.description ?? ""}
           onClose={() => setMode({ kind: "idle" })}
-          onSubmit={(name, description) => onUpdate(mode.course, name, description)}
-          busy={busy === mode.course.id}
+          onSubmit={(name, description) => onUpdate(mode.stack, name, description)}
+          busy={busy === mode.stack.id}
         />
       )}
     </>
   );
 }
 
-function sortCourses(a: Course, b: Course) {
+function sortStacks(a: Stack, b: Stack) {
   if (a.enabled !== b.enabled) return a.enabled ? -1 : 1;
   return a.name.localeCompare(b.name);
 }
@@ -190,7 +184,7 @@ function Row({ hdr = false, dimmed = false, children }: { hdr?: boolean; dimmed?
         hdr ? "mono-cap py-3 text-[9.5px] font-semibold tracking-[.12em] text-mute bg-warm" : "py-3.5",
         dimmed && !hdr && "bg-warm/40",
       )}
-      style={{ gridTemplateColumns: "1.4fr 2fr 90px 90px 90px 100px 200px" }}
+      style={{ gridTemplateColumns: "1.6fr 2.4fr 110px 200px" }}
     >
       {children}
     </div>
@@ -213,7 +207,7 @@ function ToggleSwitch({ enabled, busy, onClick }: { enabled: boolean; busy: bool
   );
 }
 
-function CourseFormDialog({
+function StackFormDialog({
   title, submitLabel, initialName = "", initialDescription = "", onClose, onSubmit, busy,
 }: {
   title: string; submitLabel: string;
@@ -229,14 +223,11 @@ function CourseFormDialog({
       className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/40 p-6 backdrop-blur-sm"
       onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
     >
-      <div
-        className="my-12 w-full max-w-[560px] rounded-2xl border border-rule bg-paper p-7 shadow-card"
-        onClick={(e) => e.stopPropagation()}
-      >
+      <div className="my-12 w-full max-w-[560px] rounded-2xl border border-rule bg-paper p-7 shadow-card" onClick={(e) => e.stopPropagation()}>
         <div className="mb-6 flex items-start justify-between gap-4">
           <div>
             <h2 className="font-serif text-[26px] font-normal leading-tight tracking-[-.01em]">{title}</h2>
-            <p className="mt-1 text-[13px] text-mute">A course is a reusable module — programs pick it in their form.</p>
+            <p className="mt-1 text-[13px] text-mute">A stack is the top-level bucket every program belongs to.</p>
           </div>
           <button onClick={onClose} className="text-mute hover:text-ink" aria-label="Close">
             <Icon name="plus" size={18} strokeWidth={2} className="rotate-45" />
@@ -250,15 +241,15 @@ function CourseFormDialog({
           }}
           className="space-y-4"
         >
-          <Field label="Course name" required>
-            <input value={name} onChange={(e) => setName(e.target.value)} className={inputCls} placeholder="e.g. Python" autoFocus />
+          <Field label="Name" required>
+            <input className={inputCls} value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. AI Stack" autoFocus />
           </Field>
           <Field label="Description">
             <textarea
+              className={cn(inputCls, "min-h-[80px] resize-y")}
               value={description}
               onChange={(e) => setDescription(e.target.value)}
-              className={cn(inputCls, "min-h-[100px] resize-y")}
-              placeholder="One or two sentences on what this course covers."
+              placeholder="Short summary shown in program pickers."
             />
           </Field>
           <div className="flex items-center justify-end gap-3 pt-2">
@@ -273,7 +264,7 @@ function CourseFormDialog({
   );
 }
 
-const inputCls = "w-full rounded-[10px] border border-rule bg-paper px-3 py-2.5 text-[13.5px] text-ink placeholder:text-hint focus:border-brand-violet focus:outline-none focus:ring-2 focus:ring-brand-violet/20 disabled:bg-warm";
+const inputCls = "w-full rounded-[10px] border border-rule bg-paper px-3 py-2.5 text-[13.5px] text-ink placeholder:text-hint focus:border-brand-violet focus:outline-none focus:ring-2 focus:ring-brand-violet/20";
 
 function Field({ label, required, children }: { label: string; required?: boolean; children: React.ReactNode }) {
   return (

@@ -181,13 +181,17 @@ async function aggregate(tenantId: string): Promise<ForecastNumbers> {
 
     const cohortR = await db.execute(sql`
       SELECT
-        c.id AS "cohortId", c.name AS "cohortName", p.name AS "programName",
+        c.id AS "cohortId", c.name AS "cohortName",
+        co.name AS "courseName",
+        (SELECT p.name FROM program_course pc
+          JOIN program p ON p.id = pc.program_id
+          WHERE pc.course_id = co.id
+          ORDER BY pc.rank, p.name LIMIT 1) AS "programName",
         c.seats AS seats,
         (SELECT COUNT(DISTINCT ba.party_id)::int FROM batch_assignment ba WHERE ba.cohort_id = c.id) AS assigned,
         c.start_date AS "startDate", c.status AS status
       FROM cohort c
       LEFT JOIN course co ON co.id = c.course_id
-      LEFT JOIN program p ON p.id = co.program_id
       WHERE c.enabled = true AND c.status IN ('upcoming','running')
       ORDER BY c.start_date NULLS LAST
       LIMIT 12

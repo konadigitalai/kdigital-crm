@@ -332,33 +332,80 @@ export const partyDuplicateCandidate = pgTable(
 );
 
 // ─── Catalog (referenced by deal + enrolment) ─────────────────────────────
+//
+// Three-level catalog: Stack → Program → Course (many-to-many).
+//   stack           top-level bucket (e.g. "AI Stack") — every program lives here
+//   program         has price + duration + description; picks 1..N courses
+//   course          reusable building block (name + description only)
+//   program_course  junction; unique on (program_id, course_id)
+// See post-0054-catalog-stacks.sql for the schema-reset migration.
+
+export const stack = pgTable(
+  "stack",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    tenantId: uuid("tenant_id").notNull().references(() => tenant.id),
+    name: text("name").notNull(),
+    description: text("description"),
+    enabled: boolean("enabled").notNull().default(true),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    // Case-insensitive name uniqueness per tenant — SQL-side index in
+    // post-0054 uses lower(name); we can't express that in Drizzle inline.
+  }),
+);
 
 export const program = pgTable("program", {
   id: uuid("id").primaryKey().defaultRandom(),
   tenantId: uuid("tenant_id").notNull().references(() => tenant.id),
+  stackId: uuid("stack_id").notNull().references(() => stack.id),
   name: text("name").notNull(),
-  track: text("track"),
+  description: text("description"),
   price: numeric("price", { precision: 12, scale: 2 }),
+  // Duration is stored as a number + unit so it stays sortable/filterable.
+  // Unit is constrained to weeks|months in SQL (post-0054).
+  durationValue: integer("duration_value"),
+  durationUnit: text("duration_unit"),
   enabled: boolean("enabled").notNull().default(true), // soft "active" flag — never delete
   attributes: jsonb("attributes").notNull().default(sql`'{}'::jsonb`),
-});
+}, (t) => ({
+  stackIdx: index("program_stack_idx").on(t.tenantId, t.stackId),
+  durationValueCheck: check("program_duration_value_check",
+    sql`${t.durationValue} IS NULL OR ${t.durationValue} > 0`),
+  durationUnitCheck: check("program_duration_unit_check",
+    sql`${t.durationUnit} IS NULL OR ${t.durationUnit} IN ('weeks','months')`),
+}));
 
-// A course is a named module (Python, SQL, Power BI, etc).
-// `programId` is an optional tag used as a label in admin views — it does NOT
-// constrain who can be assigned the course. Any learner can be assigned any
-// course regardless of which program they enrolled into.
-// A course is offered as one or more batches (cohorts).
+// A course is a reusable module (Python, SQL, Power BI, etc). No program FK —
+// programs pick their courses via the program_course junction. A course is
+// offered as one or more batches (cohorts).
 export const course = pgTable("course", {
   id: uuid("id").primaryKey().defaultRandom(),
   tenantId: uuid("tenant_id").notNull().references(() => tenant.id),
-  programId: uuid("program_id").references(() => program.id),
   name: text("name").notNull(),
-  code: text("code"),
+  description: text("description"),
   enabled: boolean("enabled").notNull().default(true),
   attributes: jsonb("attributes").notNull().default(sql`'{}'::jsonb`),
-}, (t) => ({
-  programIdx: index("course_program_idx").on(t.tenantId, t.programId),
-}));
+});
+
+export const programCourse = pgTable(
+  "program_course",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    tenantId: uuid("tenant_id").notNull().references(() => tenant.id),
+    programId: uuid("program_id").notNull().references(() => program.id, { onDelete: "cascade" }),
+    courseId: uuid("course_id").notNull().references(() => course.id, { onDelete: "cascade" }),
+    rank: integer("rank").notNull().default(0),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    uniq: uniqueIndex("program_course_uniq").on(t.programId, t.courseId),
+    programIdx: index("program_course_program_idx").on(t.tenantId, t.programId),
+    courseIdx:  index("program_course_course_idx").on(t.tenantId, t.courseId),
+  }),
+);
 
 // "cohort" is the table — UI calls it a Batch. Each batch belongs to a course
 // (which belongs to a program). Batches are time-fenced runs of one course.
@@ -1328,6 +1375,10 @@ export const waBroadcastRecipient = pgTable(
 
 // Type exports — convenient for routes/seed
 export type Tenant = typeof tenant.$inferSelect;
+export type Stack = typeof stack.$inferSelect;
+export type Program = typeof program.$inferSelect;
+export type Course = typeof course.$inferSelect;
+export type ProgramCourse = typeof programCourse.$inferSelect;
 export type Lead = typeof lead.$inferSelect;
 export type WorkItem = typeof workItem.$inferSelect;
 export type ContactPoint = typeof contactPoint.$inferSelect;

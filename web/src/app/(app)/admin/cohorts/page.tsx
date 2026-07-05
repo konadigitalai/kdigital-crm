@@ -8,7 +8,7 @@ import { BatchesTable } from "@/components/admin/BatchesTable";
 export default async function AdminCohortsPage() {
   await requirePagePermission("admin.batches.manage");
   const [batches, courses, catalog] = await Promise.all([getBatches(), getCourses(), getCatalog()]);
-  const activeCourses = courses.filter((c) => c.enabled && c.programEnabled);
+  const activeCourses = courses.filter((c) => c.enabled);
 
   return (
     <>

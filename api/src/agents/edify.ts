@@ -282,11 +282,15 @@ async function buildSnapshot(
       })),
     };
 
-    // Cohorts (12 active)
+    // Cohorts (12 active). A course can live under many programs; surface the
+    // first attached program name (by junction rank) as a hint for the narrative.
     const cohortR = await db.execute(sql`
       SELECT
         c.name,
-        pr.name        AS "programName",
+        (SELECT pr.name FROM program_course pc
+          JOIN program pr ON pr.id = pc.program_id
+          WHERE pc.course_id = co.id
+          ORDER BY pc.rank, pr.name LIMIT 1) AS "programName",
         c.status,
         (SELECT COUNT(DISTINCT ba.party_id)::int
          FROM batch_assignment ba
@@ -295,7 +299,6 @@ async function buildSnapshot(
         c.start_date AS "startDate"
       FROM cohort c
       LEFT JOIN course co ON co.id = c.course_id
-      LEFT JOIN program pr ON pr.id = co.program_id
       WHERE c.enabled = true
       ORDER BY c.start_date NULLS LAST
       LIMIT 12

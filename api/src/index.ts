@@ -15,6 +15,7 @@ import { meRouter } from "./routes/me.js";
 import { summaryRouter } from "./routes/summary.js";
 import { catalogRouter } from "./routes/catalog.js";
 import { programsRouter } from "./routes/programs.js";
+import { stacksRouter } from "./routes/stacks.js";
 import { cohortsRouter } from "./routes/cohorts.js";
 import { coursesRouter } from "./routes/courses.js";
 import { convertRouter } from "./routes/convert.js";
@@ -130,9 +131,11 @@ app.use("/agents",   agentsRouter);
 app.use("/records",  requirePermission("leads.read"),              recordsRouter);
 app.use("/summary",  summaryRouter);
 app.use("/catalog",  catalogRouter);
-// programs/courses/cohorts: GET is readable by any authenticated user (advisor
-// dialogs need them); writes require the manage permission.
+// programs/courses/cohorts/stacks: GET is readable by any authenticated user
+// (admin dialogs need them); writes require the manage permission. Stacks
+// reuse admin.programs.manage — there's no separate stack RBAC yet.
 app.use("/programs", writeOnly("admin.programs.manage"), programsRouter);
+app.use("/stacks",   writeOnly("admin.programs.manage"), stacksRouter);
 app.use("/cohorts",  writeOnly("admin.batches.manage"),  cohortsRouter);
 app.use("/courses",  writeOnly("admin.courses.manage"),  coursesRouter);
 app.use("/users",    requirePermission("users.manage"),  usersRouter);
