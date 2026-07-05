@@ -1,4 +1,27 @@
 // Apply all pending migrations from ./drizzle. Run: npm run db:migrate
+//
+// Two-tier execution:
+//
+//   1. Drizzle-generated DDL migrations (0000_*.sql, 0001_*.sql, …). Drizzle
+//      tracks its own ledger in `drizzle.__drizzle_migrations` and only
+//      applies unseen ones. We just delegate.
+//
+//   2. Hand-written post-*.sql migrations. We track OUR ledger in a
+//      dedicated table `_decrm_post_migrations` so already-applied files
+//      never re-run on the same DB.
+//
+//      On first-ever run against a DB that predates this ledger, the
+//      runner is bootstrapped via env var:
+//         --bootstrap=post-0057-…sql
+//      (or DECRM_MIGRATIONS_BASELINE=post-0057-…sql)
+//      That marks EVERY post-*.sql up to and including the given file as
+//      "already applied" without executing them. Only files newer than the
+//      baseline actually run.
+//
+//      Without a bootstrap arg, the first run against an unmigrated DB will
+//      execute EVERY post-*.sql from scratch (correct behaviour for a fresh
+//      DB); subsequent runs only execute newly-added files.
+
 import { drizzle } from "drizzle-orm/node-postgres";
 import { migrate } from "drizzle-orm/node-postgres/migrator";
 import { pool } from "./client.js";
@@ -17,20 +40,65 @@ async function main() {
   const db = drizzle(pool);
   await migrate(db, { migrationsFolder: "./drizzle" });
 
-  // 2. Run hand-written post-migration SQL (extensions, sequences, RLS, GRANTs).
-  //    Files matching post-*.sql in ./drizzle, alphabetical order.
+  // 2. Ensure our post-migration ledger exists.
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS "_decrm_post_migrations" (
+      "filename"   text PRIMARY KEY,
+      "applied_at" timestamp with time zone NOT NULL DEFAULT now()
+    )
+  `);
+
+  // 3. Discover all post-*.sql files.
   const here = new URL("../../drizzle/", import.meta.url).pathname.replace(/^\//, "");
   const dir = process.platform === "win32" ? here : "./drizzle";
   const files = readdirSync(dir).filter((f) => f.startsWith("post-") && f.endsWith(".sql")).sort();
 
-  for (const f of files) {
+  // 4. Optional bootstrap: mark every file up to and including
+  //    <baseline> as applied WITHOUT running its SQL. Useful on DBs where
+  //    older migrations have already been applied historically (e.g. dev/qa/prod
+  //    that predate this ledger).
+  const flagBootstrap = process.argv.find((a) => a.startsWith("--bootstrap="));
+  const baseline = flagBootstrap
+    ? flagBootstrap.slice("--bootstrap=".length).trim()
+    : (process.env.DECRM_MIGRATIONS_BASELINE?.trim() || "");
+
+  if (baseline) {
+    if (!files.includes(baseline)) {
+      throw new Error(`--bootstrap value '${baseline}' is not one of the post-*.sql files on disk.`);
+    }
+    console.log(`→ bootstrapping ledger up to and including ${baseline} (no SQL will be executed for those)…`);
+    for (const f of files) {
+      await pool.query(
+        `INSERT INTO "_decrm_post_migrations" (filename) VALUES ($1) ON CONFLICT DO NOTHING`,
+        [f],
+      );
+      if (f === baseline) break;
+    }
+  }
+
+  // 5. Load the ledger and skip anything already applied.
+  const applied = new Set(
+    (await pool.query<{ filename: string }>(
+      `SELECT filename FROM "_decrm_post_migrations"`,
+    )).rows.map((r) => r.filename),
+  );
+
+  const pending = files.filter((f) => !applied.has(f));
+  if (pending.length === 0) {
+    console.log("✓ no new post-*.sql migrations to apply.");
+  }
+
+  for (const f of pending) {
     console.log(`→ applying ${f}…`);
     const sql = readFileSync(join(dir, f), "utf8");
     await pool.query(sql);
+    await pool.query(
+      `INSERT INTO "_decrm_post_migrations" (filename) VALUES ($1)`,
+      [f],
+    );
   }
 
-  // App role password — only set if DECRM_APP_PASSWORD env var provided.
-  // Keeps the password out of SQL files committed to git.
+  // 6. App role password — only set if DECRM_APP_PASSWORD env var provided.
   if (process.env.DECRM_APP_PASSWORD) {
     console.log("→ setting decrm_app password…");
     const pw = process.env.DECRM_APP_PASSWORD.replace(/'/g, "''");

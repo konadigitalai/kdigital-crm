@@ -69,6 +69,9 @@ export const appUser = pgTable(
     // route/seed code writes both party + app_user in a transaction.
     email: text("email").notNull(),
     name: text("name"),
+    // Optional contact number for admins/advisors. Added in post-0059 for the
+    // Manage Advisors admin page; free-text (no country-code split).
+    phone: text("phone"),
     role: text("role").notNull().default("advisor"),
     active: boolean("active").notNull().default(true),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
@@ -521,6 +524,10 @@ export const lead = pgTable("lead", {
   // Phase H+: pipeline cadence dates the advisor sets manually.
   nextFollowupAt:    date("next_followup_at"),
   demoAttendedAt:    date("demo_attended_at"),
+  // Visit cadence — advisor-set. `visited_date` is when the lead already came
+  // in; `visiting_date` is when they're scheduled to. See post-0058.
+  visitedDate:       date("visited_date"),
+  visitingDate:      date("visiting_date"),
   // Display tz on the record header. IANA name; "Asia/Kolkata" by convention
   // for legacy rows that have no value.
   timeZone:          text("time_zone"),

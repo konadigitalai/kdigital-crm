@@ -4,7 +4,7 @@
 // All routes are tenant-scoped on the server side via `tenantMiddleware`.
 
 import type {
-  AdminUser, AgentCard, AgentCatalogEntry, AgentMode, AgentRunRecord, Batch, BatchInput, BatchSession,
+  AdminUser, Advisor, AdvisorInput, AdvisorRole, AgentCard, AgentCatalogEntry, AgentMode, AgentRunRecord, Batch, BatchInput, BatchSession,
   CalendarEventDetail, CalendarEventSummary, CatalogResponse,
   Course, CourseInput, CreateLeadInput, CurrentUser,
   Case, CaseDashboard, CaseDetail, CaseResolutionCode,
@@ -265,6 +265,26 @@ export async function updateStack(
   return stack;
 }
 
+// ── Advisors (Manage Advisors admin page) ────────────────────────────────
+
+export async function getAdvisors(): Promise<Advisor[]> {
+  const { advisors } = await get<{ advisors: Advisor[] }>("/advisors");
+  return advisors;
+}
+
+export async function createAdvisor(input: AdvisorInput): Promise<Advisor> {
+  const { advisor } = await post<{ advisor: Advisor }>("/advisors", input);
+  return advisor;
+}
+
+export async function updateAdvisor(
+  id: string,
+  patch: { name?: string; phone?: string | null; role?: AdvisorRole; active?: boolean },
+): Promise<Advisor> {
+  const { advisor } = await send<{ advisor: Advisor }>("PATCH", `/advisors/${id}`, patch);
+  return advisor;
+}
+
 // ── Lead edit / actions ───────────────────────────────────────────────────
 
 export async function updateLead(idOrNumber: string, patch: Partial<{
@@ -283,6 +303,8 @@ export async function updateLead(idOrNumber: string, patch: Partial<{
   registeredDate: string | null;
   nextFollowupAt: string | null;
   demoAttendedAt: string | null;
+  visitedDate:    string | null;
+  visitingDate:   string | null;
   paymentProofUrl: string | null;
 }>): Promise<void> {
   await send<void>("PATCH", `/leads/${encodeURIComponent(idOrNumber)}`, patch);
@@ -300,6 +322,8 @@ export interface BulkLeadPatch {
   timeZone?:       string | null;
   nextFollowupAt?: string | null;   // YYYY-MM-DD
   demoAttendedAt?: string | null;   // YYYY-MM-DD
+  visitedDate?:    string | null;   // YYYY-MM-DD
+  visitingDate?:   string | null;   // YYYY-MM-DD
 }
 
 export async function bulkUpdateLeads(

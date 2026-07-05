@@ -202,9 +202,10 @@ async function buildSnapshot(
           WHEN 'superhot' THEN 0
           WHEN 'hot'      THEN 1
           WHEN 'warm'     THEN 2
-          WHEN 'attempted' THEN 3
-          WHEN 'new lead' THEN 4
-          ELSE 5
+          WHEN 'lukewarm' THEN 3
+          WHEN 'attempted' THEN 4
+          WHEN 'new lead' THEN 5
+          ELSE 6
         END,
         l.score DESC NULLS LAST
       LIMIT 25

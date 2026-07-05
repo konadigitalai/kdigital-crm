@@ -46,6 +46,8 @@ export interface LeadEditable {
   registeredDate: string | null;
   nextFollowupAt: string | null;
   demoAttendedAt: string | null;
+  visitedDate:    string | null;
+  visitingDate:   string | null;
   paymentProofUrl: string | null;
   score: number;
   heat: Heat;
