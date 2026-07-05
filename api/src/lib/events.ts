@@ -85,12 +85,15 @@ async function dispatchWhatsAppAutomations(e: DomainEvent): Promise<void> {
   const ctx = e.context as LeadCreatedContext;
 
   await withTenant(e.tenantId, async (db) => {
-    // Look up the party + WhatsApp conversation for this lead.
+    // Look up the party + WhatsApp conversation for this lead. `lead` has no
+    // party_id column — the party lives on `work_item`, and `lead.work_item_id`
+    // is the FK. `ctx.leadId` is the work_item.id (see routes/leads.ts).
     const r = await db.execute(sql`
-      SELECT l.party_id AS "partyId", c.id AS "conversationId"
+      SELECT wi.party_id AS "partyId", c.id AS "conversationId"
       FROM lead l
-      LEFT JOIN wa_conversation c ON c.party_id = l.party_id
-      WHERE l.id = ${ctx.leadId}
+      JOIN work_item wi ON wi.id = l.work_item_id
+      LEFT JOIN wa_conversation c ON c.party_id = wi.party_id
+      WHERE l.work_item_id = ${ctx.leadId}
     `);
     const row = r.rows[0] as { partyId: string | null; conversationId: string | null } | undefined;
     if (!row?.partyId) return;

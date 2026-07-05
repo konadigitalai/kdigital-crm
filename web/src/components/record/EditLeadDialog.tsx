@@ -222,7 +222,7 @@ function Dialog({ leadNumber, lead, onClose }: { leadNumber: string; lead: LeadE
             <div className="grid grid-cols-2 gap-4">
               <Field label="Program">
                 <select className={inputCls} value={programId} onChange={(e) => setProgramId(e.target.value)} disabled={!catalog}>
-                  <option value="">— pick a program —</option>
+                  <option value="">— none —</option>
                   {catalog?.programs.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
                 </select>
               </Field>

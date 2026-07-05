@@ -793,12 +793,35 @@ export interface LearnerRecord {
     attributes: { initials?: string };
     learnerSince: string;
     leadSince: string | null;
+    // Fee ledger (single per learner, see post-0055/0056/0057-party-fee-*.sql).
+    // feeDue is NOT stored — clients compute it as (feeQuoted − feePaid).
+    // paymentProofs is the canonical ordered list of receipts (each item is a
+    // plain URL or a data: URL). paymentProofUrl mirrors proofs[0] for one
+    // release so any legacy reader stays coherent.
+    feeQuoted:       string | null;
+    feePaid:         string | null;
+    dueDate:         string | null;
+    paymentStatus:   PaymentStatus | null;
+    paymentProofUrl: string | null;
+    paymentProofs:   string[];
+    feeNotes:        string | null;
   };
   enrolments: ProgramEnrolment[];
   courseAssignments: CourseAssignment[];
   assignments: BatchAssignment[];
   timeline: TimelineRow[];
   originLead: { number: string; workItemId: string; score: number; heat: Heat; description: string | null } | null;
+}
+
+export type PaymentStatus = "pending" | "paid" | "refund" | "on_hold";
+
+export interface LearnerFeeInput {
+  feeQuoted?:     string | null;
+  feePaid?:       string | null;
+  dueDate?:       string | null;
+  paymentStatus?: PaymentStatus | null;
+  paymentProofs?: string[];
+  feeNotes?:      string | null;
 }
 
 export interface BatchInput {

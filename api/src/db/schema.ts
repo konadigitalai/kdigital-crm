@@ -121,11 +121,27 @@ export const party = pgTable(
     isMerged: boolean("is_merged").notNull().default(false),
     mergedIntoPartyId: uuid("merged_into_party_id"),
     mergedAt: timestamp("merged_at", { withTimezone: true }),
+    // Fee ledger — single per learner. fee_due is not stored, it is computed
+    // as (fee_quoted - fee_paid) at read time. See post-0055-party-fee-ledger.sql.
+    // paymentProofs is an ordered list of receipts — each entry is either a
+    // data: URL (base64 inline image) or an https link. paymentProofUrl (the
+    // singular column) is legacy; readers should prefer paymentProofs.
+    // feeNotes was added by post-0056-party-fee-notes.sql.
+    // paymentProofs was added by post-0057-party-payment-proofs.sql.
+    feeQuoted:       numeric("fee_quoted", { precision: 12, scale: 2 }),
+    feePaid:         numeric("fee_paid",   { precision: 12, scale: 2 }),
+    dueDate:         date("due_date"),
+    paymentStatus:   text("payment_status"),
+    paymentProofUrl: text("payment_proof_url"),
+    paymentProofs:   text("payment_proofs").array().notNull().default(sql`'{}'::text[]`),
+    feeNotes:        text("fee_notes"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => ({
     kindCheck: check("party_kind_check", sql`${t.kind} IN ('person','org')`),
+    paymentStatusCheck: check("party_payment_status_check",
+      sql`${t.paymentStatus} IS NULL OR ${t.paymentStatus} IN ('pending','paid','refund','on_hold')`),
     tenantIdx: index("party_tenant_idx").on(t.tenantId),
     identifiersGin: index("party_identifiers_gin").using("gin", t.identifiers),
     nameTrgm: index("party_name_trgm").using("gin", sql`${t.name} gin_trgm_ops`),

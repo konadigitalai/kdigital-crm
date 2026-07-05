@@ -58,6 +58,13 @@ learnersRouter.get("/:partyId", async (req, res, next) => {
     const data = await withTenant(req.tenantId!, async (db) => {
       const partyR = await db.execute(sql`
         SELECT p.id, p.name, p.email, p.phone, p.city, p.attributes,
+               p.fee_quoted        AS "feeQuoted",
+               p.fee_paid          AS "feePaid",
+               p.due_date          AS "dueDate",
+               p.payment_status    AS "paymentStatus",
+               p.payment_proof_url AS "paymentProofUrl",
+               p.payment_proofs    AS "paymentProofs",
+               p.fee_notes         AS "feeNotes",
                (SELECT valid_from FROM party_role WHERE party_id = p.id AND role = 'learner' AND valid_to IS NULL) AS "learnerSince",
                (SELECT MIN(valid_from) FROM party_role WHERE party_id = p.id AND role = 'lead') AS "leadSince"
         FROM party p
@@ -491,6 +498,230 @@ learnersRouter.delete("/:partyId/batches/:assignmentId", async (req, res, next) 
 
     if (result.kind === "missing") return res.status(404).json({ error: "Assignment not found" });
     res.json({ ok: true, cohortName: result.cohortName });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// PATCH /learners/:partyId/fee — update the learner's fee ledger. Any subset
+// of fields can be sent; unsent fields are left untouched. fee_due is NOT a
+// stored field — the client computes it from (fee_quoted − fee_paid).
+//
+// Emits a single "Fee ledger updated" activity row with a diff summary so
+// the learner timeline records who changed what and when.
+const PAYMENT_STATUSES = ["pending", "paid", "refund", "on_hold"] as const;
+
+const FEE_STATUS_LABEL: Record<string, string> = {
+  pending: "Pending", paid: "Paid", refund: "Refund", on_hold: "On hold",
+};
+
+// Format a fee-related value into the string that appears in the diff.
+// Kept short so several changes fit on one line in the timeline.
+function fmtFeeValue(field: string, v: string | number | null): string {
+  if (v == null || v === "") return "—";
+  if (field === "feeQuoted" || field === "feePaid") return `₹${Number(v).toLocaleString("en-IN")}`;
+  if (field === "paymentStatus") return FEE_STATUS_LABEL[String(v)] ?? String(v);
+  if (field === "paymentProofs") {
+    const n = Number(v);
+    return n === 0 ? "none" : `${n} receipt${n === 1 ? "" : "s"}`;
+  }
+  if (field === "feeNotes") {
+    const s = String(v);
+    return s.length > 40 ? `${s.slice(0, 37)}…` : s;
+  }
+  return String(v);
+}
+
+const FEE_FIELD_LABEL: Record<string, string> = {
+  feeQuoted:      "Fee quoted",
+  feePaid:        "Fee paid",
+  dueDate:        "Due date",
+  paymentStatus:  "Payment status",
+  paymentProofs:  "Payment proof",
+  feeNotes:       "Notes",
+};
+
+// Cap each receipt at ~5 MB (base64) and the whole array at ~20 MB, so a
+// runaway upload can't wedge Postgres or fill the JSON body.
+const MAX_PROOF_ENTRY_BYTES = 6_500_000;
+const MAX_PROOF_TOTAL_BYTES = 26_000_000;
+
+learnersRouter.patch("/:partyId/fee", async (req, res, next) => {
+  try {
+    const partyId = String(req.params.partyId);
+    if (!/^[0-9a-fA-F-]{36}$/.test(partyId)) return res.status(400).json({ error: "invalid id" });
+    const b = req.body ?? {};
+
+    // Money coerces to a string ("12345.67") because Postgres NUMERIC returns
+    // strings on the way out — we keep the write path symmetric.
+    function money(v: unknown): string | null | undefined {
+      if (v === undefined) return undefined;
+      if (v === null || v === "") return null;
+      const n = Number(v);
+      if (!Number.isFinite(n) || n < 0) throw new Error("fee amount must be a non-negative number");
+      return String(n);
+    }
+
+    let feeQuoted: string | null | undefined;
+    let feePaid:   string | null | undefined;
+    try {
+      feeQuoted = money(b.feeQuoted);
+      feePaid   = money(b.feePaid);
+    } catch (err) {
+      return res.status(400).json({ error: (err as Error).message });
+    }
+
+    const dueDate = b.dueDate !== undefined
+      ? (b.dueDate ? String(b.dueDate).trim() : null)
+      : undefined;
+    if (dueDate !== undefined && dueDate !== null && !/^\d{4}-\d{2}-\d{2}$/.test(dueDate)) {
+      return res.status(400).json({ error: "dueDate must be YYYY-MM-DD" });
+    }
+
+    const paymentStatus = b.paymentStatus !== undefined
+      ? (b.paymentStatus ? String(b.paymentStatus).trim() : null)
+      : undefined;
+    if (paymentStatus !== undefined && paymentStatus !== null
+        && !PAYMENT_STATUSES.includes(paymentStatus as typeof PAYMENT_STATUSES[number])) {
+      return res.status(400).json({ error: `paymentStatus must be one of ${PAYMENT_STATUSES.join(", ")}` });
+    }
+
+    // Payment proofs — ordered list. Each entry is either an https URL or
+    // a data: URL (base64 inline receipt image). We keep the legacy
+    // paymentProofUrl in sync (write the first entry there) for one release
+    // so any older reader stays coherent.
+    let paymentProofs: string[] | undefined;
+    if (b.paymentProofs !== undefined) {
+      if (!Array.isArray(b.paymentProofs)) {
+        return res.status(400).json({ error: "paymentProofs must be an array" });
+      }
+      const cleaned: string[] = [];
+      let total = 0;
+      for (const raw of b.paymentProofs) {
+        const s = String(raw ?? "").trim();
+        if (!s) continue;
+        if (s.length > MAX_PROOF_ENTRY_BYTES) {
+          return res.status(413).json({ error: "one payment proof is too large (max ~5 MB)" });
+        }
+        total += s.length;
+        cleaned.push(s);
+      }
+      if (total > MAX_PROOF_TOTAL_BYTES) {
+        return res.status(413).json({ error: "combined payment proofs are too large (max ~20 MB)" });
+      }
+      paymentProofs = cleaned;
+    }
+
+    const feeNotes = b.feeNotes !== undefined
+      ? (b.feeNotes ? String(b.feeNotes).trim().slice(0, 2000) : null)
+      : undefined;
+
+    const sets: ReturnType<typeof sql>[] = [];
+    if (feeQuoted     !== undefined) sets.push(sql`fee_quoted     = ${feeQuoted}`);
+    if (feePaid       !== undefined) sets.push(sql`fee_paid       = ${feePaid}`);
+    if (dueDate       !== undefined) sets.push(sql`due_date       = ${dueDate}`);
+    if (paymentStatus !== undefined) sets.push(sql`payment_status = ${paymentStatus}`);
+    if (paymentProofs !== undefined) {
+      // Postgres text[] literal — build safely element by element.
+      const arrExpr = paymentProofs.length === 0
+        ? sql`ARRAY[]::text[]`
+        : sql`ARRAY[${sql.join(paymentProofs.map((p) => sql`${p}`), sql`, `)}]::text[]`;
+      sets.push(sql`payment_proofs = ${arrExpr}`);
+      // Mirror the first entry into the legacy singular column so old readers
+      // keep working. Null when the array is empty.
+      sets.push(sql`payment_proof_url = ${paymentProofs[0] ?? null}`);
+    }
+    if (feeNotes      !== undefined) sets.push(sql`fee_notes      = ${feeNotes}`);
+
+    if (sets.length === 0) return res.status(400).json({ error: "no fields to update" });
+
+    const outcome = await withTenant(req.tenantId!, async (db) => {
+      const actorPartyId = await resolveActorPartyId(db, req.tenantId!, req.userId);
+
+      // Only learners can have their ledger edited via this route.
+      const isLearner = await db.execute(sql`
+        SELECT 1 FROM party_role
+        WHERE party_id = ${partyId} AND role = 'learner' AND valid_to IS NULL LIMIT 1
+      `);
+      if (isLearner.rows.length === 0) return null;
+
+      // Snapshot BEFORE so we can produce a diff for the timeline.
+      const beforeR = await db.execute(sql`
+        SELECT
+          fee_quoted     AS "feeQuoted",
+          fee_paid       AS "feePaid",
+          due_date       AS "dueDate",
+          payment_status AS "paymentStatus",
+          payment_proofs AS "paymentProofs",
+          fee_notes      AS "feeNotes"
+        FROM party WHERE id = ${partyId}
+      `);
+      type LedgerRow = {
+        feeQuoted: string | null; feePaid: string | null; dueDate: string | null;
+        paymentStatus: string | null; paymentProofs: string[] | null; feeNotes: string | null;
+      };
+      const before = beforeR.rows[0] as LedgerRow | undefined;
+
+      const setClause = sql.join(sets, sql`, `);
+      const r = await db.execute(sql`
+        UPDATE party SET ${setClause}
+        WHERE id = ${partyId}
+        RETURNING
+          fee_quoted        AS "feeQuoted",
+          fee_paid          AS "feePaid",
+          due_date          AS "dueDate",
+          payment_status    AS "paymentStatus",
+          payment_proof_url AS "paymentProofUrl",
+          payment_proofs    AS "paymentProofs",
+          fee_notes         AS "feeNotes"
+      `);
+      const after = r.rows[0] as (LedgerRow & { paymentProofUrl: string | null }) | undefined;
+      if (!after) return null;
+
+      // Build a compact diff string, skipping any incoming field whose value
+      // didn't actually change (client may send unchanged values).
+      const changes: string[] = [];
+      const dueDateStr = (v: string | null): string | null => {
+        if (!v) return null;
+        // Postgres date columns come back as ISO Date objects in pg-node.
+        return typeof v === "string" ? v.slice(0, 10) : new Date(v as unknown as string).toISOString().slice(0, 10);
+      };
+      const proofsEqual = (a: string[] | null, b: string[] | null): boolean => {
+        const aa = a ?? []; const bb = b ?? [];
+        if (aa.length !== bb.length) return false;
+        for (let i = 0; i < aa.length; i++) if (aa[i] !== bb[i]) return false;
+        return true;
+      };
+      for (const key of ["feeQuoted","feePaid","dueDate","paymentStatus","paymentProofs","feeNotes"] as const) {
+        if (key === "paymentProofs") {
+          if (proofsEqual(before?.paymentProofs ?? null, after.paymentProofs ?? null)) continue;
+          const bLen = (before?.paymentProofs ?? []).length;
+          const aLen = (after.paymentProofs   ?? []).length;
+          changes.push(`${FEE_FIELD_LABEL[key]}: ${fmtFeeValue(key, bLen)} → ${fmtFeeValue(key, aLen)}`);
+          continue;
+        }
+        const bv = key === "dueDate" ? dueDateStr(before?.[key] ?? null) : (before?.[key] ?? null);
+        const av = key === "dueDate" ? dueDateStr(after[key]    ?? null) : (after[key]    ?? null);
+        if (bv === av) continue;
+        changes.push(`${FEE_FIELD_LABEL[key]}: ${fmtFeeValue(key, bv)} → ${fmtFeeValue(key, av)}`);
+      }
+
+      if (changes.length > 0) {
+        const actorName = req.user?.name?.trim() || "You";
+        const detail = `Updated fee ledger — ${changes.join("; ")}.`;
+        await db.execute(sql`
+          INSERT INTO activity (tenant_id, party_id, actor_type, actor_party_id, actor_name, verb, detail, tag, payload, ts)
+          VALUES (current_tenant(), ${partyId}, 'user', ${actorPartyId}, ${actorName}, 'Fee ledger updated',
+                  ${detail}, 'you',
+                  ${JSON.stringify({ when: "Just now", quote: null, changes })}::jsonb, NOW())
+        `);
+      }
+
+      return after;
+    });
+
+    if (!outcome) return res.status(404).json({ error: "learner not found" });
+    res.json({ ok: true, fee: outcome });
   } catch (err) {
     next(err);
   }

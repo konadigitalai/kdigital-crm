@@ -62,11 +62,11 @@ function Dialog({ defaultRating, onClose }: { defaultRating?: LeadRating; onClos
   const [nbaLabel, setNbaLabel] = useState("");
 
   useEffect(() => {
+    // Load the catalog for the program dropdown. Program is optional — leave
+    // it unselected by default so the advisor picks explicitly, or leaves it
+    // blank if the lead's program isn't decided yet.
     getCatalog()
-      .then((c) => {
-        setCatalog(c);
-        if (c.programs[0]) setProgram(c.programs[0].name);
-      })
+      .then((c) => setCatalog(c))
       .catch((e) => setError((e as Error).message));
   }, []);
 
@@ -170,9 +170,8 @@ function Dialog({ defaultRating, onClose }: { defaultRating?: LeadRating; onClos
             <div className="grid grid-cols-2 gap-4">
               <Field label="Program">
                 <select className={inputCls} value={program} onChange={(e) => setProgram(e.target.value)} disabled={!catalog}>
-                  {catalog?.programs.length === 0 ? (
-                    <option value="">— no programs yet —</option>
-                  ) : catalog?.programs.map((p) => (
+                  <option value="">— none —</option>
+                  {catalog?.programs.map((p) => (
                     <option key={p.id} value={p.name}>{p.name}</option>
                   ))}
                 </select>

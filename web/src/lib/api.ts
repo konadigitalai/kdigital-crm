@@ -9,7 +9,8 @@ import type {
   Course, CourseInput, CreateLeadInput, CurrentUser,
   Case, CaseDashboard, CaseDetail, CaseResolutionCode,
   CreateCaseInput, DeletedLead, EdifyAnswer, EdifySessionSummary, EnrolmentStatus, EventRsvp, FeedItem,
-  ForecastSnapshot, GroupsResponse, Lead, LeaveDay, LeaveHalfDay, LeaveKind, LearnerRecord, LearnerSummary,
+  ForecastSnapshot, GroupsResponse, Lead, LeaveDay, LeaveHalfDay, LeaveKind, LearnerFeeInput, LearnerRecord, LearnerSummary,
+  PaymentStatus,
   PipelineColumn, Program, ProgramInput, RecentRun, RecordResponse,
   SavedView, SavedViewInput, SavedViewScope,
   ShareSurface,
@@ -441,6 +442,21 @@ export async function getLearner(partyId: string): Promise<LearnerRecord | null>
     if ((err as Error).message.includes("404")) return null;
     throw err;
   }
+}
+
+export async function patchLearnerFee(
+  partyId: string,
+  patch: LearnerFeeInput,
+): Promise<{ ok: true; fee: {
+  feeQuoted: string | null; feePaid: string | null; dueDate: string | null;
+  paymentStatus: PaymentStatus | null; paymentProofUrl: string | null;
+  paymentProofs: string[]; feeNotes: string | null;
+} }> {
+  return await send(
+    "PATCH",
+    `/learners/${encodeURIComponent(partyId)}/fee`,
+    patch,
+  );
 }
 
 export async function assignLearnerToBatch(partyId: string, cohortId: string): Promise<{ enrolmentId: string }> {
