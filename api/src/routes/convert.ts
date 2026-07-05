@@ -18,8 +18,6 @@ convertRouter.post("/:idOrNumber/convert", async (req, res, next) => {
     const { idOrNumber } = req.params;
     const isUuid = /^[0-9a-fA-F-]{36}$/.test(idOrNumber);
     const programIdInput = req.body?.programId ? String(req.body.programId).trim() : null;
-    const pricePaidInput = req.body?.pricePaid != null && req.body.pricePaid !== ""
-      ? String(req.body.pricePaid) : null;
 
     const result = await withTenant(req.tenantId!, async (db) => {
       const actorPartyId = await resolveActorPartyId(db, req.tenantId!, req.userId);
@@ -28,6 +26,7 @@ convertRouter.post("/:idOrNumber/convert", async (req, res, next) => {
           ? sql`
               SELECT wi.id AS "workItemId", wi.party_id AS "partyId",
                      l.program_id AS "programId", l.stage,
+                     l.value    AS "feeQuoted",
                      l.fee_paid AS "feePaid", l.fee_due AS "feeDue",
                      l.due_date AS "dueDate", l.registered_date AS "registeredDate",
                      l.payment_proof_url AS "paymentProofUrl",
@@ -40,6 +39,7 @@ convertRouter.post("/:idOrNumber/convert", async (req, res, next) => {
           : sql`
               SELECT wi.id AS "workItemId", wi.party_id AS "partyId",
                      l.program_id AS "programId", l.stage,
+                     l.value    AS "feeQuoted",
                      l.fee_paid AS "feePaid", l.fee_due AS "feeDue",
                      l.due_date AS "dueDate", l.registered_date AS "registeredDate",
                      l.payment_proof_url AS "paymentProofUrl",
@@ -53,6 +53,7 @@ convertRouter.post("/:idOrNumber/convert", async (req, res, next) => {
       if (!leadR.rows[0]) return { kind: "not-found" as const };
       const lead = leadR.rows[0] as {
         workItemId: string; partyId: string; programId: string | null; stage: string; partyName: string;
+        feeQuoted: string | null;
         feePaid: string | null; feeDue: string | null; dueDate: string | null;
         registeredDate: string | null; paymentProofUrl: string | null;
       };
@@ -86,9 +87,9 @@ convertRouter.post("/:idOrNumber/convert", async (req, res, next) => {
         ON CONFLICT (party_id, role, valid_from) DO NOTHING
       `);
 
-      // Program enrolment — carry lead's payment trail forward.
-      // pricePaid: prefer explicit input; else lead.feePaid; else program list price.
-      const pricePaid = pricePaidInput ?? lead.feePaid ?? prog.price;
+      // Program enrolment — historical: enrolment.price_paid/fee_due/etc. are
+      // kept for reporting continuity but the UI ledger now lives on the party.
+      const pricePaid = lead.feePaid ?? prog.price;
       const enrR = await db.execute(sql`
         INSERT INTO enrolment (
           tenant_id, party_id, program_id, deal_id, status,
@@ -99,6 +100,28 @@ convertRouter.post("/:idOrNumber/convert", async (req, res, next) => {
           ${pricePaid}, ${lead.feeDue}, ${lead.dueDate}, ${lead.registeredDate}, ${lead.paymentProofUrl}
         )
         RETURNING id
+      `);
+
+      // Seed the learner's fee ledger from the lead — but only for a fresh
+      // learner (don't clobber a ledger that's already been edited by an
+      // advisor for a prior enrolment on this party).
+      //
+      // For payment_proofs: only seed the array from the lead's single URL if
+      // the array is currently empty. If the advisor has already attached
+      // proofs on this party, leave them alone.
+      await db.execute(sql`
+        UPDATE party SET
+          fee_quoted        = COALESCE(fee_quoted,        ${lead.feeQuoted}),
+          fee_paid          = COALESCE(fee_paid,          ${lead.feePaid}),
+          due_date          = COALESCE(due_date,          ${lead.dueDate}),
+          payment_proof_url = COALESCE(payment_proof_url, ${lead.paymentProofUrl}),
+          payment_proofs    = CASE
+            WHEN COALESCE(array_length(payment_proofs, 1), 0) = 0 AND ${lead.paymentProofUrl}::text IS NOT NULL
+              THEN ARRAY[${lead.paymentProofUrl}::text]
+            ELSE payment_proofs
+          END,
+          payment_status    = COALESCE(payment_status,    'pending')
+        WHERE id = ${lead.partyId}
       `);
 
       // Lead state

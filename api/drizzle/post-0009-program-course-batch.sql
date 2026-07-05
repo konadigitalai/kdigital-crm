@@ -11,6 +11,14 @@
 ALTER TABLE "program" ADD COLUMN IF NOT EXISTS "price" numeric(12,2);
 
 -- 2. course table
+--
+-- Historical shape: (tenant_id, program_id, name, code, enabled, attributes).
+-- On a fresh DB where `course` was created from the current schema.ts (post-
+-- 0054 shape), or where a prior migration run got as far as post-0054 and
+-- dropped program_id/code, this section runs anyway — the ADD COLUMN IF NOT
+-- EXISTS statements re-materialise the legacy columns so the FK / index /
+-- seed below always have something to point at. post-0054 will drop them
+-- again a few files later; the round trip is deliberately cheap.
 CREATE TABLE IF NOT EXISTS "course" (
   "id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
   "tenant_id" uuid NOT NULL,
@@ -21,18 +29,37 @@ CREATE TABLE IF NOT EXISTS "course" (
   "attributes" jsonb NOT NULL DEFAULT '{}'::jsonb
 );
 
+-- Belt-and-braces: if `course` was created by a different path (Drizzle push
+-- from the current schema, or a partial prior migration), re-add the legacy
+-- columns so the rest of this file runs. NULL is fine because we backfill
+-- from data below and post-0054 drops these columns eventually.
+ALTER TABLE "course" ADD COLUMN IF NOT EXISTS "program_id" uuid;
+ALTER TABLE "course" ADD COLUMN IF NOT EXISTS "code"       text;
+
 DO $$ BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'course_tenant_id_tenant_id_fk') THEN
     ALTER TABLE "course" ADD CONSTRAINT "course_tenant_id_tenant_id_fk"
       FOREIGN KEY ("tenant_id") REFERENCES "tenant"("id");
   END IF;
-  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'course_program_id_program_id_fk') THEN
+  -- Only add the FK if the column still exists (dropped in post-0054).
+  IF EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_name = 'course' AND column_name = 'program_id'
+  ) AND NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'course_program_id_program_id_fk') THEN
     ALTER TABLE "course" ADD CONSTRAINT "course_program_id_program_id_fk"
       FOREIGN KEY ("program_id") REFERENCES "program"("id");
   END IF;
 END $$;
 
-CREATE INDEX IF NOT EXISTS "course_program_idx" ON "course" ("tenant_id", "program_id");
+-- Only create the (tenant_id, program_id) index if program_id still exists.
+DO $$ BEGIN
+  IF EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_name = 'course' AND column_name = 'program_id'
+  ) THEN
+    CREATE INDEX IF NOT EXISTS "course_program_idx" ON "course" ("tenant_id", "program_id");
+  END IF;
+END $$;
 
 -- RLS for course
 ALTER TABLE "course" ENABLE ROW LEVEL SECURITY;
@@ -45,10 +72,21 @@ CREATE POLICY "course_tenant_isolation" ON "course"
 GRANT SELECT, INSERT, UPDATE, DELETE ON "course" TO decrm_app;
 
 -- 3. Seed a "General" course per program so existing batches can attach.
-INSERT INTO "course" (tenant_id, program_id, name, code)
-SELECT p.tenant_id, p.id, 'General', UPPER(REGEXP_REPLACE(p.name, '\W+', '', 'g'))
-FROM "program" p
-WHERE NOT EXISTS (SELECT 1 FROM "course" c WHERE c.program_id = p.id);
+-- Skips on fresh DBs where program_id has already been dropped from course.
+DO $$ BEGIN
+  IF EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_name = 'course' AND column_name = 'program_id'
+  ) AND EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_name = 'course' AND column_name = 'code'
+  ) THEN
+    INSERT INTO "course" (tenant_id, program_id, name, code)
+    SELECT p.tenant_id, p.id, 'General', UPPER(REGEXP_REPLACE(p.name, '\W+', '', 'g'))
+    FROM "program" p
+    WHERE NOT EXISTS (SELECT 1 FROM "course" c WHERE c.program_id = p.id);
+  END IF;
+END $$;
 
 -- 4. cohort columns
 ALTER TABLE "cohort" ADD COLUMN IF NOT EXISTS "course_id"  uuid;

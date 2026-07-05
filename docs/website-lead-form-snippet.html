@@ -1,0 +1,239 @@
+<!--
+  Digital Edify — website lead-intake form
+  ==========================================
+
+  Drop-in replacement for the Freshworks overlay.
+
+  Reuses the outer ids/classes you already have (freshworks_form_overlay,
+  freshworks_form_overlay_content, freshworks_form_overlay_close_button)
+  so any site-level CSS you wrote for the wrapper keeps working. Every new
+  style is scoped under `.de-intake` so it can't leak into the rest of the
+  page.
+
+  Before you deploy:
+    1. Replace API_BASE below with your API's public URL, e.g.
+         https://digitaledify-crm-api.onrender.com
+       (do NOT put the trailing "/leads/intake" — just the origin).
+    2. Replace INTAKE_KEY with the value you set for INTAKE_API_KEY on the
+       API host (Render env vars). Yes, this is embedded in the page — the
+       api-key check is a bot-brake, not a secret. It's paired with a
+       per-IP rate limit + honeypot on the server. Rotate any time by
+       changing the env var and republishing the site.
+    3. On Render → API service → Environment, add your website's origin to
+       CORS_ORIGIN (comma-separated with your existing CRM origin), then
+       Manual Deploy so the change takes effect.
+    4. Restart the API after adding INTAKE_API_KEY so the process picks it up.
+-->
+<div id="freshworks_form_overlay" class="freshworks_form_overlay">
+  <div class="freshworks_form_overlay_content">
+    <div class="freshworks_form_overlay_header">
+      <h4 class="h4title">Get Skilled </h4>
+      <button
+        onclick="document.getElementById('freshworks_form_overlay').style.display='none';"
+        class="freshworks_form_overlay_close_button"
+        type="button"
+        aria-label="Close">
+        ×
+      </button>
+    </div>
+
+    <form class="de-intake" novalidate>
+      <label class="de-field">
+        <span class="de-label">Full name</span>
+        <input
+          class="de-input"
+          type="text"
+          name="name"
+          required
+          autocomplete="name"
+          placeholder="Your full name" />
+      </label>
+
+      <label class="de-field">
+        <span class="de-label">Email</span>
+        <input
+          class="de-input"
+          type="email"
+          name="email"
+          required
+          autocomplete="email"
+          placeholder="you@example.com" />
+      </label>
+
+      <label class="de-field">
+        <span class="de-label">Phone</span>
+        <input
+          class="de-input"
+          type="tel"
+          name="phone"
+          required
+          autocomplete="tel"
+          inputmode="tel"
+          pattern="[0-9+ ()-]{7,20}"
+          placeholder="+91 98765 43210" />
+      </label>
+
+      <!-- Honeypot — invisible to humans, catches bots that fill every field. -->
+      <label class="de-honeypot" aria-hidden="true">
+        Company (leave blank)
+        <input type="text" name="company" tabindex="-1" autocomplete="off" />
+      </label>
+
+      <button class="de-submit" type="submit">Get started</button>
+
+      <div class="de-status" role="status" aria-live="polite"></div>
+    </form>
+  </div>
+</div>
+
+<style>
+  /* Everything below is scoped under `.de-intake` so we don't clash with
+     the outer overlay styles you already have. */
+  .de-intake {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    padding: 4px 0 0;
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  .de-field {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .de-label {
+    font-size: 12px;
+    font-weight: 600;
+    color: #4a4a55;
+    letter-spacing: .02em;
+  }
+  .de-input {
+    width: 100%;
+    box-sizing: border-box;
+    padding: 10px 12px;
+    font-size: 14px;
+    color: #1f1f28;
+    background: #fff;
+    border: 1px solid #d7d9e0;
+    border-radius: 8px;
+    outline: none;
+    transition: border-color .12s, box-shadow .12s;
+  }
+  .de-input:focus {
+    border-color: #4b6cf7;
+    box-shadow: 0 0 0 3px rgba(75, 108, 247, .18);
+  }
+  .de-input:disabled { background: #f5f5f8; cursor: not-allowed; }
+  .de-input:invalid:not(:placeholder-shown) {
+    border-color: #d93025;
+  }
+
+  .de-submit {
+    margin-top: 4px;
+    padding: 12px 16px;
+    font-size: 14.5px;
+    font-weight: 600;
+    color: #fff;
+    background: linear-gradient(135deg, #4b6cf7, #6b47dc);
+    border: 0;
+    border-radius: 8px;
+    cursor: pointer;
+    transition: opacity .12s, transform .05s;
+  }
+  .de-submit:hover  { opacity: .95; }
+  .de-submit:active { transform: translateY(1px); }
+  .de-submit:disabled { opacity: .55; cursor: not-allowed; }
+
+  .de-status {
+    min-height: 20px;
+    font-size: 13px;
+    line-height: 1.35;
+  }
+  .de-status.is-ok    { color: #1e874b; }
+  .de-status.is-error { color: #d93025; }
+
+  .de-honeypot {
+    position: absolute;
+    left: -10000px;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+  }
+</style>
+
+<script>
+(function () {
+  // ── Configure these two BEFORE deploying. ────────────────────────────────
+  var API_BASE   = "https://YOUR-API-HOST.example.com"; // e.g. https://digitaledify-crm-api.onrender.com
+  var INTAKE_KEY = "REPLACE_WITH_INTAKE_API_KEY";
+  var SOURCE       = "web";
+  var SOURCE_LABEL = "Website form";
+  // ─────────────────────────────────────────────────────────────────────────
+
+  var root = document.getElementById("freshworks_form_overlay");
+  if (!root) return;
+  var form   = root.querySelector(".de-intake");
+  var status = root.querySelector(".de-status");
+  var submit = root.querySelector(".de-submit");
+  if (!form || !status || !submit) return;
+
+  function setStatus(msg, kind) {
+    status.textContent = msg || "";
+    status.classList.remove("is-ok", "is-error");
+    if (kind === "ok")    status.classList.add("is-ok");
+    if (kind === "error") status.classList.add("is-error");
+  }
+
+  form.addEventListener("submit", function (e) {
+    e.preventDefault();
+    setStatus("");
+
+    var data = new FormData(form);
+    var payload = {
+      name:  String(data.get("name")  || "").trim(),
+      email: String(data.get("email") || "").trim(),
+      phone: String(data.get("phone") || "").trim(),
+      company: String(data.get("company") || ""), // honeypot echo
+      source: SOURCE,
+      sourceLabel: SOURCE_LABEL,
+    };
+
+    if (!payload.name || !payload.email || !payload.phone) {
+      setStatus("Please fill in name, email, and phone.", "error");
+      return;
+    }
+
+    submit.disabled = true;
+    submit.textContent = "Submitting…";
+
+    fetch(API_BASE.replace(/\/$/, "") + "/leads/intake", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Intake-Key": INTAKE_KEY,
+      },
+      body: JSON.stringify(payload),
+    })
+      .then(function (r) { return r.json().then(function (j) { return { r: r, j: j }; }); })
+      .then(function (out) {
+        if (out.r.ok && out.j && out.j.ok) {
+          setStatus("Thanks! One of our advisors will reach out shortly.", "ok");
+          form.reset();
+          // Auto-hide the overlay after a couple of seconds. Comment this
+          // out if you'd rather leave it open with the confirmation.
+          setTimeout(function () { root.style.display = "none"; }, 2500);
+        } else {
+          var err = (out.j && out.j.error) || "Something went wrong. Please try again.";
+          setStatus(err, "error");
+        }
+      })
+      .catch(function () {
+        setStatus("Network error. Please try again.", "error");
+      })
+      .finally(function () {
+        submit.disabled = false;
+        submit.textContent = "Get started";
+      });
+  });
+})();
+</script>

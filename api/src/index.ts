@@ -7,6 +7,7 @@ import { appPool } from "./db/app.js";
 import { authMiddleware } from "./middleware/auth.js";
 import { requirePermission } from "./middleware/require.js";
 import { leadsRouter } from "./routes/leads.js";
+import { intakeRouter } from "./routes/intake.js";
 import { pipelineRouter } from "./routes/pipeline.js";
 import { activityRouter } from "./routes/activity.js";
 import { agentsRouter } from "./routes/agents.js";
@@ -15,6 +16,7 @@ import { meRouter } from "./routes/me.js";
 import { summaryRouter } from "./routes/summary.js";
 import { catalogRouter } from "./routes/catalog.js";
 import { programsRouter } from "./routes/programs.js";
+import { stacksRouter } from "./routes/stacks.js";
 import { cohortsRouter } from "./routes/cohorts.js";
 import { coursesRouter } from "./routes/courses.js";
 import { convertRouter } from "./routes/convert.js";
@@ -52,7 +54,11 @@ app.use(
   whatsappWebhookRouter,
 );
 
-app.use(express.json());
+// 6 MB gives us headroom for base64-encoded receipt images (3 MB source →
+// ~4 MB after encoding) posted to /learners/:partyId/fee. The per-endpoint
+// cap for the fee-ledger route is enforced in learners.ts (~5 MB); this is
+// just the outer body-parser guard.
+app.use(express.json({ limit: "6mb" }));
 
 // CORS_ORIGIN can be a single origin or a comma-separated allowlist (e.g.
 // the prod Vercel domain plus any custom domain). Credentialed requests
@@ -68,7 +74,7 @@ app.use((req, res, next) => {
   res.header("Vary", "Origin");
   res.header("Access-Control-Allow-Credentials", "true");
   res.header("Access-Control-Allow-Methods", "GET,POST,PATCH,PUT,DELETE,OPTIONS");
-  res.header("Access-Control-Allow-Headers", "Content-Type, Authorization");
+  res.header("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Intake-Key");
   if (req.method === "OPTIONS") return res.sendStatus(204);
   return next();
 });
@@ -82,6 +88,11 @@ app.get("/health", async (_req, res) => {
     res.status(500).json({ ok: false, error: (err as Error).message });
   }
 });
+
+// Public lead-intake endpoint (marketing website form, ad landing pages, …).
+// Gated by INTAKE_API_KEY env var + a per-IP rate limit inside the router —
+// it deliberately sits BEFORE authMiddleware so no Auth0 token is needed.
+app.use("/leads/intake", intakeRouter);
 
 // ── Authenticated ──────────────────────────────────────────────────────────
 // Auth is owned by Auth0 (see middleware/auth.ts — verifies the Bearer JWT
@@ -130,9 +141,11 @@ app.use("/agents",   agentsRouter);
 app.use("/records",  requirePermission("leads.read"),              recordsRouter);
 app.use("/summary",  summaryRouter);
 app.use("/catalog",  catalogRouter);
-// programs/courses/cohorts: GET is readable by any authenticated user (advisor
-// dialogs need them); writes require the manage permission.
+// programs/courses/cohorts/stacks: GET is readable by any authenticated user
+// (admin dialogs need them); writes require the manage permission. Stacks
+// reuse admin.programs.manage — there's no separate stack RBAC yet.
 app.use("/programs", writeOnly("admin.programs.manage"), programsRouter);
+app.use("/stacks",   writeOnly("admin.programs.manage"), stacksRouter);
 app.use("/cohorts",  writeOnly("admin.batches.manage"),  cohortsRouter);
 app.use("/courses",  writeOnly("admin.courses.manage"),  coursesRouter);
 app.use("/users",    requirePermission("users.manage"),  usersRouter);

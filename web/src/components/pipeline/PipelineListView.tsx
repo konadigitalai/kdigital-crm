@@ -917,15 +917,19 @@ function isEditableType(t: ColumnDef["type"]): boolean {
 function CellIdle({ column, lead }: { column: ColumnDef; lead: Lead }) {
   if (column.type === "readonly-name") {
     return (
-      <div className="flex min-w-0 items-center gap-2.5">
+      <Link
+        href={`/records/${lead.number}`}
+        onClick={(e) => e.stopPropagation()}
+        className="flex min-w-0 items-center gap-2.5 hover:text-brand-violet"
+      >
         <div className={cn("flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-full text-[10.5px] font-bold text-white", avatarGradClass[lead.avatar])}>
           {lead.initials}
         </div>
         <div className="min-w-0">
-          <div className="truncate text-[13px] font-semibold tracking-[-.005em] text-ink">{lead.name}</div>
+          <div className="truncate text-[13px] font-semibold tracking-[-.005em] text-ink group-hover:text-brand-violet">{lead.name}</div>
           <div className="mono-cap mt-0.5 truncate text-[9.5px] tracking-[.04em] text-mute">{lead.city || "—"}</div>
         </div>
-      </div>
+      </Link>
     );
   }
   if (column.type === "readonly-number") {

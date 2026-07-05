@@ -22,6 +22,8 @@ import {
   party,
   partyRole,
   program,
+  programCourse,
+  stack,
   tenant,
   supportCase,
   workItem,
@@ -167,7 +169,7 @@ async function main() {
     "support_case",
     "onboarding_task", "service_case", "deal", "lead",
     "batch_assignment", "enrolment",
-    "work_item", "cohort", "course", "program",
+    "work_item", "cohort", "program_course", "course", "program", "stack",
     // Phase 1 party-model tables — depend on party, so delete first.
     "contact_point", "party_external_id", "party_affiliation",
     // Phase 4 party-model tables — same reason.
@@ -267,84 +269,156 @@ async function main() {
   void crmAdmin;
   void advisorPriya;
 
-  // ── Programs (with price) + courses + batches per course
-  console.log("→ catalog (programs + courses + batches)…");
+  // ── Stacks + programs (with price + duration) + courses + junction + batches
+  console.log("→ catalog (stacks + programs + courses + batches)…");
 
-  // Each program has a price + a course list. Some programs are single-course
-  // (DevOps + AI = one course), others are multi-course (AI & Data Science = 5 courses).
-  // Each course gets 2 batches (one running, one upcoming) across morning/evening slots.
-  const PROGRAM_CATALOG: Record<string, { price: number; courses: string[] }> = {
-    "AI Engineer · GenAI":     { price: 149000, courses: ["GenAI Foundations", "Agentic Systems", "Capstone"] },
-    "AI & Data Science":       { price: 119000, courses: ["Python", "SQL", "Power BI", "Data Science", "AI"] },
-    "Full Stack + AI":         { price: 149000, courses: ["JavaScript", "React", "Node.js", "Databases", "AI Tooling"] },
-    "Salesforce · Agentforce": { price:  99000, courses: ["Salesforce Admin", "Apex", "Agentforce"] },
-    "Power BI + AI":           { price:  59000, courses: ["Power BI Foundations", "DAX", "AI Insights"] },
-    "DevOps + AI":             { price:  99000, courses: ["Linux & Shell", "Docker & K8s", "CI/CD", "AIOps"] },
-    "Cyber Security + AI":     { price: 109000, courses: ["Network Security", "Threat Intel", "AI for SecOps"] },
-  };
-
-  const programNames = [...new Set(SEED_LEADS.map((l) => l.program))];
-  const programIds: Record<string, string> = {};
-  for (const name of programNames) {
-    const meta = PROGRAM_CATALOG[name] ?? { price: 99000, courses: ["General"] };
-    const [p] = await db.insert(program).values({
-      tenantId, name, price: meta.price.toString(),
+  // Stacks are the top-level bucket. Every program belongs to exactly one stack.
+  const STACK_CATALOG: { name: string; description: string }[] = [
+    { name: "AI Stack",    description: "Programs built around generative AI and agentic systems." },
+    { name: "Data Stack",  description: "Data engineering, analytics, and BI programs." },
+    { name: "Cloud Stack", description: "Cloud, DevOps, and platform engineering." },
+    { name: "Business Stack", description: "SaaS admin, CRM, and business systems." },
+  ];
+  const stackIds: Record<string, string> = {};
+  for (const s of STACK_CATALOG) {
+    const [row] = await db.insert(stack).values({
+      tenantId, name: s.name, description: s.description,
     }).returning();
-    programIds[name] = p!.id;
+    stackIds[s.name] = row!.id;
   }
 
-  // courses
-  const courseIds: Record<string, string> = {}; // key = `${programName}|${courseName}`
-  for (const [progName, progId] of Object.entries(programIds)) {
-    const meta = PROGRAM_CATALOG[progName] ?? { courses: ["General"] };
-    for (const courseName of meta.courses) {
-      const code = abbr(progName) + "-" + abbr(courseName);
-      const [c] = await db.insert(course).values({
-        tenantId, programId: progId, name: courseName, code, enabled: true,
-      }).returning();
-      courseIds[`${progName}|${courseName}`] = c!.id;
+  // Each program: stack + price + duration + a course list. Courses are shared
+  // across programs (many-to-many) — e.g. "Python" appears in AI & Data Science
+  // and in Full Stack + AI as one row, linked twice via program_course.
+  interface ProgramSpec {
+    stack: string;
+    price: number;
+    durationValue: number;
+    durationUnit: "weeks" | "months";
+    description: string;
+    courses: string[];
+  }
+  const PROGRAM_CATALOG: Record<string, ProgramSpec> = {
+    "AI Engineer · GenAI": {
+      stack: "AI Stack", price: 149000, durationValue: 6, durationUnit: "months",
+      description: "Ship production-grade GenAI systems end-to-end.",
+      courses: ["GenAI Foundations", "Agentic Systems", "Capstone"],
+    },
+    "AI & Data Science": {
+      stack: "Data Stack", price: 119000, durationValue: 8, durationUnit: "months",
+      description: "Analytics + ML fundamentals with a live capstone.",
+      courses: ["Python", "SQL", "Power BI", "Data Science", "AI"],
+    },
+    "Full Stack + AI": {
+      stack: "AI Stack", price: 149000, durationValue: 6, durationUnit: "months",
+      description: "Modern web fundamentals with AI-first tooling.",
+      courses: ["JavaScript", "React", "Node.js", "Databases", "AI Tooling"],
+    },
+    "Salesforce · Agentforce": {
+      stack: "Business Stack", price: 99000, durationValue: 4, durationUnit: "months",
+      description: "Salesforce admin/dev with Agentforce automation.",
+      courses: ["Salesforce Admin", "Apex", "Agentforce"],
+    },
+    "Power BI + AI": {
+      stack: "Data Stack", price: 59000, durationValue: 3, durationUnit: "months",
+      description: "Business intelligence with AI-driven insights.",
+      courses: ["Power BI Foundations", "DAX", "AI Insights"],
+    },
+    "DevOps + AI": {
+      stack: "Cloud Stack", price: 99000, durationValue: 5, durationUnit: "months",
+      description: "Cloud-native delivery with AI-assisted operations.",
+      courses: ["Linux & Shell", "Docker & K8s", "CI/CD", "AIOps"],
+    },
+    "Cyber Security + AI": {
+      stack: "Cloud Stack", price: 109000, durationValue: 6, durationUnit: "months",
+      description: "Defensive security with AI-augmented SOC workflows.",
+      courses: ["Network Security", "Threat Intel", "AI for SecOps"],
+    },
+  };
+
+  // Step 1: dedupe course names across all programs and create each once.
+  const programNames = [...new Set(SEED_LEADS.map((l) => l.program))];
+  const uniqueCourseNames = new Set<string>();
+  for (const pname of programNames) {
+    const meta = PROGRAM_CATALOG[pname];
+    if (meta) for (const c of meta.courses) uniqueCourseNames.add(c);
+  }
+  // Fallback for any legacy lead program that isn't in the catalog above.
+  if (uniqueCourseNames.size === 0) uniqueCourseNames.add("General");
+
+  const courseIds: Record<string, string> = {}; // key = courseName
+  for (const courseName of uniqueCourseNames) {
+    const [c] = await db.insert(course).values({
+      tenantId, name: courseName, enabled: true,
+      description: `Reusable module: ${courseName}.`,
+    }).returning();
+    courseIds[courseName] = c!.id;
+  }
+
+  // Step 2: create programs, then wire the junction.
+  const programIds: Record<string, string> = {};
+  const defaultStackId = stackIds["AI Stack"]!;
+  for (const pname of programNames) {
+    const meta = PROGRAM_CATALOG[pname];
+    const stackId = meta ? stackIds[meta.stack]! : defaultStackId;
+    const [p] = await db.insert(program).values({
+      tenantId,
+      stackId,
+      name: pname,
+      description: meta?.description ?? null,
+      price: (meta?.price ?? 99000).toString(),
+      durationValue: meta?.durationValue ?? null,
+      durationUnit: meta?.durationUnit ?? null,
+    }).returning();
+    programIds[pname] = p!.id;
+
+    const linked = meta?.courses ?? [...uniqueCourseNames];
+    let rank = 0;
+    for (const courseName of linked) {
+      const courseId = courseIds[courseName];
+      if (!courseId) continue;
+      await db.insert(programCourse).values({
+        tenantId, programId: p!.id, courseId, rank,
+      });
+      rank += 1;
     }
   }
 
-  // batches: each course gets 2 batches (running + upcoming, alternating slots)
-  const cohortIds: Record<string, string> = {}; // key = `${programName}|${courseName}|${batchSuffix}`
+  // Step 3: batches. Each course gets 2 batches (running + upcoming) alternating slots.
+  const cohortIds: Record<string, string> = {}; // key = `${courseName}|${batchName}`
   const SLOTS: { slot: "morning" | "evening"; time: string }[] = [
     { slot: "morning", time: "9:00 AM – 11:00 AM" },
     { slot: "evening", time: "7:00 PM – 9:00 PM" },
   ];
   const STATUS_ROLL: ("running" | "upcoming")[] = ["running", "upcoming"];
 
-  for (const [progName, _progId] of Object.entries(programIds)) {
-    void _progId;
-    const meta = PROGRAM_CATALOG[progName] ?? { courses: ["General"] };
-    for (const courseName of meta.courses) {
-      const cId = courseIds[`${progName}|${courseName}`]!;
-      let i = 0;
-      for (const plan of SLOTS) {
-        i += 1;
-        const status = STATUS_ROLL[(i - 1) % STATUS_ROLL.length]!;
-        const offsetDays = status === "running" ? -30 : 60;
-        const start = new Date(Date.UTC(2026, 5, 1) + offsetDays * 86400_000);
-        const end   = new Date(start.getTime() + 90 * 86400_000);
-        const monthCode = start.toLocaleDateString("en-IN", { month: "short", year: "numeric" }).replace(" ", "-");
-        const code = `${abbr(courseName)}-${monthCode}-${plan.slot[0]!.toUpperCase()}`;
-        const name = `${courseName} · ${monthCode} · ${cap(plan.slot)}`;
-        const [c] = await db.insert(cohort).values({
-          tenantId,
-          courseId: cId,
-          name,
-          code,
-          slot: plan.slot,
-          timeLabel: plan.time,
-          schedule: plan.slot === "morning" ? "Mon · Wed · Fri" : "Tue · Thu · Sat",
-          startDate: start.toISOString().slice(0, 10),
-          endDate:   end.toISOString().slice(0, 10),
-          seats: 30,
-          status,
-          enabled: true,
-        }).returning();
-        cohortIds[`${progName}|${courseName}|${name}`] = c!.id;
-      }
+  for (const courseName of uniqueCourseNames) {
+    const cId = courseIds[courseName]!;
+    let i = 0;
+    for (const plan of SLOTS) {
+      i += 1;
+      const status = STATUS_ROLL[(i - 1) % STATUS_ROLL.length]!;
+      const offsetDays = status === "running" ? -30 : 60;
+      const start = new Date(Date.UTC(2026, 5, 1) + offsetDays * 86400_000);
+      const end   = new Date(start.getTime() + 90 * 86400_000);
+      const monthCode = start.toLocaleDateString("en-IN", { month: "short", year: "numeric" }).replace(" ", "-");
+      const code = `${abbr(courseName)}-${monthCode}-${plan.slot[0]!.toUpperCase()}`;
+      const name = `${courseName} · ${monthCode} · ${cap(plan.slot)}`;
+      const [c] = await db.insert(cohort).values({
+        tenantId,
+        courseId: cId,
+        name,
+        code,
+        slot: plan.slot,
+        timeLabel: plan.time,
+        schedule: plan.slot === "morning" ? "Mon · Wed · Fri" : "Tue · Thu · Sat",
+        startDate: start.toISOString().slice(0, 10),
+        endDate:   end.toISOString().slice(0, 10),
+        seats: 30,
+        status,
+        enabled: true,
+      }).returning();
+      cohortIds[`${courseName}|${name}`] = c!.id;
     }
   }
 

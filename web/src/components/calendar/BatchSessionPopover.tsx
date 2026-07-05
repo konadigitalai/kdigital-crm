@@ -21,10 +21,6 @@ export function BatchSessionPopover({ session, onClose }: { session: BatchSessio
         </div>
 
         <div className="grid grid-cols-[100px_1fr] gap-y-2 text-[13px]">
-          {session.programName && <>
-            <div className="mono-cap text-[10px] font-semibold tracking-[.12em] text-mute">Program</div>
-            <div className="text-ink">{session.programName}</div>
-          </>}
           {session.courseName && <>
             <div className="mono-cap text-[10px] font-semibold tracking-[.12em] text-mute">Course</div>
             <div className="text-ink">{session.courseName}</div>
