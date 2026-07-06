@@ -50,6 +50,7 @@ pipelineRouter.get("/", async (req, res, next) => {
           l.visited_date     AS "visitedDate",
           l.visiting_date    AS "visitingDate",
           l.delivery_mode    AS "deliveryMode",
+          l.lead_status      AS "leadStatus",
           l.time_zone        AS "timeZone",
           l.fee_paid         AS "feePaid",
           l.fee_due          AS "feeDue",
