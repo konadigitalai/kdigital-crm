@@ -31,9 +31,9 @@ const TIMEZONE_OPTIONS = [
 
 // How the lead wants the program delivered. Stored as the lowercase key.
 const DELIVERY_MODE_OPTIONS = [
-  { value: "online",  label: "Online" },
-  { value: "offline", label: "Offline" },
-  { value: "hybrid",  label: "Hybrid" },
+  { value: "online",    label: "Online"    },
+  { value: "classroom", label: "Classroom" },
+  { value: "hybrid",    label: "Hybrid"    },
 ];
 
 export default async function RecordPage({
@@ -73,9 +73,10 @@ export default async function RecordPage({
   const sourceKey = (lead as { leadSource?: string | null }).leadSource ?? null;
   const advisorId = (lead as { advisorId?: string | null }).advisorId ?? null;
 
-  const programOptions = catalog.programs.map((p) => ({ value: p.id, label: p.name }));
-  const sourceOptions  = catalog.sources.map((s) => ({ value: s.key, label: s.label }));
-  const advisorOptions = catalog.advisors.map((a) => ({ value: a.id, label: a.name }));
+  const programOptions    = catalog.programs.map((p) => ({ value: p.id, label: p.name }));
+  const sourceOptions     = catalog.sources.map((s) => ({ value: s.key, label: s.label }));
+  const advisorOptions    = catalog.advisors.map((a) => ({ value: a.id, label: a.name }));
+  const leadStatusOptions = (catalog.leadStatuses ?? []).map((s) => ({ value: s.key, label: s.label }));
   // When source changes, also write the human label so dropdown text persists.
   const sourceExtraByValue = Object.fromEntries(
     catalog.sources.map((s) => [s.key, { sourceLabel: s.label }]),
@@ -382,6 +383,16 @@ export default async function RecordPage({
                 kind={{ kind: "select", value: sourceKey, options: sourceOptions }}
                 idleStyle={{ kind: "select-label", options: sourceOptions }}
                 extraByValue={sourceExtraByValue}
+                valueClass="text-[13px] font-semibold text-ink"
+              />
+            </DetailRow>
+            <DetailRow label="Lead status">
+              <InlineLeadField
+                leadNumber={lead.number}
+                field="leadStatus"
+                ariaLabel="Lead status"
+                kind={{ kind: "select", value: attrs.leadStatus ?? null, options: leadStatusOptions, placeholder: "— none —" }}
+                idleStyle={{ kind: "select-label", options: leadStatusOptions }}
                 valueClass="text-[13px] font-semibold text-ink"
               />
             </DetailRow>
