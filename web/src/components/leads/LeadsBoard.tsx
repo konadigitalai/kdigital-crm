@@ -22,19 +22,56 @@ function unique<T>(xs: T[]): T[] {
   return Array.from(new Set(xs.filter((x): x is T & {} => x != null && (x as unknown) !== "")));
 }
 
+const DELIVERY_MODE_OPTIONS = [
+  { value: "online",  label: "Online"  },
+  { value: "offline", label: "Offline" },
+  { value: "hybrid",  label: "Hybrid"  },
+];
+
+const STAGE_OPTIONS = [
+  { value: "new",  label: "New inbound" },
+  { value: "qual", label: "Qualified"   },
+  { value: "demo", label: "Demo / Trial" },
+  { value: "neg",  label: "Negotiation" },
+  { value: "won",  label: "Enrolled"    },
+];
+
 function buildFields(leads: Lead[]): FilterField[] {
-  const programs = unique(leads.map((l) => l.program));
-  const cities   = unique(leads.map((l) => l.city));
+  const programs  = unique(leads.map((l) => l.program).filter((x): x is string => typeof x === "string" && x !== ""));
+  const cities    = unique(leads.map((l) => l.city).filter((x): x is string => typeof x === "string" && x !== ""));
+  const advisors  = unique(leads.map((l) => l.advisorName).filter((x): x is string => typeof x === "string" && x !== ""));
+  const sources   = unique(leads.map((l) => l.sourceLabel ?? l.source ?? null).filter((x): x is string => typeof x === "string" && x !== ""));
   return [
-    { key: "name",        label: "Name",        type: "text",   get: (l: Lead) => l.name },
-    { key: "number",      label: "Lead #",      type: "text",   get: (l: Lead) => l.number },
-    { key: "city",        label: "City",        type: "enum",   options: cities.map((c) => ({ value: c, label: c })),  get: (l: Lead) => l.city },
-    { key: "program",     label: "Program",     type: "enum",   options: programs.map((p) => ({ value: p, label: p })), get: (l: Lead) => l.program },
-    { key: "rating",      label: "Rating",      type: "enum",   options: RATING_OPTIONS,  get: (l: Lead) => l.rating },
-    { key: "score",       label: "Score",       type: "number", get: (l: Lead) => l.score },
-    { key: "nbaLabel",    label: "Next action", type: "text",   get: (l: Lead) => l.nbaLabel },
-    { key: "nextFollowupAt", label: "Next follow-up", type: "date", get: (l: Lead) => l.nextFollowupAt },
-    { key: "demoAttendedAt", label: "Demo attended",  type: "date", get: (l: Lead) => l.demoAttendedAt },
+    // Contact + identity
+    { key: "name",             label: "Name",             type: "text",   get: (l: Lead) => l.name },
+    { key: "number",           label: "Lead #",           type: "text",   get: (l: Lead) => l.number },
+    { key: "email",            label: "Email",            type: "text",   get: (l: Lead) => l.email },
+    { key: "phone",            label: "Phone",            type: "text",   get: (l: Lead) => l.phone },
+    { key: "city",             label: "City",             type: "enum",   options: cities.map((c) => ({ value: c, label: c })), get: (l: Lead) => l.city },
+    // Assignment / classification
+    { key: "program",          label: "Program",          type: "enum",   options: programs.map((p) => ({ value: p, label: p })), get: (l: Lead) => l.program },
+    { key: "advisor",          label: "Advisor",          type: "enum",   options: advisors.map((a) => ({ value: a, label: a })), get: (l: Lead) => l.advisorName },
+    { key: "source",           label: "Source",           type: "enum",   options: sources.map((s) => ({ value: s, label: s })),  get: (l: Lead) => l.sourceLabel ?? l.source },
+    { key: "rating",           label: "Rating",           type: "enum",   options: RATING_OPTIONS,  get: (l: Lead) => l.rating },
+    { key: "stage",            label: "Stage",            type: "enum",   options: STAGE_OPTIONS,   get: (l: Lead) => l.stage },
+    { key: "deliveryMode",     label: "Mode",             type: "enum",   options: DELIVERY_MODE_OPTIONS, get: (l: Lead) => l.deliveryMode },
+    // Score + NBA
+    { key: "score",            label: "Score",            type: "number", get: (l: Lead) => l.score },
+    { key: "nbaLabel",         label: "Next action",      type: "text",   get: (l: Lead) => l.nbaLabel },
+    // Money
+    { key: "value",            label: "Price quoted (₹)", type: "number", get: (l: Lead) => l.value ? Number(l.value) : null },
+    { key: "feePaid",          label: "Fee paid (₹)",     type: "number", get: (l: Lead) => l.feePaid ? Number(l.feePaid) : null },
+    { key: "feeDue",           label: "Fee due (₹)",      type: "number", get: (l: Lead) => l.feeDue ? Number(l.feeDue) : null },
+    // Dates
+    { key: "nextFollowupAt",   label: "Next follow-up",   type: "date",   get: (l: Lead) => l.nextFollowupAt },
+    { key: "demoAttendedAt",   label: "Demo attended",    type: "date",   get: (l: Lead) => l.demoAttendedAt },
+    { key: "visitedDate",      label: "Visited",          type: "date",   get: (l: Lead) => l.visitedDate },
+    { key: "visitingDate",     label: "Visiting",         type: "date",   get: (l: Lead) => l.visitingDate },
+    { key: "dueDate",          label: "Due date",         type: "date",   get: (l: Lead) => l.dueDate },
+    { key: "registeredDate",   label: "Registered",       type: "date",   get: (l: Lead) => l.registeredDate },
+    { key: "createdAt",        label: "Created",          type: "date",   get: (l: Lead) => l.createdAt },
+    // Free-text notes
+    { key: "description",      label: "Description",      type: "text",   get: (l: Lead) => l.description },
   ];
 }
 
@@ -105,10 +142,38 @@ export function LeadsBoard({
     }
     const v = views.find((x) => x.id === id);
     if (!v) return;
-    const next: FilterState =
-      (v.filter && typeof v.filter === "object" && Array.isArray((v.filter as Record<string, unknown>).rules))
-        ? (v.filter as unknown as FilterState)
-        : { combinator: "and", rules: [] };
+    // Saved views serialise the FilterState blob to JSONB on the server.
+    // Coerce it back into a well-formed FilterState here: drop malformed
+    // rules, coerce enum "is_any_of" values to arrays, and skip rules
+    // whose fieldKey no longer maps to a filterable column (schema drift).
+    const knownKeys = new Set(fields.map((f) => f.key));
+    const raw = (v.filter && typeof v.filter === "object")
+      ? (v.filter as Record<string, unknown>) : {};
+    const rulesRaw = Array.isArray(raw.rules) ? raw.rules : [];
+    const rules = rulesRaw
+      .filter((r): r is Record<string, unknown> => !!r && typeof r === "object")
+      .filter((r) => typeof r.fieldKey === "string" && knownKeys.has(r.fieldKey as string))
+      .map((r) => {
+        // Coerce array-shaped values for many-arity ops; leave others alone.
+        const op = String(r.operator ?? "");
+        let value = r.value;
+        if ((op === "is_any_of" || op === "is_none_of") && !Array.isArray(value)) {
+          value = value == null ? [] : [String(value)];
+        }
+        // Always mint a fresh id when loading — a saved view's serialised
+        // rules may contain "r1"/"r2"-style ids from an old FilterBar
+        // counter, which collide with brand-new rules the user adds after.
+        return {
+          id: `v${Math.random().toString(36).slice(2, 10)}`,
+          fieldKey: r.fieldKey as string,
+          operator: op,
+          value,
+        };
+      });
+    const next: FilterState = {
+      combinator: raw.combinator === "or" ? "or" : "and",
+      rules: rules as unknown as FilterState["rules"],
+    };
     setFilterState(next);
   }
 

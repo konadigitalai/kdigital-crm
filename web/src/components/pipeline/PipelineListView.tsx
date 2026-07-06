@@ -205,6 +205,21 @@ function phoneWithoutCc(phone: string | null | undefined): string {
   return stripped || phone.trim();
 }
 
+// Compose the display form of a lead's phone: "<cc> <local>" when we have
+// a country code, otherwise the phone alone. If the local number already
+// contains a leading "+cc" (legacy rows), we don't add it twice.
+function joinCountryAndPhone(
+  cc: string | null | undefined,
+  phone: string | null | undefined,
+): string {
+  const p = (phone ?? "").trim();
+  if (!p) return "";
+  const c = (cc ?? "").trim();
+  if (!c) return p;
+  if (p.startsWith("+")) return p; // already has a cc baked in — don't double
+  return `${c} ${phoneWithoutCc(p)}`.trim();
+}
+
 // ─── per-cell save helpers ────────────────────────────────────────────────
 
 // Convert the in-input value to whatever shape PATCH /leads expects for that
@@ -408,9 +423,11 @@ export function PipelineListView({
     [visible],
   );
 
-  // Grid columns: [checkbox 36px] [...visible columns] [open link 80px]
+  // Grid columns: [checkbox 36px] [...visible columns]. The trailing 80px
+  // slot used to hold a row-level "Open →" / "Delete" pair — removed to
+  // dedupe with the name-cell click-through and slim the row.
   const gridTemplate = useMemo(
-    () => ["36px", ...visibleColumns.map((c) => c.width), "80px"].join(" "),
+    () => ["36px", ...visibleColumns.map((c) => c.width)].join(" "),
     [visibleColumns],
   );
 
@@ -790,7 +807,6 @@ export function PipelineListView({
                 {c.label}
               </div>
             ))}
-            <div className="py-3 text-right" />
           </div>
 
           {/* Rows */}
@@ -849,27 +865,10 @@ export function PipelineListView({
                   </div>
                 );
               })}
-              <div className="flex items-center justify-end gap-3 py-2">
-                {canDelete && (
-                  <button
-                    type="button"
-                    onClick={(e) => { e.stopPropagation(); deleteOne(l); }}
-                    disabled={busy}
-                    title={`Delete ${l.number}`}
-                    aria-label={`Delete ${l.number}`}
-                    className="mono-cap text-[10px] font-semibold tracking-[.1em] text-mute hover:text-state-warn disabled:opacity-50"
-                  >
-                    Delete
-                  </button>
-                )}
-                <Link
-                  href={`/records/${l.number}`}
-                  className="mono-cap inline-flex items-center gap-1 text-[10px] font-semibold tracking-[.1em] text-mute hover:text-brand-violet"
-                >
-                  Open
-                  <Icon name="arrow-right" size={10} strokeWidth={2.4} />
-                </Link>
-              </div>
+              {/* Row-level Delete / Open buttons removed — the Name cell
+                  itself opens the record on click, and delete lives on the
+                  record page. Removing these dedupes the row's action column
+                  and matches the request to keep the list tidy. */}
             </div>
           ))}
         </div>
@@ -974,7 +973,7 @@ function CellIdle({ column, lead }: { column: ColumnDef; lead: Lead }) {
 
   switch (column.key) {
     case "email":          return <span className="truncate" title={lead.email ?? undefined}>{lead.email || "—"}</span>;
-    case "phone":          return <span className="truncate" title={lead.phone ?? undefined}>{phoneWithoutCc(lead.phone) || "—"}</span>;
+    case "phone":          return <span className="truncate" title={lead.phone ?? undefined}>{joinCountryAndPhone(lead.phoneCountryCode, lead.phone) || "—"}</span>;
     case "phoneCountryCode": return <span className="font-mono text-[12px]">{lead.phoneCountryCode || "—"}</span>;
     case "city":           return <span className="truncate">{lead.city || "—"}</span>;
     case "program":        return <span className="truncate" title={lead.program ?? undefined}>{lead.program || "—"}</span>;
