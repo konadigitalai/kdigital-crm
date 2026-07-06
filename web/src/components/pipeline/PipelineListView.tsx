@@ -122,6 +122,11 @@ const TZ_OPTIONS = [
 // ─── localStorage helpers ────────────────────────────────────────────────
 
 const STORAGE_KEY = "decrm_pipeline_list_columns_v1";
+const SORT_STORAGE_KEY = "decrm_pipeline_list_sort_v1";
+
+// Default sort: newest created lead on top. Applied when the user hasn't
+// picked their own sort (or has explicitly cycled back to "clear").
+export const DEFAULT_SORT: SortState = { key: "createdAt", dir: "desc" };
 
 function loadColumnPrefs(): ColumnKey[] {
   if (typeof window === "undefined") return DEFAULT_VISIBLE;
@@ -146,6 +151,87 @@ function saveColumnPrefs(cols: ColumnKey[]) {
   } catch {
     /* localStorage may be unavailable (private mode) — silently ignore */
   }
+}
+
+function loadSortPref(): SortState {
+  if (typeof window === "undefined") return DEFAULT_SORT;
+  try {
+    const raw = window.localStorage.getItem(SORT_STORAGE_KEY);
+    if (!raw) return DEFAULT_SORT;
+    const parsed: unknown = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object") return DEFAULT_SORT;
+    const p = parsed as { key?: unknown; dir?: unknown };
+    if (typeof p.key !== "string" || !COLUMN_BY_KEY.has(p.key as ColumnKey)) return DEFAULT_SORT;
+    if (p.dir !== "asc" && p.dir !== "desc") return DEFAULT_SORT;
+    return { key: p.key as ColumnKey, dir: p.dir };
+  } catch {
+    return DEFAULT_SORT;
+  }
+}
+
+function saveSortPref(s: SortState) {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(SORT_STORAGE_KEY, JSON.stringify(s));
+  } catch {
+    /* localStorage may be unavailable — silently ignore */
+  }
+}
+
+// ─── sorting ──────────────────────────────────────────────────────────────
+
+type SortDir = "asc" | "desc";
+interface SortState { key: ColumnKey; dir: SortDir }
+
+// Pull the comparable value for a lead+column. Text values are lowercased so
+// case-insensitive sort matches how the UI displays them; numeric-ish fields
+// (score, price, fees) coerce to Number; dates and lead numbers stay as
+// strings (ISO/prefix format sorts lexicographically the same as
+// chronologically/numerically for these).
+function sortValueFor(l: Lead, col: ColumnKey): number | string | null {
+  switch (col) {
+    case "name":            return (l.name ?? "").toLowerCase();
+    case "rating":          return LEAD_RATINGS.indexOf(l.rating);
+    case "number":          return l.number ?? "";
+    case "email":           return (l.email ?? "").toLowerCase();
+    case "phoneCountryCode": return l.phoneCountryCode ?? "";
+    case "phone":           return l.phone ?? "";
+    case "city":            return (l.city ?? "").toLowerCase();
+    case "program":         return (l.program ?? "").toLowerCase();
+    case "advisor":         return (l.advisorName ?? "").toLowerCase();
+    case "source":          return (l.sourceLabel ?? l.source ?? "").toLowerCase();
+    case "value":           return l.value ? Number(l.value) : null;
+    case "score":           return l.score ?? null;
+    case "deliveryMode":    return l.deliveryMode ?? "";
+    case "timeZone":        return l.timeZone ?? "";
+    case "nextFollowupAt":  return l.nextFollowupAt ?? null;
+    case "demoAttendedAt":  return l.demoAttendedAt ?? null;
+    case "visitedDate":     return l.visitedDate ?? null;
+    case "visitingDate":    return l.visitingDate ?? null;
+    case "feePaid":         return l.feePaid ? Number(l.feePaid) : null;
+    case "feeDue":          return l.feeDue ? Number(l.feeDue) : null;
+    case "dueDate":         return l.dueDate ?? null;
+    case "registeredDate":  return l.registeredDate ?? null;
+    case "description":     return (l.description ?? "").toLowerCase();
+    case "createdAt":       return l.createdAt ?? null;
+  }
+}
+
+// Compare two leads by a sort spec. Empty/null values ALWAYS sink to the
+// bottom regardless of direction — a lead with no follow-up date shouldn't
+// jump to the top when the user sorts by "next follow-up ascending".
+function compareLeads(a: Lead, b: Lead, sort: SortState): number {
+  const av = sortValueFor(a, sort.key);
+  const bv = sortValueFor(b, sort.key);
+  const aEmpty = av === null || av === "";
+  const bEmpty = bv === null || bv === "";
+  if (aEmpty && bEmpty) return 0;
+  if (aEmpty) return 1;
+  if (bEmpty) return -1;
+  let cmp: number;
+  if (typeof av === "number" && typeof bv === "number") cmp = av - bv;
+  else cmp = String(av).localeCompare(String(bv));
+  return sort.dir === "asc" ? cmp : -cmp;
 }
 
 // ─── value helpers ────────────────────────────────────────────────────────
@@ -371,6 +457,7 @@ export function PipelineListView({
 }) {
   const router = useRouter();
   const [visible, setVisible] = useState<ColumnKey[]>(DEFAULT_VISIBLE);
+  const [sort, setSort] = useState<SortState>(DEFAULT_SORT);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [editing, setEditing] = useState<CellAddress | null>(null);
   const [draft, setDraft] = useState<string>("");
@@ -405,6 +492,28 @@ export function PipelineListView({
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [viewColumns?.join("|")]);
+
+  // Hydrate sort pref once on mount (client only — localStorage is unavailable
+  // during SSR, so SSR gets DEFAULT_SORT and the client updates on hydration).
+  useEffect(() => {
+    setSort(loadSortPref());
+  }, []);
+
+  // Click cycle per column: not-sorted → desc → asc → default. This matches
+  // "click date to see newest first" which is what most people expect.
+  function cycleSort(key: ColumnKey) {
+    setSort((prev) => {
+      let next: SortState;
+      if (prev.key !== key) next = { key, dir: "desc" };
+      else if (prev.dir === "desc") next = { key, dir: "asc" };
+      else next = DEFAULT_SORT;
+      saveSortPref(next);
+      return next;
+    });
+  }
+
+  // Sort a copy of the incoming leads — never mutate the parent's array.
+  const sortedLeads = useMemo(() => [...leads].sort((a, b) => compareLeads(a, b, sort)), [leads, sort]);
 
   // Close picker on outside click.
   useEffect(() => {
@@ -534,6 +643,8 @@ export function PipelineListView({
   function toggleAll() {
     setSelected((prev) => {
       // If everything currently shown is already selected, clear. Else select all.
+      // Base set is `leads` (the parent's filtered set) — sorting doesn't change
+      // membership.
       const allShown = leads.every((l) => prev.has(l.id));
       return allShown ? new Set() : new Set(leads.map((l) => l.id));
     });
@@ -799,18 +910,34 @@ export function PipelineListView({
                 ariaLabel={allShownSelected ? "Deselect all rows" : "Select all rows"}
               />
             </div>
-            {visibleColumns.map((c) => (
-              <div
-                key={c.key}
-                className="mono-cap py-3 pr-3 text-[9.5px] font-semibold tracking-[.12em] text-mute"
-              >
-                {c.label}
-              </div>
-            ))}
+            {visibleColumns.map((c) => {
+              const active = sort.key === c.key;
+              return (
+                <button
+                  type="button"
+                  key={c.key}
+                  onClick={() => cycleSort(c.key)}
+                  title={
+                    active
+                      ? sort.dir === "desc"
+                        ? "Sorted newest/highest first — click for oldest/lowest first"
+                        : "Sorted oldest/lowest first — click to clear"
+                      : "Click to sort"
+                  }
+                  className={cn(
+                    "mono-cap flex items-center gap-1 py-3 pr-3 text-left text-[9.5px] font-semibold tracking-[.12em] transition",
+                    active ? "text-ink" : "text-mute hover:text-ink",
+                  )}
+                >
+                  {c.label}
+                  <SortGlyph state={active ? sort.dir : null} />
+                </button>
+              );
+            })}
           </div>
 
           {/* Rows */}
-          {leads.map((l) => (
+          {sortedLeads.map((l) => (
             <div
               key={l.id}
               className={cn(
@@ -1540,6 +1667,28 @@ function ArrowGlyph({ dir }: { dir: "up" | "down" }) {
       {dir === "up"
         ? <path d="M4 10l4-4 4 4" />
         : <path d="M4 6l4 4 4-4" />}
+    </svg>
+  );
+}
+
+// Inline sort indicator drawn next to a column header label. `state === null`
+// draws a faint two-tone arrow (both up and down at 40% opacity) so users know
+// the column is sortable but not currently the sort key. `state === "asc"`
+// (or "desc") draws just that direction at full opacity.
+function SortGlyph({ state }: { state: SortDir | null }) {
+  if (state === null) {
+    return (
+      <svg viewBox="0 0 16 16" className="h-2.5 w-2.5 opacity-40" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M8 3l3 3H5z" fill="currentColor" />
+        <path d="M8 13l-3-3h6z" fill="currentColor" />
+      </svg>
+    );
+  }
+  return (
+    <svg viewBox="0 0 16 16" className="h-2.5 w-2.5 text-brand-violet" fill="currentColor">
+      {state === "asc"
+        ? <path d="M8 3l4 5H4z" />
+        : <path d="M8 13l4-5H4z" />}
     </svg>
   );
 }
