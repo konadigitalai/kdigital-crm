@@ -64,6 +64,30 @@ function toNum(v: unknown): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
+// Normalise any date-ish value to a "YYYY-MM-DD" string in the LOCAL
+// timezone. Handles two shapes:
+//   1. "YYYY-MM-DD"                 (from <input type="date">, filter value)
+//   2. Full ISO timestamps          (from row.createdAt etc — UTC-stamped)
+// Returns null when the value can't be interpreted as a date.
+//
+// Why local? Rows show "6 Jul 2026, 9:53 am" using local time (IST here).
+// If we compared the stored UTC day, a row created at 2026-07-05T22:00Z
+// would filter out for "is 2026-07-06" even though the user sees it as
+// belonging to July 6. Comparing the local day matches what the UI shows.
+function toDayStr(v: unknown): string | null {
+  if (v == null || v === "") return null;
+  const s = String(v).trim();
+  if (!s) return null;
+  // Fast path: already YYYY-MM-DD (as emitted by <input type="date">).
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
+  const d = new Date(s);
+  if (Number.isNaN(d.getTime())) return null;
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
 // Single-rule predicate.
 function matchOne(rule: FilterRule, row: unknown, field: FilterField): boolean {
   const left = field.get(row);
@@ -82,11 +106,19 @@ function matchOne(rule: FilterRule, row: unknown, field: FilterField): boolean {
   // and booleans stay strict.
   const textEq = field.type === "text" || field.type === "enum";
 
+  // For date fields, comparisons are day-vs-day in local time — the row's
+  // stored timestamp is normalised to its local calendar day and compared
+  // against the picker's "YYYY-MM-DD" value. Lexicographic order on that
+  // format matches chronological order, so >, <, between all Just Work.
+  const isDate = field.type === "date";
+
   switch (op) {
     case "is":
+      if (isDate) return toDayStr(left) === toDayStr(v);
       if (field.type === "number") return toNum(left) === toNum(v);
       return textEq ? toLowerStr(left) === toLowerStr(v) : String(left) === String(v);
     case "is_not":
+      if (isDate) return toDayStr(left) !== toDayStr(v);
       if (field.type === "number") return toNum(left) !== toNum(v);
       return textEq ? toLowerStr(left) !== toLowerStr(v) : String(left) !== String(v);
     case "contains":     return toLowerStr(left).includes(toLowerStr(v));
@@ -94,22 +126,45 @@ function matchOne(rule: FilterRule, row: unknown, field: FilterField): boolean {
     case "starts_with":  return toLowerStr(left).startsWith(toLowerStr(v));
     case "ends_with":    return toLowerStr(left).endsWith(toLowerStr(v));
     case "gt": {
+      if (isDate) {
+        const a = toDayStr(left); const b = toDayStr(v);
+        return a != null && b != null && a > b;
+      }
       const a = toNum(left); const b = toNum(v);
       return a != null && b != null && a > b;
     }
     case "gte": {
+      if (isDate) {
+        const a = toDayStr(left); const b = toDayStr(v);
+        return a != null && b != null && a >= b;
+      }
       const a = toNum(left); const b = toNum(v);
       return a != null && b != null && a >= b;
     }
     case "lt": {
+      if (isDate) {
+        const a = toDayStr(left); const b = toDayStr(v);
+        return a != null && b != null && a < b;
+      }
       const a = toNum(left); const b = toNum(v);
       return a != null && b != null && a < b;
     }
     case "lte": {
+      if (isDate) {
+        const a = toDayStr(left); const b = toDayStr(v);
+        return a != null && b != null && a <= b;
+      }
       const a = toNum(left); const b = toNum(v);
       return a != null && b != null && a <= b;
     }
     case "between": {
+      if (isDate) {
+        const a = toDayStr(left);
+        const range = Array.isArray(v) ? v : [];
+        const lo = toDayStr(range[0]); const hi = toDayStr(range[1]);
+        if (a == null || lo == null || hi == null) return false;
+        return a >= lo && a <= hi;
+      }
       const a = toNum(left);
       const range = Array.isArray(v) ? v : [];
       const lo = toNum(range[0]); const hi = toNum(range[1]);

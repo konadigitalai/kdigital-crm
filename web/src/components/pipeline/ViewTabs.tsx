@@ -308,50 +308,36 @@ function ViewDialog({
   const inputCls =
     "w-full rounded-[10px] border border-rule bg-paper px-3 py-2.5 text-[13.5px] text-ink placeholder:text-hint focus:border-brand-violet focus:outline-none focus:ring-2 focus:ring-brand-violet/20";
 
-  // Backdrop dismissal — arm on the FIRST *real* mousedown that lands on
-  // the backdrop (not the one from the click that opened the dialog), then
-  // close on the matching mouseup. Ignore the very first mousedown/up
-  // pair after mount because that's the tail of the opening click.
+  // Backdrop dismissal — only close when a full click cycle (mousedown +
+  // mouseup) BOTH landed on the backdrop element itself. Clicks that started
+  // inside the modal card, popovers, or FilterBar dropdowns cannot dismiss.
   //
-  // Without the initial-arm delay, clicking a tab to open the dialog would
-  // see its own mouseup on the freshly-mounted backdrop and dismiss.
-  const backdropPressed = useRef(false);
-  const armedAt = useRef<number>(0);
-  useEffect(() => {
-    // Give the opening click's mouseup ~200ms to drain before we start
-    // accepting backdrop dismisses.
-    armedAt.current = Date.now() + 200;
-  }, []);
-  const onBackdropMouseDown = (e: React.MouseEvent) => {
-    if (Date.now() < armedAt.current) return;
-    backdropPressed.current = e.target === e.currentTarget;
+  // Key detail: we track the mousedown target at CAPTURE phase on the
+  // backdrop. Because capture phase runs before any child bubble handler
+  // gets a chance to stopPropagation, we always see the true mousedown
+  // origin. Then on mouseup, we only close if BOTH events had the backdrop
+  // as their direct target — anything popover-triggered fails that check.
+  const downOnBackdrop = useRef(false);
+  const mountedAt = useRef<number>(Date.now());
+  const onBackdropMouseDownCapture = (e: React.MouseEvent) => {
+    downOnBackdrop.current = e.target === e.currentTarget;
   };
-  const onBackdropMouseUp = (e: React.MouseEvent) => {
-    if (Date.now() < armedAt.current) return;
-    const shouldClose = backdropPressed.current && e.target === e.currentTarget;
-    backdropPressed.current = false;
-    if (shouldClose) onClose();
+  const onBackdropClick = (e: React.MouseEvent) => {
+    // Ignore the opening tab's click that arrives immediately after mount.
+    if (Date.now() - mountedAt.current < 250) return;
+    if (downOnBackdrop.current && e.target === e.currentTarget) onClose();
+    downOnBackdrop.current = false;
   };
 
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4 sm:p-6 backdrop-blur-sm"
-      onMouseDown={onBackdropMouseDown}
-      onMouseUp={onBackdropMouseUp}
+      onMouseDownCapture={onBackdropMouseDownCapture}
+      onClick={onBackdropClick}
     >
-      {/* Column-flex dialog: header stays put, body scrolls, footer sticks.
-          Stop mousedown/mouseup propagation so internal clicks never reach
-          the backdrop's dismiss handlers. */}
+      {/* Column-flex dialog: header stays put, body scrolls, footer sticks. */}
       <div
         className="flex w-full max-w-[820px] max-h-[calc(100vh-3rem)] flex-col rounded-2xl border border-rule bg-paper shadow-card"
-        onMouseDown={(e) => {
-          e.stopPropagation();
-          backdropPressed.current = false;
-        }}
-        onMouseUp={(e) => {
-          e.stopPropagation();
-          backdropPressed.current = false;
-        }}
       >
         {/* Fixed header */}
         <div className="flex-none border-b border-rule px-7 pt-6 pb-5">
