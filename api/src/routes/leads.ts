@@ -191,6 +191,10 @@ leadsRouter.post("/", async (req, res, next) => {
     const nbaLabel = b.nbaLabel ? String(b.nbaLabel).trim() : "Reach out today";
     const nbaIcon  = b.nbaIcon  ? String(b.nbaIcon).trim()  : "send";
     const advisorId = b.advisorId ? String(b.advisorId).trim() : null;
+    // Free-text notes the advisor types on create (context, prior chat log,
+    // anything). Empty → NULL. No length cap here — PATCH doesn't cap it
+    // either and the column is a bare `text`.
+    const description = b.description ? String(b.description).trim() : null;
     // Lead status is optional on create. Normalise/validate through the same
     // helper the PATCH path uses so we can't get invalid values into the DB.
     // Empty string / undefined → NULL; unknown → 400.
@@ -292,7 +296,7 @@ leadsRouter.post("/", async (req, res, next) => {
           work_item_id, tenant_id,
           source, source_label, score, score_label, score_desc, heat, rating,
           lead_status,
-          program, program_id, value, stage, stage_label,
+          program, program_id, value, description, stage, stage_label,
           advisor_id, avatar, initials,
           nba_icon, nba_label, nba_ghost,
           nba_confidence, nba_headline, nba_why
@@ -300,7 +304,7 @@ leadsRouter.post("/", async (req, res, next) => {
           ${wiId}, current_tenant(),
           ${source}, ${sourceLabel}, ${score}, ${HEAT_LABEL[heat]}, ${HEAT_DESC[heat]}, ${heat}, ${rating},
           ${leadStatus},
-          ${programName}, ${resolvedProgramId}, ${value}, ${stage}, ${STAGE_LABEL[stage]},
+          ${programName}, ${resolvedProgramId}, ${value}, ${description}, ${stage}, ${STAGE_LABEL[stage]},
           ${resolvedAdvisorId}, ${pickAvatar(name)}, ${initialsOf(name)},
           ${nbaIcon}, ${nbaLabel}, false,
           ${nba.confidence}, ${nba.headline}, ${nba.why}

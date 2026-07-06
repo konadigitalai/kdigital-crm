@@ -1085,6 +1085,7 @@ export interface CreateLeadInput {
   heat?: Heat;
   rating?: LeadRating;
   leadStatus?: string;
+  description?: string;
   nbaLabel?: string;
   nbaIcon?: string;
   advisorId?: string;
