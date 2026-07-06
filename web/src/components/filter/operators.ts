@@ -64,10 +64,38 @@ function toNum(v: unknown): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
+// Relative-date tokens stored in saved views. Resolved at match time to
+// "today's" date, so a saved view like "Next follow-up is today" keeps
+// working as the calendar moves. Kept small on purpose — extras like
+// "this_week" can be added later as distinct tokens.
+export const DATE_TOKENS = ["today", "yesterday", "tomorrow"] as const;
+export type DateToken = typeof DATE_TOKENS[number];
+export const DATE_TOKEN_LABELS: Record<DateToken, string> = {
+  today: "Today",
+  yesterday: "Yesterday",
+  tomorrow: "Tomorrow",
+};
+export function isDateToken(v: unknown): v is DateToken {
+  return typeof v === "string" && (DATE_TOKENS as readonly string[]).includes(v);
+}
+
+function todayLocal(): Date {
+  const d = new Date();
+  d.setHours(0, 0, 0, 0);
+  return d;
+}
+function fmtDay(d: Date): string {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
 // Normalise any date-ish value to a "YYYY-MM-DD" string in the LOCAL
-// timezone. Handles two shapes:
-//   1. "YYYY-MM-DD"                 (from <input type="date">, filter value)
-//   2. Full ISO timestamps          (from row.createdAt etc — UTC-stamped)
+// timezone. Handles three shapes:
+//   1. Tokens "today" / "yesterday" / "tomorrow"  (from preset picker)
+//   2. "YYYY-MM-DD"                 (from <input type="date">, filter value)
+//   3. Full ISO timestamps          (from row.createdAt etc — UTC-stamped)
 // Returns null when the value can't be interpreted as a date.
 //
 // Why local? Rows show "6 Jul 2026, 9:53 am" using local time (IST here).
@@ -76,16 +104,19 @@ function toNum(v: unknown): number | null {
 // belonging to July 6. Comparing the local day matches what the UI shows.
 function toDayStr(v: unknown): string | null {
   if (v == null || v === "") return null;
+  if (isDateToken(v)) {
+    const t = todayLocal();
+    if (v === "yesterday") t.setDate(t.getDate() - 1);
+    else if (v === "tomorrow") t.setDate(t.getDate() + 1);
+    return fmtDay(t);
+  }
   const s = String(v).trim();
   if (!s) return null;
   // Fast path: already YYYY-MM-DD (as emitted by <input type="date">).
   if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
   const d = new Date(s);
   if (Number.isNaN(d.getTime())) return null;
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, "0");
-  const day = String(d.getDate()).padStart(2, "0");
-  return `${y}-${m}-${day}`;
+  return fmtDay(d);
 }
 
 // Single-rule predicate.
