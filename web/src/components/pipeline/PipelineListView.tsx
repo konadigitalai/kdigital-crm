@@ -178,6 +178,80 @@ function saveSortPref(s: SortState) {
   }
 }
 
+// ─── CSV export ──────────────────────────────────────────────────────────
+
+// Escape a single cell for CSV output. Fields containing a quote, comma, or
+// line break must be quoted, with inner quotes doubled. Nulls become empty.
+function csvCell(v: unknown): string {
+  if (v == null) return "";
+  const s = typeof v === "string" ? v : String(v);
+  if (s === "") return "";
+  if (/[",\r\n]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
+  return s;
+}
+
+// Human-readable value for a lead+column, mirroring what the grid renders.
+// Deliberately NOT the raw DB value — an exported "Program" cell shows the
+// program name, not its UUID; a "Rating" cell shows "New lead", not "new lead"
+// key styling. Dates stay as ISO strings so downstream tools can re-parse.
+function exportValueFor(l: Lead, col: ColumnKey): string {
+  switch (col) {
+    case "name":            return l.name ?? "";
+    case "rating":          return ratingStyles[l.rating]?.label ?? l.rating ?? "";
+    case "number":          return l.number ?? "";
+    case "email":           return l.email ?? "";
+    case "phoneCountryCode": return l.phoneCountryCode ?? "";
+    case "phone":           return joinCountryAndPhone(l.phoneCountryCode, l.phone);
+    case "city":            return l.city ?? "";
+    case "program":         return l.program ?? "";
+    case "advisor":         return l.advisorName ?? "";
+    case "source":          return l.sourceLabel ?? l.source ?? "";
+    case "value":           return l.value ?? "";
+    case "score":           return l.score == null ? "" : String(l.score);
+    case "deliveryMode":    return l.deliveryMode ?? "";
+    case "timeZone":        return l.timeZone ?? "";
+    case "nextFollowupAt":  return l.nextFollowupAt ?? "";
+    case "demoAttendedAt":  return l.demoAttendedAt ?? "";
+    case "visitedDate":     return l.visitedDate ?? "";
+    case "visitingDate":    return l.visitingDate ?? "";
+    case "feePaid":         return l.feePaid ?? "";
+    case "feeDue":          return l.feeDue ?? "";
+    case "dueDate":         return l.dueDate ?? "";
+    case "registeredDate":  return l.registeredDate ?? "";
+    case "description":     return l.description ?? "";
+    case "createdAt":       return l.createdAt ?? "";
+  }
+}
+
+// Build a CSV string and trigger a browser download. `cols` chooses which
+// fields go into the file, in that order. Prefixed with a UTF-8 BOM so Excel
+// opens the file with non-ASCII characters (Indian names, ₹, etc.) intact.
+function downloadCsv(filename: string, cols: ColumnKey[], rows: Lead[]) {
+  if (typeof window === "undefined") return;
+  const header = cols.map((k) => csvCell(COLUMN_BY_KEY.get(k)?.label ?? k)).join(",");
+  const body = rows
+    .map((l) => cols.map((k) => csvCell(exportValueFor(l, k))).join(","))
+    .join("\r\n");
+  const blob = new Blob(["﻿" + header + "\r\n" + body], { type: "text/csv;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  // Free the object URL on the next tick — some browsers dislike immediate revocation.
+  setTimeout(() => URL.revokeObjectURL(url), 0);
+}
+
+// Timestamped filename fragment "2026-07-06_14-32". Local time so the file
+// name matches the user's expectation of "when did I export this?".
+function exportStamp(): string {
+  const d = new Date();
+  const p = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}_${p(d.getHours())}-${p(d.getMinutes())}`;
+}
+
 // ─── sorting ──────────────────────────────────────────────────────────────
 
 type SortDir = "asc" | "desc";
@@ -459,6 +533,8 @@ export function PipelineListView({
   const [visible, setVisible] = useState<ColumnKey[]>(DEFAULT_VISIBLE);
   const [sort, setSort] = useState<SortState>(DEFAULT_SORT);
   const [pickerOpen, setPickerOpen] = useState(false);
+  const [exportMenuOpen, setExportMenuOpen] = useState(false);
+  const exportRef = useRef<HTMLDivElement>(null);
   const [editing, setEditing] = useState<CellAddress | null>(null);
   const [draft, setDraft] = useState<string>("");
   const [busy, setBusy] = useState(false);
@@ -526,6 +602,36 @@ export function PipelineListView({
     window.addEventListener("mousedown", onClick);
     return () => window.removeEventListener("mousedown", onClick);
   }, [pickerOpen]);
+
+  // Same for the export menu.
+  useEffect(() => {
+    if (!exportMenuOpen) return;
+    function onClick(e: MouseEvent) {
+      if (exportRef.current && !exportRef.current.contains(e.target as Node)) {
+        setExportMenuOpen(false);
+      }
+    }
+    window.addEventListener("mousedown", onClick);
+    return () => window.removeEventListener("mousedown", onClick);
+  }, [exportMenuOpen]);
+
+  // Choose the rows to export. If the user has any rows selected, export just
+  // those (in the current sort order). Otherwise export every filtered row.
+  function rowsForExport(): Lead[] {
+    if (selected.size === 0) return sortedLeads;
+    return sortedLeads.filter((l) => selected.has(l.id));
+  }
+  // `scope`:
+  //   "visible" — only the currently-visible columns, in their current order.
+  //   "all"     — every column the grid knows about (COLUMNS order).
+  function exportLeads(scope: "visible" | "all") {
+    const rows = rowsForExport();
+    if (rows.length === 0) return;
+    const cols: ColumnKey[] = scope === "visible" ? visible : COLUMNS.map((c) => c.key);
+    const scopeTag = selected.size > 0 ? "selected" : "leads";
+    downloadCsv(`${scopeTag}-${exportStamp()}.csv`, cols, rows);
+    setExportMenuOpen(false);
+  }
 
   const visibleColumns = useMemo(
     () => visible.map((k) => COLUMN_BY_KEY.get(k)!).filter(Boolean),
@@ -827,24 +933,69 @@ export function PipelineListView({
             <span className="text-mute">read-only</span>
           )}
         </div>
-        <div className="relative" ref={pickerRef}>
-          <button
-            type="button"
-            onClick={() => setPickerOpen((v) => !v)}
-            className="inline-flex items-center gap-2 rounded-full border border-rule bg-paper px-3 py-1.5 text-[12.5px] font-semibold text-ink2 hover:border-rule2 hover:text-ink"
-          >
-            <Icon name="settings" size={13} strokeWidth={2} />
-            Columns ({visible.length})
-          </button>
-          {pickerOpen && (
-            <ColumnPicker
-              visible={visible}
-              onToggle={toggleColumn}
-              onMove={moveColumn}
-              onReorder={reorderColumn}
-              onReset={resetColumns}
-            />
-          )}
+        <div className="flex items-center gap-2">
+          {/* Export leads — CSV. Menu offers two shapes: just what's visible
+              (matches what the user sees), or every field the grid supports.
+              If any rows are selected, both options export just those. */}
+          <div className="relative" ref={exportRef}>
+            <button
+              type="button"
+              onClick={() => setExportMenuOpen((v) => !v)}
+              className="inline-flex items-center gap-2 rounded-full border border-rule bg-paper px-3 py-1.5 text-[12.5px] font-semibold text-ink2 hover:border-rule2 hover:text-ink"
+              title="Export leads to CSV"
+            >
+              <DownloadGlyph />
+              Export{selected.size > 0 ? ` (${selected.size})` : ""}
+            </button>
+            {exportMenuOpen && (
+              <div className="absolute right-0 top-full z-30 mt-2 w-[280px] overflow-hidden rounded-xl border border-rule bg-paper py-1 shadow-card">
+                <button
+                  type="button"
+                  onClick={() => exportLeads("visible")}
+                  className="block w-full px-4 py-2 text-left text-[12.5px] text-ink hover:bg-warm/60"
+                >
+                  <div className="font-semibold">Export visible columns</div>
+                  <div className="text-[11px] text-mute">
+                    {visible.length} field{visible.length === 1 ? "" : "s"} — matches what you see
+                  </div>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => exportLeads("all")}
+                  className="block w-full px-4 py-2 text-left text-[12.5px] text-ink hover:bg-warm/60"
+                >
+                  <div className="font-semibold">Export all fields</div>
+                  <div className="text-[11px] text-mute">
+                    {COLUMNS.length} field{COLUMNS.length === 1 ? "" : "s"} — every column
+                  </div>
+                </button>
+                <div className="mono-cap border-t border-rule px-4 py-2 text-[9.5px] tracking-[.1em] text-hint">
+                  {selected.size > 0
+                    ? `${selected.size} selected · CSV`
+                    : `${leads.length} row${leads.length === 1 ? "" : "s"} · CSV`}
+                </div>
+              </div>
+            )}
+          </div>
+          <div className="relative" ref={pickerRef}>
+            <button
+              type="button"
+              onClick={() => setPickerOpen((v) => !v)}
+              className="inline-flex items-center gap-2 rounded-full border border-rule bg-paper px-3 py-1.5 text-[12.5px] font-semibold text-ink2 hover:border-rule2 hover:text-ink"
+            >
+              <Icon name="settings" size={13} strokeWidth={2} />
+              Columns ({visible.length})
+            </button>
+            {pickerOpen && (
+              <ColumnPicker
+                visible={visible}
+                onToggle={toggleColumn}
+                onMove={moveColumn}
+                onReorder={reorderColumn}
+                onReset={resetColumns}
+              />
+            )}
+          </div>
         </div>
       </div>
 
@@ -1667,6 +1818,19 @@ function ArrowGlyph({ dir }: { dir: "up" | "down" }) {
       {dir === "up"
         ? <path d="M4 10l4-4 4 4" />
         : <path d="M4 6l4 4 4-4" />}
+    </svg>
+  );
+}
+
+// Download icon — a small down-arrow into a tray. Icon.tsx doesn't ship a
+// "download" glyph so we inline it here rather than pulling a whole new
+// icon set for one button.
+function DownloadGlyph() {
+  return (
+    <svg viewBox="0 0 16 16" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M8 2v8" />
+      <path d="M4.5 7.5L8 11l3.5-3.5" />
+      <path d="M3 13.5h10" />
     </svg>
   );
 }
