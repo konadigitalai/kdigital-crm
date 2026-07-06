@@ -23,9 +23,27 @@ function unique<T>(xs: T[]): T[] {
 }
 
 const DELIVERY_MODE_OPTIONS = [
-  { value: "online",  label: "Online"  },
-  { value: "offline", label: "Offline" },
-  { value: "hybrid",  label: "Hybrid"  },
+  { value: "online",    label: "Online"    },
+  { value: "classroom", label: "Classroom" },
+  { value: "hybrid",    label: "Hybrid"    },
+];
+
+// Mirrors LEAD_STATUS_OPTIONS in PipelineListView. Duplicated because the
+// filter builder here only cares about {value,label} pairs and shouldn't
+// depend on grid-column plumbing.
+const LEAD_STATUS_OPTIONS = [
+  { value: "new",                       label: "New" },
+  { value: "contacted",                 label: "Contacted" },
+  { value: "interested",                label: "Interested" },
+  { value: "demo_attended",             label: "Demo Attended" },
+  { value: "visiting",                  label: "Visiting" },
+  { value: "payment_link_sent",         label: "Payment Link Sent" },
+  { value: "enrolled",                  label: "Enrolled" },
+  { value: "lost_lead",                 label: "Lost Lead" },
+  { value: "visited",                   label: "Visited" },
+  { value: "interested_in_demo",        label: "Interested in Demo" },
+  { value: "advance_talk_with_trainer", label: "Advance Talk With Trainer" },
+  { value: "unqualified",               label: "Unqualified" },
 ];
 
 const STAGE_OPTIONS = [
@@ -53,6 +71,7 @@ function buildFields(leads: Lead[]): FilterField[] {
     { key: "advisor",          label: "Advisor",          type: "enum",   options: advisors.map((a) => ({ value: a, label: a })), get: (l: Lead) => l.advisorName },
     { key: "source",           label: "Source",           type: "enum",   options: sources.map((s) => ({ value: s, label: s })),  get: (l: Lead) => l.sourceLabel ?? l.source },
     { key: "rating",           label: "Rating",           type: "enum",   options: RATING_OPTIONS,  get: (l: Lead) => l.rating },
+    { key: "leadStatus",       label: "Lead status",      type: "enum",   options: LEAD_STATUS_OPTIONS, get: (l: Lead) => l.leadStatus },
     { key: "stage",            label: "Stage",            type: "enum",   options: STAGE_OPTIONS,   get: (l: Lead) => l.stage },
     { key: "deliveryMode",     label: "Mode",             type: "enum",   options: DELIVERY_MODE_OPTIONS, get: (l: Lead) => l.deliveryMode },
     // Score + NBA

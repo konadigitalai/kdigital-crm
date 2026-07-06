@@ -45,11 +45,32 @@ catalogRouter.get("/", async (req, res, next) => {
         ORDER BY name
       `);
       const sources = [
-        { key: "web",          label: "Website form" },
-        { key: "instagram_ad", label: "Instagram ad" },
-        { key: "referral",     label: "Referral" },
-        { key: "webinar",      label: "Webinar" },
-        { key: "paid",         label: "Paid search" },
+        { key: "web",            label: "Web" },
+        { key: "email",          label: "Email" },
+        { key: "phone",          label: "Phone" },
+        { key: "chat",           label: "Chat" },
+        { key: "web_form",       label: "Web Form" },
+        { key: "referral",       label: "Referral" },
+        { key: "paid",           label: "Paid Search" },
+        { key: "demo",           label: "Demo" },
+        { key: "organic_search", label: "Organic Search" },
+      ];
+      // Lead workflow status — separate from `rating` (heat) and `stage`
+      // (pipeline bucket). CHECK constraint on `lead.lead_status` mirrors
+      // these keys (see migration post-0061).
+      const leadStatuses = [
+        { key: "new",                        label: "New" },
+        { key: "contacted",                  label: "Contacted" },
+        { key: "interested",                 label: "Interested" },
+        { key: "demo_attended",              label: "Demo Attended" },
+        { key: "visiting",                   label: "Visiting" },
+        { key: "payment_link_sent",          label: "Payment Link Sent" },
+        { key: "enrolled",                   label: "Enrolled" },
+        { key: "lost_lead",                  label: "Lost Lead" },
+        { key: "visited",                    label: "Visited" },
+        { key: "interested_in_demo",         label: "Interested in Demo" },
+        { key: "advance_talk_with_trainer",  label: "Advance Talk With Trainer" },
+        { key: "unqualified",                label: "Unqualified" },
       ];
       const caseCategories = [
         { key: "billing",       label: "Billing" },
@@ -94,6 +115,7 @@ catalogRouter.get("/", async (req, res, next) => {
         employees: employees.rows,
         staff: staff.rows,
         sources,
+        leadStatuses,
         caseCategories,
         casePriorities,
         caseStatuses,

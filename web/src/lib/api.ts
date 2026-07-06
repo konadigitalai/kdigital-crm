@@ -291,7 +291,8 @@ export async function updateLead(idOrNumber: string, patch: Partial<{
   name: string; email: string | null; phone: string | null; city: string | null;
   phoneCountryCode: string | null;
   timeZone: string | null;
-  deliveryMode: "online" | "offline" | "hybrid" | null;
+  deliveryMode: "online" | "classroom" | "hybrid" | null;
+  leadStatus: string | null;
   value: string | null; source: string; sourceLabel: string;
   stage: string; score: number; heat: string; rating: string;
   nbaLabel: string; nbaIcon: string;
@@ -318,7 +319,8 @@ export interface BulkLeadPatch {
   programId?:      string | null;
   advisorId?:      string | null;
   source?:         string | null;
-  deliveryMode?:   "online" | "offline" | "hybrid" | null;
+  deliveryMode?:   "online" | "classroom" | "hybrid" | null;
+  leadStatus?:     string | null;
   timeZone?:       string | null;
   nextFollowupAt?: string | null;   // YYYY-MM-DD
   demoAttendedAt?: string | null;   // YYYY-MM-DD

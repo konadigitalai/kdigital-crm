@@ -30,7 +30,8 @@ export interface LeadEditable {
   phone: string | null;
   phoneCountryCode: string | null;
   timeZone: string | null;
-  deliveryMode: "online" | "offline" | "hybrid" | null;
+  deliveryMode: "online" | "classroom" | "hybrid" | null;
+  leadStatus: string | null;
   city: string | null;
   programId: string | null;
   programName: string | null;
@@ -68,6 +69,7 @@ function Dialog({ leadNumber, lead, onClose }: { leadNumber: string; lead: LeadE
   const [phoneCountryCode, setPhoneCountryCode] = useState(lead.phoneCountryCode ?? "+91");
   const [timeZone, setTimeZone]       = useState(lead.timeZone ?? "Asia/Kolkata");
   const [deliveryMode, setDeliveryMode] = useState<string>(lead.deliveryMode ?? "");
+  const [leadStatus, setLeadStatus]     = useState<string>(lead.leadStatus ?? "");
   const [city, setCity]               = useState(lead.city ?? "");
   const [programId, setProgramId]     = useState(lead.programId ?? "");
   const [advisorId, setAdvisorId]     = useState(lead.advisorId ?? "");
@@ -111,7 +113,8 @@ function Dialog({ leadNumber, lead, onClose }: { leadNumber: string; lead: LeadE
         phone: phone.replace(/[^\d]/g, "") || null,
         phoneCountryCode: phoneCountryCode.trim() || null,
         timeZone: timeZone || null,
-        deliveryMode: (deliveryMode || null) as "online" | "offline" | "hybrid" | null,
+        deliveryMode: (deliveryMode || null) as "online" | "classroom" | "hybrid" | null,
+        leadStatus: leadStatus || null,
         city: city.trim() || null,
         programId: programId || null,
         advisorId: advisorId || null,
@@ -213,8 +216,22 @@ function Dialog({ leadNumber, lead, onClose }: { leadNumber: string; lead: LeadE
                 <select className={inputCls} value={deliveryMode} onChange={(e) => setDeliveryMode(e.target.value)}>
                   <option value="">— pick mode —</option>
                   <option value="online">Online</option>
-                  <option value="offline">Offline</option>
+                  <option value="classroom">Classroom</option>
                   <option value="hybrid">Hybrid</option>
+                </select>
+              </Field>
+            </div>
+            <div className="grid grid-cols-2 gap-4">
+              <Field label="Lead status">
+                <select
+                  className={inputCls}
+                  value={leadStatus}
+                  onChange={(e) => setLeadStatus(e.target.value)}
+                >
+                  <option value="">— none —</option>
+                  {(catalog?.leadStatuses ?? []).map((s) => (
+                    <option key={s.key} value={s.key}>{s.label}</option>
+                  ))}
                 </select>
               </Field>
             </div>

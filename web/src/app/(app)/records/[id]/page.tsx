@@ -88,6 +88,7 @@ export default async function RecordPage({
     phoneCountryCode: attrs.phoneCountryCode ?? null,
     timeZone: attrs.timeZone ?? null,
     deliveryMode: attrs.deliveryMode ?? null,
+    leadStatus: attrs.leadStatus ?? null,
     city: attrs.city ?? lead.city ?? null,
     programId: lead.programId,
     programName: lead.program,
