@@ -1,21 +1,21 @@
 import { Topbar } from "@/components/shell/Topbar";
-import { getCatalog, getCurrentUser, getLeads, getSavedViews, getSummary } from "@/lib/api";
+import { getCatalog, getCurrentUser, getLeads, getSavedViews } from "@/lib/api";
 import { requirePagePermission } from "@/lib/guards";
 import { NewLeadButton } from "@/components/leads/NewLeadDialog";
 import { LeadsBoard } from "@/components/leads/LeadsBoard";
 
 export default async function LeadsPage() {
   await requirePagePermission("leads.read");
-  const [leads, summary, me, catalog, views] = await Promise.all([
+  // Note: dropped getSummary() — the subtitle line it fed is gone (per user
+  // request 2026-07-06 to declutter the header).
+  const [leads, me, catalog, views] = await Promise.all([
     getLeads(),
-    getSummary(),
     getCurrentUser(),
     getCatalog(),
     getSavedViews("pipeline_list"),
   ]);
   const canWrite  = me?.permissions.includes("leads.write")  ?? false;
   const canDelete = me?.permissions.includes("leads.delete") ?? false;
-  const o = summary.overall;
 
   return (
     <>
@@ -25,19 +25,9 @@ export default async function LeadsPage() {
       />
 
       <div className="px-9 pb-[60px] pt-7">
-        <div className="mb-[22px] flex items-end justify-between gap-6">
-          <div>
-            <h1 className="font-serif text-[40px] font-normal leading-none tracking-[-.01em]">Leads</h1>
-            <p className="mt-2 text-[13.5px] text-mute">
-              {o.total} lead{o.total === 1 ? "" : "s"} · {o.hotOvernight} went hot overnight ·
-              your agents have {o.pendingApprovals} action{o.pendingApprovals === 1 ? "" : "s"} queued
-            </p>
-          </div>
-          <div className="flex gap-2.5">
-            {canWrite && <NewLeadButton label="New lead" />}
-          </div>
-        </div>
-
+        {/* Header stripped 2026-07-06 — the Topbar breadcrumb already says
+            "Leads". The "New lead" button rides on the view-tabs row via
+            LeadsBoard's headerSlot so it sits right next to the tabs. */}
         <LeadsBoard
           initialLeads={leads}
           catalog={catalog}
@@ -45,6 +35,7 @@ export default async function LeadsPage() {
           currentUser={me}
           canWrite={canWrite}
           canDelete={canDelete}
+          headerSlot={canWrite ? <NewLeadButton label="New lead" /> : null}
         />
       </div>
     </>
