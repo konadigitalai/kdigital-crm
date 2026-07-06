@@ -1237,7 +1237,6 @@ function CellIdle({ column, lead }: { column: ColumnDef; lead: Lead }) {
         </div>
         <div className="min-w-0">
           <div className="truncate text-[13px] font-semibold tracking-[-.005em] text-ink group-hover:text-brand-violet">{lead.name}</div>
-          <div className="mono-cap mt-0.5 truncate text-[9.5px] tracking-[.04em] text-mute">{lead.city || "—"}</div>
         </div>
       </Link>
     );

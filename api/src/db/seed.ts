@@ -88,7 +88,7 @@ const SEED_LEADS: SeedLead[] = [
   {
     number: "LEAD-9842", initials: "AM", name: "Aarav Mehta", city: "Bengaluru", program: "AI Engineer · GenAI",
     cohort: "Cohort 026", value: "₹1.49L", stage: "demo", stageLabel: "Demo no-show",
-    score: 89, heat: "hot", avatar: "magenta", source: "instagram_ad",
+    score: 89, heat: "hot", avatar: "magenta", source: "paid",
     scoreReason: "Re-opened pricing 2× last night, watched 78% of free lesson, replied to WhatsApp in 6 min",
     nbaIcon: "send", nbaLabel: "Send re-engagement email",
     email: "aarav.m@gmail.com", phone: "+91 98••• ••231", advisor: "Priya N.",
@@ -119,12 +119,12 @@ const SEED_LEADS: SeedLead[] = [
   },
   { number: "LEAD-9810", initials: "SR", name: "Sneha Reddy", city: "Hyderabad", program: "Full Stack + AI", cohort: "Cohort 023", value: "₹1.49L", stage: "qual", stageLabel: "Qualified", score: 91, heat: "hot", avatar: "violet", source: "web", scoreReason: "Visited pricing 3× + replied to demo invite in 4 min. 62 → 89.", nbaIcon: "clock", nbaLabel: "Book demo · today 7 PM" },
   { number: "LEAD-9788", initials: "KN", name: "Karthik Nair", city: "Kochi", program: "Salesforce · Agentforce", cohort: "Cohort 015", value: "₹99k", stage: "demo", stageLabel: "Demo booked", score: 84, heat: "hot", avatar: "blue", source: "referral", scoreReason: "Strong intent, demo booked Wed 7 PM IST", nbaIcon: "mail", nbaLabel: "Send prep checklist" },
-  { number: "LEAD-9756", initials: "PV", name: "Priya Varma", city: "Pune", program: "AI & Data Science", cohort: "Cohort 08", value: "₹1.19L", stage: "qual", stageLabel: "Qualified", score: 64, heat: "warm", avatar: "ochre", source: "webinar", scoreReason: "Attended Sunday webinar; medium intent", nbaIcon: "star", nbaLabel: "Nurture · send case study" },
+  { number: "LEAD-9756", initials: "PV", name: "Priya Varma", city: "Pune", program: "AI & Data Science", cohort: "Cohort 08", value: "₹1.19L", stage: "qual", stageLabel: "Qualified", score: 64, heat: "warm", avatar: "ochre", source: "organic_search", scoreReason: "Attended Sunday webinar; medium intent", nbaIcon: "star", nbaLabel: "Nurture · send case study" },
   { number: "LEAD-9701", initials: "RT", name: "Rahul Thomas", city: "Chennai", program: "DevOps + AI", cohort: "Cohort 015", value: "₹99k", stage: "new", stageLabel: "New inbound", score: 58, heat: "warm", avatar: "blue", source: "web", scoreReason: "New inbound · cold-warm", nbaIcon: "send", nbaLabel: "Send welcome + syllabus" },
   { number: "LEAD-9655", initials: "MJ", name: "Megha Jain", city: "Delhi", program: "Power BI + AI", cohort: "Cohort 014", value: "₹59k", stage: "won", stageLabel: "Enrolled", score: 96, heat: "hot", avatar: "ok", source: "referral", scoreReason: "Paid · onboarding complete", nbaIcon: "check", nbaLabel: "Ask for referral" },
   { number: "LEAD-9590", initials: "AB", name: "Arjun Bose", city: "Kolkata", program: "Cyber Security + AI", cohort: "Cohort 011", value: "₹1.09L", stage: "new", stageLabel: "New inbound", score: 34, heat: "cold", avatar: "mute", source: "paid", scoreReason: "Low intent · drip only", nbaIcon: "info", nbaLabel: "Low intent · drip only", nbaGhost: true },
   { number: "LEAD-9588", initials: "DN", name: "Divya Nambiar", city: "Online", program: "AI & Data Science", cohort: "Cohort 08", value: "₹1.19L", stage: "new", stageLabel: "New inbound", score: 52, heat: "warm", avatar: "ochre", source: "web", scoreReason: "Inbound · needs qualification", nbaIcon: "mail", nbaLabel: "Qualify via 3 questions" },
-  { number: "LEAD-9720", initials: "VG", name: "Vikram Gowda", city: "Mysuru", program: "Salesforce · Agentforce", cohort: "Cohort 015", value: "₹99k", stage: "qual", stageLabel: "Qualified", score: 66, heat: "warm", avatar: "blue", source: "webinar", scoreReason: "Asking about cohort outcomes", nbaIcon: "mail", nbaLabel: "Share alumni outcomes" },
+  { number: "LEAD-9720", initials: "VG", name: "Vikram Gowda", city: "Mysuru", program: "Salesforce · Agentforce", cohort: "Cohort 015", value: "₹99k", stage: "qual", stageLabel: "Qualified", score: 66, heat: "warm", avatar: "blue", source: "organic_search", scoreReason: "Asking about cohort outcomes", nbaIcon: "mail", nbaLabel: "Share alumni outcomes" },
   { number: "LEAD-9540", initials: "IS", name: "Isha Sharma", city: "Noida", program: "AI Engineer · GenAI", cohort: "Cohort 026", value: "asked re: EMI", stage: "neg", stageLabel: "Negotiation", score: 82, heat: "hot", avatar: "vm", source: "web", scoreReason: "Asked about EMI + scholarship", nbaIcon: "money", nbaLabel: "Send EMI + scholarship offer" },
   { number: "LEAD-9512", initials: "HG", name: "Harsha Gupta", city: "Online", program: "Full Stack + AI", cohort: "Cohort 023", value: "verbal yes", stage: "neg", stageLabel: "Negotiation", score: 88, heat: "hot", avatar: "ok", source: "referral", scoreReason: "Verbal yes — payment pending", nbaIcon: "check", nbaLabel: "Send payment link" },
   { number: "LEAD-9601", initials: "NK", name: "Nikhil Kumar", city: "Hyderabad", program: "AI & Data Science", cohort: "Cohort 08 · paid", value: "₹1.19L", stage: "won", stageLabel: "Enrolled", score: 93, heat: "hot", avatar: "magenta", source: "web", scoreReason: "Paid · onboarding complete", nbaIcon: "check", nbaLabel: "Onboarding complete", nbaGhost: true },
@@ -440,11 +440,15 @@ async function main() {
   const leadByNumber: Record<string, { workItemId: string; partyId: string }> = {};
 
   const SOURCE_LABEL: Record<string, string> = {
-    instagram_ad: "Instagram ad",
-    web: "Website form",
-    referral: "Referral",
-    webinar: "Webinar",
-    paid: "Paid search",
+    web:            "Web",
+    email:          "Email",
+    phone:          "Phone",
+    chat:           "Chat",
+    web_form:       "Web Form",
+    referral:       "Referral",
+    paid:           "Paid Search",
+    demo:           "Demo",
+    organic_search: "Organic Search",
   };
 
   // Heat-driven lead score description (shown next to the big ring)

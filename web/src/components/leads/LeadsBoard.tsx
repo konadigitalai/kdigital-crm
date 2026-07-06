@@ -5,16 +5,23 @@
 // bulk delete, saved views (shared scope `pipeline_list` so a view
 // shows up on both surfaces).
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { PipelineListView, PIPELINE_LIST_COLUMNS, PIPELINE_LIST_DEFAULT_COLUMNS } from "@/components/pipeline/PipelineListView";
 import { DEFAULT_VIEW_ID, ViewTabs } from "@/components/pipeline/ViewTabs";
 import { FilterBar } from "@/components/filter/FilterBar";
 import { useFilter } from "@/components/filter/useFilter";
+import { getLeads } from "@/lib/api";
 import type { FilterField, FilterState } from "@/components/filter/types";
 import type { CatalogResponse, CurrentUser, Lead, SavedView } from "@/lib/types";
 import { LEAD_RATINGS } from "@/lib/types";
 import { ratingStyles } from "@/lib/ui";
+
+// How often the background poller checks for new leads. Kept at 30s to
+// balance responsiveness (users see a new lead within ~30s of the intake
+// webhook firing) against API load (2 requests/min per open tab). Pauses
+// entirely when the tab is hidden.
+const POLL_MS = 30_000;
 
 const RATING_OPTIONS = LEAD_RATINGS.map((r) => ({ value: r, label: ratingStyles[r].label }));
 
@@ -139,6 +146,91 @@ export function LeadsBoard({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [incomingKey]);
 
+  // ── background poller: detect new leads without a page refresh ────────
+  //
+  // Every POLL_MS we re-fetch /leads and diff its id-set against what's
+  // currently in `localLeads`. Any new ids stage themselves in `pending`
+  // and surface a floating pill ("↑ N new leads — click to load"). The
+  // pending set is held separately so the current grid doesn't jump around
+  // while the user is mid-edit; clicking the pill merges pending in and
+  // clears it.
+  //
+  // We ONLY show the pill for additions. Edits to existing rows are
+  // picked up quietly (the poll response replaces those rows in place).
+  // Deletions from other clients are also applied silently.
+  //
+  // Pauses when the tab is hidden to avoid burning API calls on
+  // background tabs, and resumes on visibility change.
+  const [pending, setPending] = useState<Lead[]>([]);
+  const localLeadsRef = useRef(localLeads);
+  localLeadsRef.current = localLeads;
+  const pendingRef = useRef(pending);
+  pendingRef.current = pending;
+
+  useEffect(() => {
+    let cancelled = false;
+    let timer: ReturnType<typeof setInterval> | null = null;
+
+    async function tick() {
+      if (document.hidden) return;
+      try {
+        const fresh = await getLeads();
+        if (cancelled) return;
+        const currentIds = new Set(localLeadsRef.current.map((l) => l.id));
+        const pendingIds = new Set(pendingRef.current.map((l) => l.id));
+        // Additions we haven't seen in either bucket → new leads.
+        const additions = fresh.filter((l) => !currentIds.has(l.id) && !pendingIds.has(l.id));
+        // Silently merge non-addition changes (edits/deletes made elsewhere).
+        // We don't rewrite rows the user is currently editing — that pass
+        // lives in PipelineListView via onLocalEdit optimistic apply — so
+        // this only reconciles rows we already have with fresher server
+        // state, and drops rows the server no longer returns.
+        const freshById = new Map(fresh.map((l) => [l.id, l] as const));
+        setLocalLeads((prev) => {
+          // Filter out rows the server no longer returns (deleted elsewhere).
+          const surviving = prev.filter((l) => freshById.has(l.id));
+          // Replace each surviving row with its fresh copy if the server
+          // has newer values; keep our optimistic edits if not.
+          return surviving.map((l) => freshById.get(l.id) ?? l);
+        });
+        if (additions.length > 0) {
+          setPending((prev) => {
+            // De-dupe by id in case the same addition arrives twice.
+            const seen = new Set(prev.map((l) => l.id));
+            const merged = [...prev];
+            for (const a of additions) if (!seen.has(a.id)) merged.push(a);
+            return merged;
+          });
+        }
+      } catch {
+        // Silent — a failed poll shouldn't nag the user. Next tick will retry.
+      }
+    }
+
+    timer = setInterval(tick, POLL_MS);
+    // Fire once on visibility-become-visible so the user gets fresh data
+    // immediately after switching back to this tab.
+    function onVisible() { if (!document.hidden) tick(); }
+    document.addEventListener("visibilitychange", onVisible);
+
+    return () => {
+      cancelled = true;
+      if (timer) clearInterval(timer);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
+  }, []);
+
+  // Apply the staged additions: merge them into localLeads at the top and
+  // clear the pending set. Called when the user clicks the pill.
+  function loadPendingLeads() {
+    setLocalLeads((prev) => {
+      const existingIds = new Set(prev.map((l) => l.id));
+      const additions = pending.filter((l) => !existingIds.has(l.id));
+      return [...additions, ...prev];
+    });
+    setPending([]);
+  }
+
   // ── filter (rich grid) ────────────────────────────────────────────────
   const fields = useMemo(() => buildFields(localLeads), [localLeads]);
   const [filtered, filterState, setFilterState] = useFilter(localLeads, fields);
@@ -226,6 +318,22 @@ export function LeadsBoard({
           }}
         />
       </div>
+
+      {/* "N new leads — click to load" pill. Sticks near the top while
+          the user scrolls the list, so it's easy to hit without shifting
+          any existing row. Only renders when there's something to load. */}
+      {pending.length > 0 && (
+        <div className="sticky top-2 z-20 mb-3 flex justify-center">
+          <button
+            type="button"
+            onClick={loadPendingLeads}
+            className="inline-flex items-center gap-2 rounded-full border border-brand-violet/40 bg-brand-violet px-4 py-1.5 text-[12.5px] font-semibold text-white shadow-card hover:bg-brand-violet/90"
+          >
+            <span aria-hidden>↑</span>
+            {pending.length} new lead{pending.length === 1 ? "" : "s"} — click to load
+          </button>
+        </div>
+      )}
 
       <PipelineListView
         leads={filtered}
