@@ -8,10 +8,15 @@ import type {
   Combinator, EnumOption, FilterField, FilterRule, FilterState, OperatorKey,
 } from "./types";
 
-// Lightweight uid generator. We only need uniqueness within a render session,
-// not cross-restart, so a counter is fine.
-let uidCounter = 0;
-const uid = () => `r${++uidCounter}`;
+// Rule id generator. Must be unique against BOTH counter-generated ids from
+// the current session AND any ids serialised in a saved view (also of the
+// form "r<number>"). A collision produced the classic React error
+// "Encountered two children with the same key, `r1`" whenever a saved view
+// containing rule.id="r1" was applied and then a new rule was added.
+//
+// Fix: use a random suffix so ids from different sessions can't collide.
+const uid = () =>
+  `r${Math.random().toString(36).slice(2, 8)}${Date.now().toString(36).slice(-4)}`;
 
 // ─── Public component ─────────────────────────────────────────────────────
 
@@ -70,8 +75,14 @@ export function FilterBar({
         />
       ))}
 
-      {/* Add filter button */}
+      {/* Add filter button.
+          type="button" everywhere in this file because the FilterBar can be
+          rendered inside a <form> (e.g. the "Edit view" dialog). Without an
+          explicit type, browsers default <button> to type="submit", so a
+          click on any filter chip submitted the form → saved the view →
+          closed the dialog. */}
       <button
+        type="button"
         onClick={addRule}
         className={cn(
           "inline-flex items-center gap-1.5 rounded-full border border-dashed px-3 py-[7px] text-[12.5px] font-medium transition",
@@ -86,6 +97,7 @@ export function FilterBar({
 
       {!empty && (
         <button
+          type="button"
           onClick={clearAll}
           className="rounded-full px-2.5 py-[5px] text-[11.5px] font-semibold text-mute hover:text-state-warn"
         >
@@ -122,7 +134,16 @@ function RuleChip({
   const operator = OPERATORS[rule.operator];
 
   return (
-    <div className="inline-flex items-stretch rounded-full border border-rule bg-paper text-[12.5px] [&>*:first-child]:rounded-l-full [&>*:last-child]:rounded-r-full">
+    <div
+      className="inline-flex items-stretch rounded-full border border-rule bg-paper text-[12.5px] [&>*:first-child]:rounded-l-full [&>*:last-child]:rounded-r-full"
+      // Stop mousedown/mouseup from reaching a parent modal's backdrop-dismiss
+      // handler. When the FilterBar renders inside the "Edit view" dialog the
+      // modal's inner card DOES stopPropagation, but adding the same guard on
+      // the chip itself keeps the popovers behaving no matter where FilterBar
+      // is mounted.
+      onMouseDown={(e) => e.stopPropagation()}
+      onMouseUp={(e) => e.stopPropagation()}
+    >
       {showCombinator && (
         <CombinatorPicker value={combinator} onChange={onCombinatorChange} />
       )}
@@ -165,6 +186,7 @@ function RuleChip({
       )}
 
       <button
+        type="button"
         onClick={onRemove}
         className="flex items-center justify-center px-2 text-mute transition hover:bg-warm hover:text-state-warn"
         aria-label="Remove filter"
@@ -180,7 +202,7 @@ function RuleChip({
 function CombinatorPicker({ value, onChange }: { value: Combinator; onChange: (c: Combinator) => void }) {
   return (
     <div className="flex items-center border-r border-rule bg-warm px-2 font-mono text-[10px] uppercase tracking-wider text-mute">
-      <button onClick={() => onChange(value === "and" ? "or" : "and")} className="font-semibold">
+      <button type="button" onClick={() => onChange(value === "and" ? "or" : "and")} className="font-semibold">
         {value}
       </button>
     </div>
@@ -199,6 +221,7 @@ function FieldPicker({
   return (
     <div ref={ref} className="relative">
       <button
+        type="button"
         onClick={() => setOpen((o) => !o)}
         className="flex items-center gap-1 px-2.5 py-[6px] font-semibold text-ink hover:bg-warm"
       >
@@ -209,6 +232,7 @@ function FieldPicker({
         <Popover>
           {fields.map((f) => (
             <button
+              type="button"
               key={f.key}
               onClick={() => { onChange(f.key); setOpen(false); }}
               className={cn(
@@ -238,6 +262,7 @@ function OperatorPicker({
   return (
     <div ref={ref} className="relative border-l border-rule">
       <button
+        type="button"
         onClick={() => setOpen((o) => !o)}
         className="flex items-center gap-1 px-2.5 py-[6px] text-mute hover:bg-warm"
       >
@@ -248,6 +273,7 @@ function OperatorPicker({
         <Popover>
           {ops.map((op) => (
             <button
+              type="button"
               key={op.key}
               onClick={() => { onChange(op.key); setOpen(false); }}
               className={cn(
@@ -378,6 +404,7 @@ function BooleanPicker({ value, onChange }: { value: boolean; onChange: (v: bool
   return (
     <div className="flex border-l border-rule">
       <button
+        type="button"
         onClick={() => onChange(!value)}
         className="px-2.5 py-[6px] font-semibold text-ink hover:bg-warm"
       >
@@ -396,6 +423,7 @@ function EnumSinglePicker({
   return (
     <div ref={ref} className="relative border-l border-rule">
       <button
+        type="button"
         onClick={() => setOpen((o) => !o)}
         className="flex items-center gap-1 px-2.5 py-[6px] hover:bg-warm"
       >
@@ -412,6 +440,7 @@ function EnumSinglePicker({
         <Popover>
           {options.map((o) => (
             <button
+              type="button"
               key={o.value}
               onClick={() => { onChange(o.value); setOpen(false); }}
               className={cn(
@@ -442,6 +471,7 @@ function EnumMultiPicker({
   return (
     <div ref={ref} className="relative border-l border-rule">
       <button
+        type="button"
         onClick={() => setOpen((o) => !o)}
         className="flex max-w-[260px] items-center gap-1 px-2.5 py-[6px] hover:bg-warm"
       >
@@ -469,6 +499,7 @@ function EnumMultiPicker({
             const checked = set.has(o.value);
             return (
               <button
+                type="button"
                 key={o.value}
                 onClick={() => toggle(o.value)}
                 className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[12.5px] hover:bg-warm"
@@ -492,27 +523,45 @@ function EnumMultiPicker({
 }
 
 function Popover({ children }: { children: React.ReactNode }) {
+  // Stop mousedown/mouseup from bubbling to any parent modal backdrop or
+  // scroll-drag handler. Without this, clicking a filter field inside an
+  // "Edit view" modal was closing the modal because the modal's backdrop
+  // dismiss saw the mouse event bubble through the absolutely-positioned
+  // popover (which paints on top of the backdrop layer visually).
   return (
-    <div className="absolute left-0 top-full z-30 mt-1 min-w-[200px] max-h-[300px] overflow-y-auto rounded-lg border border-rule bg-paper py-1 shadow-card">
+    <div
+      className="absolute left-0 top-full z-30 mt-1 min-w-[200px] max-h-[300px] overflow-y-auto rounded-lg border border-rule bg-paper py-1 shadow-card"
+      onMouseDown={(e) => e.stopPropagation()}
+      onMouseUp={(e) => e.stopPropagation()}
+      onClick={(e) => e.stopPropagation()}
+    >
       {children}
     </div>
   );
 }
 
-// Small hook: close popover on outside click + escape
+// Small hook: close popover on outside click + escape.
+//
+// `close` is captured in a ref so we don't re-subscribe document listeners
+// on every parent render. Otherwise the useEffect cleanup+resub cycle can
+// pile up if the parent re-renders in a tight loop (which happens when the
+// filter's own state change triggers another render → new `close` fn →
+// new effect run → new listeners → …).
 function useOutsideClose(close: () => void) {
   const ref = useRef<HTMLDivElement>(null);
+  const closeRef = useRef(close);
+  closeRef.current = close;
   useEffect(() => {
     function onClick(e: MouseEvent) {
-      if (ref.current && !ref.current.contains(e.target as Node)) close();
+      if (ref.current && !ref.current.contains(e.target as Node)) closeRef.current();
     }
-    function onKey(e: KeyboardEvent) { if (e.key === "Escape") close(); }
+    function onKey(e: KeyboardEvent) { if (e.key === "Escape") closeRef.current(); }
     document.addEventListener("mousedown", onClick);
     document.addEventListener("keydown", onKey);
     return () => {
       document.removeEventListener("mousedown", onClick);
       document.removeEventListener("keydown", onKey);
     };
-  }, [close]);
+  }, []);
   return ref;
 }
