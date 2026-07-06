@@ -58,6 +58,7 @@ function Dialog({ defaultRating, onClose }: { defaultRating?: LeadRating; onClos
   const [source, setSource] = useState("web");
   const [rating, setRating] = useState<LeadRating>(defaultRating ?? "new lead");
   const [leadStatus, setLeadStatus] = useState<string>("");
+  const [description, setDescription] = useState("");
   const [score, setScore] = useState(50);
   const [advisorId, setAdvisorId] = useState<string>("");
   const [nbaLabel, setNbaLabel] = useState("");
@@ -99,6 +100,7 @@ function Dialog({ defaultRating, onClose }: { defaultRating?: LeadRating; onClos
         score,
         rating,
         leadStatus: leadStatus || undefined,
+        description: description.trim() || undefined,
         advisorId: advisorId || undefined,
         nbaLabel: nbaLabel.trim() || undefined,
       });
@@ -200,6 +202,16 @@ function Dialog({ defaultRating, onClose }: { defaultRating?: LeadRating; onClos
                   <option key={a.id} value={a.id}>{a.name}{a.role !== "advisor" ? ` · ${a.role}` : ""}</option>
                 ))}
               </select>
+            </Field>
+
+            <Field label="Description">
+              <textarea
+                rows={3}
+                value={description}
+                onChange={(e) => setDescription(e.target.value)}
+                placeholder="Context, prior conversations, anything the advisor should know…"
+                className={cn(inputCls, "min-h-[76px] resize-y leading-[1.45]")}
+              />
             </Field>
 
             <Field label="Rating">
