@@ -3,7 +3,11 @@
 import { useEffect, useRef, useState } from "react";
 import { Icon } from "@/components/ui/Icon";
 import { cn } from "@/lib/cn";
-import { OPERATORS, defaultOperator, defaultValue, operatorsForType } from "./operators";
+import {
+  OPERATORS, defaultOperator, defaultValue, operatorsForType,
+  DATE_TOKENS, DATE_TOKEN_LABELS, isDateToken,
+  type DateToken,
+} from "./operators";
 import type {
   Combinator, EnumOption, FilterField, FilterRule, FilterState, OperatorKey,
 } from "./types";
@@ -315,31 +319,44 @@ function ValueEditor({
   }
   if (op.valueArity === 2) {
     const arr = Array.isArray(value) ? (value as [unknown, unknown]) : [null, null];
-    // Pick the input type per field type so date "between" gets two date
-    // pickers instead of falling back to free-text min/max.
-    const inputType =
-      field.type === "number" ? "number" :
-      field.type === "date"   ? "date"   :
-      "text";
+    // Date "between": each side gets a full DateValueEditor so users can
+    // pick presets on either bound ("from Today to Tomorrow", etc).
+    if (field.type === "date") {
+      return (
+        <div className="flex items-center gap-1 border-l border-rule px-2 py-[3px]">
+          <DateValueEditor
+            value={typeof arr[0] === "string" ? arr[0] : ""}
+            onChange={(v) => onChange([v, arr[1]])}
+            compact
+          />
+          <span className="text-mute">–</span>
+          <DateValueEditor
+            value={typeof arr[1] === "string" ? arr[1] : ""}
+            onChange={(v) => onChange([arr[0], v])}
+            compact
+          />
+        </div>
+      );
+    }
+    const inputType = field.type === "number" ? "number" : "text";
     const cast = (s: string): unknown =>
       field.type === "number" ? toNum(s) : (s === "" ? null : s);
-    const widthCls = field.type === "date" ? "w-[130px]" : "w-[60px]";
     return (
       <div className="flex items-center gap-1 border-l border-rule px-2 py-[3px]">
         <input
           type={inputType}
           value={(arr[0] ?? "") as string | number}
           onChange={(e) => onChange([cast(e.target.value), arr[1]])}
-          className={cn(widthCls, "bg-transparent text-[12.5px] text-ink outline-none placeholder:text-hint")}
-          placeholder={field.type === "date" ? "from" : "min"}
+          className="w-[60px] bg-transparent text-[12.5px] text-ink outline-none placeholder:text-hint"
+          placeholder="min"
         />
         <span className="text-mute">–</span>
         <input
           type={inputType}
           value={(arr[1] ?? "") as string | number}
           onChange={(e) => onChange([arr[0], cast(e.target.value)])}
-          className={cn(widthCls, "bg-transparent text-[12.5px] text-ink outline-none placeholder:text-hint")}
-          placeholder={field.type === "date" ? "to" : "max"}
+          className="w-[60px] bg-transparent text-[12.5px] text-ink outline-none placeholder:text-hint"
+          placeholder="max"
         />
       </div>
     );
@@ -360,11 +377,9 @@ function ValueEditor({
     />;
   }
   if (field.type === "date") {
-    return <TextInput
-      type="date"
-      value={value === null || value === undefined ? "" : String(value)}
+    return <DateValueEditor
+      value={typeof value === "string" ? value : ""}
       onChange={onChange}
-      placeholder="Date"
     />;
   }
   return <TextInput
@@ -396,6 +411,86 @@ function TextInput({
         placeholder={placeholder}
         className="w-[140px] bg-transparent px-2.5 py-[6px] text-[12.5px] text-ink outline-none placeholder:text-hint"
       />
+    </div>
+  );
+}
+
+// ─── Date value editor — date picker + preset menu (Today / Yesterday / …) ─
+//
+// `value` is either a plain "YYYY-MM-DD" (from the date picker) or a token
+// like "today". When it's a token, we render a chip in place of the date
+// input so the user sees "Today" and knows the value follows the calendar.
+function DateValueEditor({
+  value, onChange, compact,
+}: {
+  value: string;
+  onChange: (v: unknown) => void;
+  compact?: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useOutsideClose(() => setOpen(false));
+  const token = isDateToken(value) ? value : null;
+  const widthCls = compact ? "w-[112px]" : "w-[130px]";
+  return (
+    <div ref={ref} className="relative flex items-center border-l border-rule">
+      {token ? (
+        <div className={cn(widthCls, "flex items-center gap-1 px-2 py-[6px]")}>
+          <span className="inline-flex items-center rounded-full bg-brand-violet/10 px-2 py-0.5 text-[11.5px] font-semibold text-brand-violet">
+            {DATE_TOKEN_LABELS[token]}
+          </span>
+          <button
+            type="button"
+            onClick={() => onChange("")}
+            className="ml-auto text-mute hover:text-state-warn"
+            aria-label="Clear preset"
+            title="Clear"
+          >
+            <Icon name="plus" size={10} strokeWidth={2.4} className="rotate-45" />
+          </button>
+        </div>
+      ) : (
+        <input
+          type="date"
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          placeholder="Date"
+          className={cn(widthCls, "bg-transparent px-2.5 py-[6px] text-[12.5px] text-ink outline-none placeholder:text-hint")}
+        />
+      )}
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        className="flex items-center px-1.5 text-mute hover:bg-warm hover:text-ink"
+        aria-label="Date presets"
+        title="Presets"
+      >
+        <span className="text-[9px]">▾</span>
+      </button>
+      {open && (
+        <Popover>
+          {DATE_TOKENS.map((t) => (
+            <button
+              type="button"
+              key={t}
+              onClick={() => { onChange(t as DateToken); setOpen(false); }}
+              className={cn(
+                "block w-full px-3 py-1.5 text-left text-[12.5px] hover:bg-warm",
+                token === t && "bg-warm font-semibold",
+              )}
+            >
+              {DATE_TOKEN_LABELS[t]}
+            </button>
+          ))}
+          <div className="my-1 border-t border-rule" />
+          <button
+            type="button"
+            onClick={() => { onChange(""); setOpen(false); }}
+            className="block w-full px-3 py-1.5 text-left text-[12.5px] text-mute hover:bg-warm hover:text-ink"
+          >
+            Pick a date…
+          </button>
+        </Popover>
+      )}
     </div>
   );
 }
