@@ -7,6 +7,21 @@ import { partyIdFromAppUserId, resolveActorPartyId, resolveSentinelPartyId } fro
 
 export const leadsRouter = Router();
 
+// Canonical values for `lead.lead_status`. Mirrors the CHECK constraint in
+// post-0061 and the /catalog leadStatuses labels. Keep both in sync.
+const LEAD_STATUS_KEYS = [
+  "new", "contacted", "interested", "demo_attended", "visiting",
+  "payment_link_sent", "enrolled", "lost_lead", "visited",
+  "interested_in_demo", "advance_talk_with_trainer", "unqualified",
+] as const;
+const LEAD_STATUS_SET = new Set<string>(LEAD_STATUS_KEYS);
+function normLeadStatus(v: unknown): string | null | "__invalid__" {
+  if (v == null || v === "") return null;
+  const s = String(v).trim().toLowerCase().replace(/[\s-]+/g, "_");
+  if (!LEAD_STATUS_SET.has(s)) return "__invalid__";
+  return s;
+}
+
 // Human-readable label for an edit-diff field. Used by PATCH /leads to render
 // activity rows like "Score: 65 → 78" rather than dumping camelCase keys.
 function humanFieldLabel(field: string): string {
@@ -18,6 +33,7 @@ function humanFieldLabel(field: string): string {
     city: "City",
     timeZone: "Time zone",
     deliveryMode: "Delivery mode",
+    leadStatus: "Lead status",
     value: "Price quoted",
     description: "Description",
     paymentProofUrl: "Payment proof",
@@ -434,6 +450,7 @@ leadsRouter.get("/", async (req, res, next) => {
           l.visited_date     AS "visitedDate",
           l.visiting_date    AS "visitingDate",
           l.delivery_mode    AS "deliveryMode",
+          l.lead_status      AS "leadStatus",
           l.time_zone        AS "timeZone",
           l.fee_paid         AS "feePaid",
           l.fee_due          AS "feeDue",
@@ -503,6 +520,7 @@ leadsRouter.patch("/:idOrNumber", async (req, res, next) => {
                      l.visiting_date    AS "visitingDate",
                      l.time_zone AS "timeZone",
                      l.delivery_mode AS "deliveryMode",
+                     l.lead_status  AS "leadStatus",
                      l.payment_proof_url AS "paymentProofUrl",
                      l.score, l.heat, l.stage, l.stage_label AS "stageLabel",
                      l.nba_label AS "nbaLabel", l.nba_icon AS "nbaIcon",
@@ -525,6 +543,7 @@ leadsRouter.patch("/:idOrNumber", async (req, res, next) => {
                      l.visiting_date    AS "visitingDate",
                      l.time_zone AS "timeZone",
                      l.delivery_mode AS "deliveryMode",
+                     l.lead_status  AS "leadStatus",
                      l.payment_proof_url AS "paymentProofUrl",
                      l.score, l.heat, l.stage, l.stage_label AS "stageLabel",
                      l.nba_label AS "nbaLabel", l.nba_icon AS "nbaIcon",
@@ -613,11 +632,20 @@ leadsRouter.patch("/:idOrNumber", async (req, res, next) => {
       }
       if (b.timeZone !== undefined) leadSets.push(sql`time_zone = ${b.timeZone ? String(b.timeZone).trim() : null}`);
       if (b.deliveryMode !== undefined) {
-        const m = b.deliveryMode == null || b.deliveryMode === "" ? null : String(b.deliveryMode).trim().toLowerCase();
-        if (m !== null && !["online", "offline", "hybrid"].includes(m)) {
+        // Migrated 2026-07-06: "offline" was renamed to "classroom". Accept
+        // the old spelling on the wire (importer + legacy clients) and
+        // transparently rewrite it — the schema's CHECK now rejects it.
+        let m = b.deliveryMode == null || b.deliveryMode === "" ? null : String(b.deliveryMode).trim().toLowerCase();
+        if (m === "offline") m = "classroom";
+        if (m !== null && !["online", "classroom", "hybrid"].includes(m)) {
           return { kind: "bad-delivery-mode" as const };
         }
         leadSets.push(sql`delivery_mode = ${m}`);
+      }
+      if (b.leadStatus !== undefined) {
+        const s = normLeadStatus(b.leadStatus);
+        if (s === "__invalid__") return { kind: "bad-lead-status" as const };
+        leadSets.push(sql`lead_status = ${s}`);
       }
       if (b.source !== undefined) leadSets.push(sql`source = ${b.source ? String(b.source).trim() : null}`);
       if (b.sourceLabel !== undefined) leadSets.push(sql`source_label = ${b.sourceLabel ? String(b.sourceLabel).trim() : null}`);
@@ -716,6 +744,7 @@ leadsRouter.patch("/:idOrNumber", async (req, res, next) => {
         ["nbaLabel", "nbaLabel"], ["nbaIcon", "nbaIcon"],
         ["timeZone", "timeZone"],
         ["deliveryMode", "deliveryMode"],
+        ["leadStatus", "leadStatus"],
       ];
       for (const [in_, prev] of textFields) {
         if (b[in_] === undefined) continue;
@@ -869,7 +898,8 @@ leadsRouter.patch("/:idOrNumber", async (req, res, next) => {
 
     if (updated === null) return res.status(404).json({ error: "Lead not found" });
     if (updated.kind === "bad-score") return res.status(400).json({ error: "score must be 0..100" });
-    if (updated.kind === "bad-delivery-mode") return res.status(400).json({ error: "deliveryMode must be online | offline | hybrid" });
+    if (updated.kind === "bad-delivery-mode") return res.status(400).json({ error: "deliveryMode must be online | classroom | hybrid" });
+    if (updated.kind === "bad-lead-status")   return res.status(400).json({ error: `leadStatus must be one of: ${LEAD_STATUS_KEYS.join(", ")}` });
     if (updated.kind === "bad-value") return res.status(400).json({ error: "Price quoted must be a number (e.g. 149000) — no letters or symbols." });
     res.json({ ok: true, lead: updated.lead });
   } catch (err) {
@@ -1100,7 +1130,7 @@ leadsRouter.post("/bulk", async (req, res, next) => {
       }
     }
 
-    const ALLOWED = ["rating","programId","advisorId","source","deliveryMode","timeZone","nextFollowupAt","demoAttendedAt","visitedDate","visitingDate"];
+    const ALLOWED = ["rating","programId","advisorId","source","deliveryMode","leadStatus","timeZone","nextFollowupAt","demoAttendedAt","visitedDate","visitingDate"];
     const unknownKeys = Object.keys(patch).filter((k) => !ALLOWED.includes(k));
     if (unknownKeys.length) {
       return res.status(400).json({ error: `unsupported bulk fields: ${unknownKeys.join(", ")}` });
@@ -1112,9 +1142,17 @@ leadsRouter.post("/bulk", async (req, res, next) => {
       return res.status(400).json({ error: "rating invalid" });
     }
     if (patch.deliveryMode !== undefined && patch.deliveryMode !== null && patch.deliveryMode !== "") {
+      // Accept legacy "offline" and rewrite in the bulk executor below.
       const m = String(patch.deliveryMode).trim().toLowerCase();
-      if (!["online","offline","hybrid"].includes(m)) {
-        return res.status(400).json({ error: "deliveryMode must be online | offline | hybrid" });
+      const canonical = m === "offline" ? "classroom" : m;
+      if (!["online","classroom","hybrid"].includes(canonical)) {
+        return res.status(400).json({ error: "deliveryMode must be online | classroom | hybrid" });
+      }
+    }
+    if (patch.leadStatus !== undefined && patch.leadStatus !== null && patch.leadStatus !== "") {
+      const s = normLeadStatus(patch.leadStatus);
+      if (s === "__invalid__") {
+        return res.status(400).json({ error: `leadStatus must be one of: ${LEAD_STATUS_KEYS.join(", ")}` });
       }
     }
     for (const k of ["programId","advisorId"] as const) {
@@ -1193,10 +1231,16 @@ leadsRouter.post("/bulk", async (req, res, next) => {
             if (resolved.sourceLabel !== undefined) sets.push(sql`source_label = ${resolved.sourceLabel}`);
           }
           if (patch.deliveryMode !== undefined) {
-            const m = patch.deliveryMode === null || patch.deliveryMode === ""
+            let m = patch.deliveryMode === null || patch.deliveryMode === ""
               ? null
               : String(patch.deliveryMode).trim().toLowerCase();
+            if (m === "offline") m = "classroom";
             sets.push(sql`delivery_mode = ${m}`);
+          }
+          if (patch.leadStatus !== undefined) {
+            const s = normLeadStatus(patch.leadStatus);
+            // "__invalid__" was already rejected in the pre-check above.
+            sets.push(sql`lead_status = ${s === "__invalid__" ? null : s}`);
           }
           if (patch.timeZone !== undefined) {
             sets.push(sql`time_zone = ${patch.timeZone ? String(patch.timeZone).trim() : null}`);

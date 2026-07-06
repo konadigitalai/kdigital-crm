@@ -254,7 +254,8 @@ export interface Lead {
   phoneCountryCode?: string | null;
   description?: string | null;
   programId?: string | null;
-  deliveryMode?: string | null;     // online | offline | hybrid
+  deliveryMode?: string | null;     // online | classroom | hybrid
+  leadStatus?: string | null;       // see LEAD_STATUS_KEYS server-side
   timeZone?: string | null;          // IANA tz
   feePaid?: string | null;
   feeDue?: string | null;
@@ -881,6 +882,7 @@ export interface CatalogResponse {
   employees: { id: string; name: string; email: string; role: string }[];
   staff: { id: string; name: string; email: string; role: string }[];
   sources: { key: string; label: string }[];
+  leadStatuses: { key: string; label: string }[];
   caseCategories: { key: CaseCategory; label: string }[];
   casePriorities: { value: CasePriority; label: string }[];
   caseStatuses:   { key: CaseStatus; label: string }[];
@@ -1128,8 +1130,10 @@ export interface RecordResponse {
       // Phase H+: contact details split out + lead-level display tz
       phoneCountryCode?: string | null;
       timeZone?: string | null;
-      // online | offline | hybrid — how the lead wants the program delivered.
-      deliveryMode?: "online" | "offline" | "hybrid" | null;
+      // online | classroom | hybrid — how the lead wants the program delivered.
+      deliveryMode?: "online" | "classroom" | "hybrid" | null;
+      // Workflow tag — see LEAD_STATUS_KEYS on the server.
+      leadStatus?: string | null;
       signals?: { text: string; weight: string; kind: "pos" | "neg" | "neu" }[];
       nbaCard?: { confidence: number; headline: string; why: string } | null;
       agentsOnLead?: { name: string; status: string; glyph: AvatarGrad; icon: "spark" | "star" | "clock"; badge: { label: string; kind: "done" | "run" } }[];

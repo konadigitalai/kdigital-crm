@@ -531,8 +531,12 @@ export const lead = pgTable("lead", {
   // Display tz on the record header. IANA name; "Asia/Kolkata" by convention
   // for legacy rows that have no value.
   timeZone:          text("time_zone"),
-  // How the lead wants the program delivered: 'online' | 'offline' | 'hybrid'.
+  // How the lead wants the program delivered: 'online' | 'classroom' | 'hybrid'.
   deliveryMode:      text("delivery_mode"),
+  // Workflow status — separate from `rating` (heat) and `stage` (pipeline
+  // bucket). CHECK constraint lives in post-0061; canonical values in the
+  // /catalog `leadStatuses` list.
+  leadStatus:        text("lead_status"),
   // Next-best-action card
   nbaIcon: text("nba_icon"),
   nbaLabel: text("nba_label"),

@@ -28,7 +28,7 @@ import { LEAD_RATINGS } from "@/lib/types";
 // Exported for the saved-view dialog so it can render a column picker that
 // stays in sync with what the table actually supports.
 export type ColumnKey =
-  | "name" | "rating" | "number" | "email"
+  | "name" | "rating" | "leadStatus" | "number" | "email"
   | "phoneCountryCode" | "phone" | "city"
   | "program" | "advisor" | "source" | "value"
   | "score" | "deliveryMode" | "timeZone"
@@ -48,6 +48,7 @@ type CellType =
   | "select-advisor"
   | "select-source"
   | "select-rating"
+  | "select-lead-status"
   | "select-delivery"
   | "select-tz"
   | "readonly-name"
@@ -65,6 +66,7 @@ interface ColumnDef {
 const COLUMNS: ColumnDef[] = [
   { key: "name",            label: "Name",             width: "260px", type: "readonly-name" },
   { key: "rating",          label: "Rating",           width: "140px", type: "select-rating" },
+  { key: "leadStatus",      label: "Lead status",      width: "170px", type: "select-lead-status" },
   { key: "number",          label: "Lead #",           width: "120px", type: "readonly-number" },
   { key: "email",           label: "Email",            width: "230px", type: "email" },
   { key: "phoneCountryCode", label: "Phone CC",        width: "100px", type: "phone" },
@@ -91,9 +93,29 @@ const COLUMNS: ColumnDef[] = [
 const COLUMN_BY_KEY = new Map(COLUMNS.map((c) => [c.key, c]));
 
 const DEFAULT_VISIBLE: ColumnKey[] = [
-  "name", "rating", "phone", "program", "advisor",
+  "name", "rating", "leadStatus", "phone", "program", "advisor",
   "value", "nextFollowupAt", "score",
 ];
+
+// Canonical Lead Status values. Mirror `api/src/routes/catalog.ts`
+// (leadStatuses) and the CHECK constraint in post-0061.
+export const LEAD_STATUS_OPTIONS: ReadonlyArray<{ value: string; label: string }> = [
+  { value: "new",                       label: "New" },
+  { value: "contacted",                 label: "Contacted" },
+  { value: "interested",                label: "Interested" },
+  { value: "demo_attended",             label: "Demo Attended" },
+  { value: "visiting",                  label: "Visiting" },
+  { value: "payment_link_sent",         label: "Payment Link Sent" },
+  { value: "enrolled",                  label: "Enrolled" },
+  { value: "lost_lead",                 label: "Lost Lead" },
+  { value: "visited",                   label: "Visited" },
+  { value: "interested_in_demo",        label: "Interested in Demo" },
+  { value: "advance_talk_with_trainer", label: "Advance Talk With Trainer" },
+  { value: "unqualified",               label: "Unqualified" },
+];
+const LEAD_STATUS_LABEL: Record<string, string> = Object.fromEntries(
+  LEAD_STATUS_OPTIONS.map((o) => [o.value, o.label]),
+);
 
 // Minimal public registry exposed to the saved-view dialog. We only export
 // the (key, label) pairs and the default visible set — the dialog never
@@ -103,10 +125,10 @@ export const PIPELINE_LIST_COLUMNS: ReadonlyArray<{ key: ColumnKey; label: strin
 export const PIPELINE_LIST_DEFAULT_COLUMNS: readonly ColumnKey[] = DEFAULT_VISIBLE;
 
 const DELIVERY_OPTIONS = [
-  { value: "",        label: "—" },
-  { value: "online",  label: "Online" },
-  { value: "offline", label: "Offline" },
-  { value: "hybrid",  label: "Hybrid" },
+  { value: "",          label: "—" },
+  { value: "online",    label: "Online" },
+  { value: "classroom", label: "Classroom" },
+  { value: "hybrid",    label: "Hybrid" },
 ];
 
 const TZ_OPTIONS = [
@@ -198,6 +220,7 @@ function exportValueFor(l: Lead, col: ColumnKey): string {
   switch (col) {
     case "name":            return l.name ?? "";
     case "rating":          return ratingStyles[l.rating]?.label ?? l.rating ?? "";
+    case "leadStatus":      return l.leadStatus ? (LEAD_STATUS_LABEL[l.leadStatus] ?? l.leadStatus) : "";
     case "number":          return l.number ?? "";
     case "email":           return l.email ?? "";
     case "phoneCountryCode": return l.phoneCountryCode ?? "";
@@ -266,6 +289,7 @@ function sortValueFor(l: Lead, col: ColumnKey): number | string | null {
   switch (col) {
     case "name":            return (l.name ?? "").toLowerCase();
     case "rating":          return LEAD_RATINGS.indexOf(l.rating);
+    case "leadStatus":      return l.leadStatus ? (LEAD_STATUS_LABEL[l.leadStatus] ?? l.leadStatus).toLowerCase() : "";
     case "number":          return l.number ?? "";
     case "email":           return (l.email ?? "").toLowerCase();
     case "phoneCountryCode": return l.phoneCountryCode ?? "";
@@ -410,6 +434,7 @@ function initialValueFor(l: Lead, col: ColumnDef): string {
     case "phone":          return phoneWithoutCc(l.phone);
     case "phoneCountryCode": return l.phoneCountryCode ?? "";
     case "rating":         return l.rating;
+    case "leadStatus":     return l.leadStatus ?? "";
     case "program":        return l.programId ?? "";
     case "advisor":        return l.advisorId ?? "";
     case "source":         return l.source ?? "";
@@ -468,6 +493,7 @@ function buildLocalPatch(
     case "visitedDate":     return { visitedDate:    nullable };
     case "visitingDate":    return { visitingDate:   nullable };
     case "rating":          return { rating: (draft || "warm") as Lead["rating"] };
+    case "leadStatus":      return { leadStatus: nullable };
     case "program": {
       const p = catalog.programs.find((x) => x.id === draft);
       return { programId: nullable, program: p?.name ?? "" };
@@ -1249,6 +1275,20 @@ function CellIdle({ column, lead }: { column: ColumnDef; lead: Lead }) {
     );
   }
 
+  // Lead status chip — neutral styling. Reads the label from the canonical
+  // map so we display "Payment Link Sent" rather than the raw
+  // "payment_link_sent" key.
+  if (column.type === "select-lead-status") {
+    const key = lead.leadStatus ?? "";
+    if (!key) return <span className="text-mute">—</span>;
+    const label = LEAD_STATUS_LABEL[key] ?? key;
+    return (
+      <span className="inline-flex items-center gap-1.5 rounded-full bg-warm2 px-2.5 py-0.5 text-[11px] font-semibold text-ink2">
+        {label}
+      </span>
+    );
+  }
+
   switch (column.key) {
     case "email":          return <span className="truncate" title={lead.email ?? undefined}>{lead.email || "—"}</span>;
     case "phone":          return <span className="truncate" title={lead.phone ?? undefined}>{joinCountryAndPhone(lead.phoneCountryCode, lead.phone) || "—"}</span>;
@@ -1325,6 +1365,7 @@ function popoverWidthFor(type: ColumnDef["type"]): string {
     case "select-program":
     case "select-advisor":
     case "select-source":
+    case "select-lead-status":
     case "select-tz":        return "280px";
     case "date":             return "200px";
     case "money":            return "240px";
@@ -1453,6 +1494,22 @@ function CellEditor({
         >
           {LEAD_RATINGS.map((r) => (
             <option key={r} value={r}>{ratingStyles[r as LeadRating].label}</option>
+          ))}
+        </select>
+      );
+      break;
+    case "select-lead-status":
+      editor = (
+        <select
+          autoFocus
+          className={inputCls}
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          onKeyDown={onKeyDown}
+        >
+          <option value="">— none —</option>
+          {LEAD_STATUS_OPTIONS.map((o) => (
+            <option key={o.value} value={o.value}>{o.label}</option>
           ))}
         </select>
       );
@@ -1863,7 +1920,7 @@ function SortGlyph({ state }: { state: SortDir | null }) {
 // ones where bulk-changing makes sense ("update next follow-up to next
 // Friday for everyone in this batch", "reassign these 12 to Priya").
 type BulkField =
-  | "rating" | "programId" | "advisorId" | "source"
+  | "rating" | "leadStatus" | "programId" | "advisorId" | "source"
   | "deliveryMode" | "timeZone"
   | "nextFollowupAt" | "demoAttendedAt"
   | "visitedDate" | "visitingDate";
@@ -1872,20 +1929,21 @@ interface BulkFieldSpec {
   key: BulkField;
   label: string;
   /** Renders the value editor and yields the value string. */
-  kind: "rating" | "program" | "advisor" | "source" | "delivery" | "tz" | "date";
+  kind: "rating" | "leadStatus" | "program" | "advisor" | "source" | "delivery" | "tz" | "date";
 }
 
 const BULK_FIELDS: BulkFieldSpec[] = [
-  { key: "rating",         label: "Rating",         kind: "rating"   },
-  { key: "programId",      label: "Program",        kind: "program"  },
-  { key: "advisorId",      label: "Advisor",        kind: "advisor"  },
-  { key: "source",         label: "Source",         kind: "source"   },
-  { key: "deliveryMode",   label: "Mode",           kind: "delivery" },
-  { key: "timeZone",       label: "Time zone",      kind: "tz"       },
-  { key: "nextFollowupAt", label: "Next follow-up", kind: "date"     },
-  { key: "demoAttendedAt", label: "Demo attended",  kind: "date"     },
-  { key: "visitedDate",    label: "Visited",        kind: "date"     },
-  { key: "visitingDate",   label: "Visiting",       kind: "date"     },
+  { key: "rating",         label: "Rating",         kind: "rating"     },
+  { key: "leadStatus",     label: "Lead status",    kind: "leadStatus" },
+  { key: "programId",      label: "Program",        kind: "program"    },
+  { key: "advisorId",      label: "Advisor",        kind: "advisor"    },
+  { key: "source",         label: "Source",         kind: "source"     },
+  { key: "deliveryMode",   label: "Mode",           kind: "delivery"   },
+  { key: "timeZone",       label: "Time zone",      kind: "tz"         },
+  { key: "nextFollowupAt", label: "Next follow-up", kind: "date"       },
+  { key: "demoAttendedAt", label: "Demo attended",  kind: "date"       },
+  { key: "visitedDate",    label: "Visited",        kind: "date"       },
+  { key: "visitingDate",   label: "Visiting",       kind: "date"       },
 ];
 
 function BulkUpdateDialog({
@@ -1903,6 +1961,7 @@ function BulkUpdateDialog({
   const [active, setActive] = useState<Set<BulkField>>(new Set());
   const [values, setValues] = useState<Record<BulkField, string>>({
     rating: "warm",
+    leadStatus: "",
     programId: "",
     advisorId: "",
     source: "",
@@ -1933,6 +1992,7 @@ function BulkUpdateDialog({
       const v = values[k];
       switch (k) {
         case "rating":         out.rating         = v || "warm"; break;
+        case "leadStatus":     out.leadStatus     = v || null; break;
         case "programId":      out.programId      = v || null; break;
         case "advisorId":      out.advisorId      = v || null; break;
         case "source":         out.source         = v || null; break;
@@ -2054,6 +2114,13 @@ function BulkFieldEditor({
           {LEAD_RATINGS.map((r) => <option key={r} value={r}>{ratingStyles[r].label}</option>)}
         </select>
       );
+    case "leadStatus":
+      return (
+        <select className={inputCls} value={value} onChange={(e) => onChange(e.target.value)} disabled={disabled}>
+          <option value="">— clear —</option>
+          {LEAD_STATUS_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+        </select>
+      );
     case "program":
       return (
         <select className={inputCls} value={value} onChange={(e) => onChange(e.target.value)} disabled={disabled}>
@@ -2080,7 +2147,7 @@ function BulkFieldEditor({
         <select className={inputCls} value={value} onChange={(e) => onChange(e.target.value)} disabled={disabled}>
           <option value="">— clear —</option>
           <option value="online">Online</option>
-          <option value="offline">Offline</option>
+          <option value="classroom">Classroom</option>
           <option value="hybrid">Hybrid</option>
         </select>
       );
@@ -2115,6 +2182,7 @@ function BulkFieldEditor({
 function bulkPatchToLocalPatch(patch: BulkLeadPatch, catalog: CatalogResponse): Partial<Lead> {
   const out: Partial<Lead> = {};
   if (patch.rating         !== undefined) out.rating = patch.rating as Lead["rating"];
+  if (patch.leadStatus     !== undefined) out.leadStatus = patch.leadStatus ?? null;
   if (patch.deliveryMode   !== undefined) out.deliveryMode = patch.deliveryMode ?? null;
   if (patch.timeZone       !== undefined) out.timeZone = patch.timeZone ?? null;
   if (patch.nextFollowupAt !== undefined) out.nextFollowupAt = patch.nextFollowupAt ?? null;
