@@ -57,6 +57,7 @@ function Dialog({ defaultRating, onClose }: { defaultRating?: LeadRating; onClos
   const [value, setValue] = useState("");
   const [source, setSource] = useState("web");
   const [rating, setRating] = useState<LeadRating>(defaultRating ?? "new lead");
+  const [leadStatus, setLeadStatus] = useState<string>("");
   const [score, setScore] = useState(50);
   const [advisorId, setAdvisorId] = useState<string>("");
   const [nbaLabel, setNbaLabel] = useState("");
@@ -97,6 +98,7 @@ function Dialog({ defaultRating, onClose }: { defaultRating?: LeadRating; onClos
         stage: "new",
         score,
         rating,
+        leadStatus: leadStatus || undefined,
         advisorId: advisorId || undefined,
         nbaLabel: nbaLabel.trim() || undefined,
       });
@@ -218,6 +220,45 @@ function Dialog({ defaultRating, onClose }: { defaultRating?: LeadRating; onClos
                     >
                       <span className={cn("h-1.5 w-1.5 rounded-full", on ? s.dot : "bg-rule2")} />
                       {s.label}
+                    </button>
+                  );
+                })}
+              </div>
+            </Field>
+
+            <Field label="Lead status">
+              <div className="flex flex-wrap gap-2">
+                {/* "None" pill lets the advisor create a lead without picking
+                    a workflow status — useful when it's the very first touch
+                    and there's nothing to classify yet. */}
+                <button
+                  type="button"
+                  onClick={() => setLeadStatus("")}
+                  className={cn(
+                    "inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-[12px] font-semibold transition",
+                    leadStatus === ""
+                      ? "bg-brand-violet/10 text-brand-violet ring-2 ring-offset-1 ring-offset-paper ring-brand-violet"
+                      : "border border-rule bg-paper text-mute hover:border-rule2",
+                  )}
+                >
+                  <span className={cn("h-1.5 w-1.5 rounded-full", leadStatus === "" ? "bg-brand-violet" : "bg-rule2")} />
+                  None
+                </button>
+                {(catalog?.leadStatuses ?? []).map((o) => {
+                  const on = leadStatus === o.key;
+                  return (
+                    <button
+                      type="button" key={o.key}
+                      onClick={() => setLeadStatus(o.key)}
+                      className={cn(
+                        "inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-[12px] font-semibold transition",
+                        on
+                          ? "bg-brand-violet/10 text-brand-violet ring-2 ring-offset-1 ring-offset-paper ring-brand-violet"
+                          : "border border-rule bg-paper text-mute hover:border-rule2",
+                      )}
+                    >
+                      <span className={cn("h-1.5 w-1.5 rounded-full", on ? "bg-brand-violet" : "bg-rule2")} />
+                      {o.label}
                     </button>
                   );
                 })}

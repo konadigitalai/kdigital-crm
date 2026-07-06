@@ -108,6 +108,7 @@ export function LeadsBoard({
   currentUser,
   canWrite,
   canDelete,
+  headerSlot,
 }: {
   initialLeads: Lead[];
   catalog: CatalogResponse;
@@ -115,6 +116,10 @@ export function LeadsBoard({
   currentUser: CurrentUser | null;
   canWrite: boolean;
   canDelete: boolean;
+  /** Rendered on the right side of the view-tabs row (e.g. the "New lead"
+   *  button). Slot instead of a boolean so the page owner still decides
+   *  what goes there and with what permissions. */
+  headerSlot?: React.ReactNode;
 }) {
   const router = useRouter();
 
@@ -290,20 +295,23 @@ export function LeadsBoard({
 
   return (
     <>
-      <div className="mb-3">
-        <ViewTabs
-          views={views}
-          activeId={activeViewId}
-          onSelect={selectView}
-          fields={fields}
-          allColumns={PIPELINE_LIST_COLUMNS}
-          defaultColumns={PIPELINE_LIST_DEFAULT_COLUMNS}
-          currentFilter={filterState}
-          currentColumns={(liveColumns ?? viewColumnsToPush ?? [...PIPELINE_LIST_DEFAULT_COLUMNS]) as string[]}
-          onChange={setViews}
-          currentUser={currentUser}
-          canShare={canWrite}
-        />
+      <div className="mb-3 flex items-center justify-between gap-3">
+        <div className="min-w-0 flex-1">
+          <ViewTabs
+            views={views}
+            activeId={activeViewId}
+            onSelect={selectView}
+            fields={fields}
+            allColumns={PIPELINE_LIST_COLUMNS}
+            defaultColumns={PIPELINE_LIST_DEFAULT_COLUMNS}
+            currentFilter={filterState}
+            currentColumns={(liveColumns ?? viewColumnsToPush ?? [...PIPELINE_LIST_DEFAULT_COLUMNS]) as string[]}
+            onChange={setViews}
+            currentUser={currentUser}
+            canShare={canWrite}
+          />
+        </div>
+        {headerSlot && <div className="flex-shrink-0">{headerSlot}</div>}
       </div>
 
       <div className="mb-4 rounded-[14px] border border-rule bg-paper p-3">
@@ -319,15 +327,17 @@ export function LeadsBoard({
         />
       </div>
 
-      {/* "N new leads — click to load" pill. Sticks near the top while
-          the user scrolls the list, so it's easy to hit without shifting
-          any existing row. Only renders when there's something to load. */}
+      {/* "N new leads — click to load" pill. Fixed to the viewport top,
+          centred horizontally, so it floats over ANY content on the page
+          (including the page header) — the operator asked for a "goes on
+          top" toast-style pill, not one that follows the list. Only renders
+          when there's something to load. */}
       {pending.length > 0 && (
-        <div className="sticky top-2 z-20 mb-3 flex justify-center">
+        <div className="fixed inset-x-0 top-4 z-50 flex justify-center pointer-events-none">
           <button
             type="button"
             onClick={loadPendingLeads}
-            className="inline-flex items-center gap-2 rounded-full border border-brand-violet/40 bg-brand-violet px-4 py-1.5 text-[12.5px] font-semibold text-white shadow-card hover:bg-brand-violet/90"
+            className="pointer-events-auto inline-flex items-center gap-2 rounded-full border border-brand-violet/40 bg-brand-violet px-4 py-1.5 text-[12.5px] font-semibold text-white shadow-card hover:bg-brand-violet/90"
           >
             <span aria-hidden>↑</span>
             {pending.length} new lead{pending.length === 1 ? "" : "s"} — click to load
