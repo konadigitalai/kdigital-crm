@@ -191,6 +191,15 @@ leadsRouter.post("/", async (req, res, next) => {
     const nbaLabel = b.nbaLabel ? String(b.nbaLabel).trim() : "Reach out today";
     const nbaIcon  = b.nbaIcon  ? String(b.nbaIcon).trim()  : "send";
     const advisorId = b.advisorId ? String(b.advisorId).trim() : null;
+    // Lead status is optional on create. Normalise/validate through the same
+    // helper the PATCH path uses so we can't get invalid values into the DB.
+    // Empty string / undefined → NULL; unknown → 400.
+    let leadStatus: string | null = null;
+    if (b.leadStatus != null && b.leadStatus !== "") {
+      const s = normLeadStatus(b.leadStatus);
+      if (s === "__invalid__") errors.push(`leadStatus must be one of: ${LEAD_STATUS_KEYS.join(", ")}`);
+      else leadStatus = s;
+    }
 
     if (errors.length) {
       res.status(400).json({ error: errors.join("; ") });
@@ -282,6 +291,7 @@ leadsRouter.post("/", async (req, res, next) => {
         INSERT INTO lead (
           work_item_id, tenant_id,
           source, source_label, score, score_label, score_desc, heat, rating,
+          lead_status,
           program, program_id, value, stage, stage_label,
           advisor_id, avatar, initials,
           nba_icon, nba_label, nba_ghost,
@@ -289,6 +299,7 @@ leadsRouter.post("/", async (req, res, next) => {
         ) VALUES (
           ${wiId}, current_tenant(),
           ${source}, ${sourceLabel}, ${score}, ${HEAT_LABEL[heat]}, ${HEAT_DESC[heat]}, ${heat}, ${rating},
+          ${leadStatus},
           ${programName}, ${resolvedProgramId}, ${value}, ${stage}, ${STAGE_LABEL[stage]},
           ${resolvedAdvisorId}, ${pickAvatar(name)}, ${initialsOf(name)},
           ${nbaIcon}, ${nbaLabel}, false,
