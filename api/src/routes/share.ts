@@ -13,7 +13,7 @@ import { withTenant } from "../db/app.js";
 import { postToSlack } from "../lib/slack.js";
 import { postToDestination, SlackError } from "../lib/slack-api.js";
 import { fetchShareRecord, isShareSurface, renderShare, type ShareSurface } from "../lib/share.js";
-import { loadBotToken, loadShareTarget } from "./integrations.js";
+import { loadBotToken, loadShareTarget, loadUserToken } from "./integrations.js";
 import type { Permission } from "../lib/permissions.js";
 import { requirePermission } from "../middleware/require.js";
 
@@ -126,27 +126,33 @@ shareRouter.post("/slack/:surface/:recordId", gateBySurface, async (req, res, ne
       sharedByName,
     });
 
-    // Dispatch — bot API when we have a destination, else legacy webhook.
-    let mode: "bot" | "webhook";
+    // Dispatch precedence:
+    //   1. destination + current user has "Connect Slack"  → user token (xoxp-)
+    //   2. destination + no user link                       → bot token  (xoxb-)
+    //   3. no destination                                   → legacy webhook
+    //
+    // Case 1 is the ideal path — posts appear as the actual person.
+    let mode: "user" | "bot" | "webhook";
     let deliveryStatus: "ok" | "error";
     let httpStatus: number | null;
     let response: string;
     let deliveryDestination: Record<string, unknown> = {};
     if (destination) {
-      mode = "bot";
-      const token = await loadBotToken(req.tenantId!);
+      const userLink = req.userId ? await loadUserToken(req.tenantId!, req.userId) : null;
+      const token = userLink?.token ?? await loadBotToken(req.tenantId!);
+      mode = userLink ? "user" : "bot";
       if (!token) {
-        return res.status(409).json({ error: "Slack bot token is not configured. Admin → Integrations → Slack." });
+        return res.status(409).json({ error: "Slack is not configured. Ask an admin to connect a bot workspace, or click Connect Slack on the record page." });
       }
       try {
         const r = await postToDestination(token, destination, payload);
         deliveryStatus = "ok"; httpStatus = 200; response = `ok (ts=${r.ts})`;
-        deliveryDestination = { kind: destination.kind, id: destination.id, name: destRaw?.name ?? null };
+        deliveryDestination = { kind: destination.kind, id: destination.id, name: destRaw?.name ?? null, as: mode };
       } catch (err) {
         if (err instanceof SlackError) {
           deliveryStatus = "error"; httpStatus = err.httpStatus;
           response = `${err.slackErrorCode}: ${err.message}`;
-          deliveryDestination = { kind: destination.kind, id: destination.id, name: destRaw?.name ?? null };
+          deliveryDestination = { kind: destination.kind, id: destination.id, name: destRaw?.name ?? null, as: mode };
         } else throw err;
       }
     } else {

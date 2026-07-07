@@ -1225,6 +1225,29 @@ export const slackChannelCache = pgTable(
   }),
 );
 
+// Per-CRM-user Slack link (OAuth v2 user flow). Written when someone
+// clicks "Connect Slack" on a record page. See post-0063.
+export const slackUserLink = pgTable(
+  "slack_user_link",
+  {
+    id:            uuid("id").primaryKey().defaultRandom(),
+    tenantId:      uuid("tenant_id").notNull().references(() => tenant.id),
+    appUserId:     uuid("app_user_id").notNull(),
+    slackUserId:   text("slack_user_id").notNull(),
+    slackTeamId:   text("slack_team_id"),
+    userToken:     text("user_token").notNull(),
+    scopes:        text("scopes"),
+    connectedAt:   timestamp("connected_at", { withTimezone: true }).notNull().defaultNow(),
+    revokedAt:     timestamp("revoked_at", { withTimezone: true }),
+    createdAt:     timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt:     timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    appUserKey: uniqueIndex("slack_user_link_app_user_key").on(t.appUserId),
+    tenantIdx: index("slack_user_link_tenant_idx").on(t.tenantId),
+  }),
+);
+
 export const slackUserCache = pgTable(
   "slack_user_cache",
   {

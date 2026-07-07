@@ -587,6 +587,104 @@ export async function loadBotToken(tenantId: string): Promise<string | null> {
   });
 }
 
+// Helper — pull the CURRENT USER's Slack user token (or null). This is
+// the xoxp-… token issued when they clicked "Connect Slack".
+export async function loadUserToken(
+  tenantId: string,
+  appUserId: string,
+): Promise<{ token: string; slackUserId: string; slackTeamId: string | null } | null> {
+  return withTenant(tenantId, async (db) => {
+    const r = await db.execute(sql`
+      SELECT user_token AS "token", slack_user_id AS "slackUserId", slack_team_id AS "slackTeamId"
+      FROM slack_user_link
+      WHERE app_user_id = ${appUserId} AND revoked_at IS NULL
+      LIMIT 1
+    `);
+    return (r.rows[0] as { token: string; slackUserId: string; slackTeamId: string | null } | undefined) ?? null;
+  });
+}
+
+// ─── Per-CRM-user Slack link — status + directory ──────────────────────
+//
+// "My" endpoints — scoped to the currently-authenticated app user.
+// Returns their Slack connection status and, if connected, the channels
+// they personally are members of.
+
+integrationsRouter.get("/slack/my-status", async (req, res, next) => {
+  try {
+    if (!req.userId) return res.status(401).json({ error: "not authenticated" });
+    const link = await withTenant(req.tenantId!, async (db) => {
+      const r = await db.execute(sql`
+        SELECT slack_user_id AS "slackUserId",
+               slack_team_id AS "slackTeamId",
+               connected_at  AS "connectedAt",
+               scopes
+        FROM slack_user_link
+        WHERE app_user_id = ${req.userId} AND revoked_at IS NULL
+        LIMIT 1
+      `);
+      return r.rows[0] ?? null;
+    });
+    if (!link) return res.json({ connected: false });
+    res.json({ connected: true, link });
+  } catch (err) { next(err); }
+});
+
+// GET /integrations/slack/my-directory?kind=channel|user
+//
+// channel  → channels the CURRENT USER is in (via THEIR xoxp- token).
+//            No caching — memberships change too often, and it's a
+//            single API call per share.
+// user     → workspace users. We don't need a per-user view for this,
+//            so it falls through to the bot-cached list.
+integrationsRouter.get("/slack/my-directory", async (req, res, next) => {
+  try {
+    if (!req.userId) return res.status(401).json({ error: "not authenticated" });
+    const kind = String(req.query.kind ?? "channel");
+    if (kind !== "channel" && kind !== "user") {
+      return res.status(400).json({ error: "kind must be channel or user" });
+    }
+
+    if (kind === "user") {
+      // Delegate to the bot-cached list — same shape.
+      const rows = await withTenant(req.tenantId!, async (db) => {
+        const r = await db.execute(sql`
+          SELECT slack_id AS id, name,
+                 COALESCE(display_name, real_name, name) AS "label",
+                 real_name AS "realName", email, image_url AS "imageUrl"
+          FROM slack_user_cache
+          WHERE is_deleted = false AND is_bot = false
+          ORDER BY COALESCE(display_name, real_name, name)
+        `);
+        return r.rows;
+      });
+      return res.json({ kind, items: rows });
+    }
+
+    // Channels — hit Slack live with the user token, filter is_member.
+    const link = await loadUserToken(req.tenantId!, req.userId);
+    if (!link) return res.status(409).json({ error: "Slack not connected. Click Connect Slack first." });
+
+    const { listAllChannels } = await import("../lib/slack-api.js");
+    let channels;
+    try { channels = await listAllChannels(link.token); }
+    catch (err) {
+      return res.status(502).json({ error: `Slack list_channels failed: ${(err as Error).message}` });
+    }
+    // For the user-token view we ONLY show channels the user is a
+    // member of. That's the whole point of this endpoint.
+    const items = channels
+      .filter((c) => c.is_member && !c.is_archived)
+      .map((c) => ({
+        id: c.id, name: c.name,
+        isPrivate: !!c.is_private,
+        isMember: true,
+        topic: c.topic?.value ?? null,
+      }));
+    res.json({ kind, items });
+  } catch (err) { next(err); }
+});
+
 // Render literal `ARRAY[$1,$2,...]::text[]` so drizzle binds each element.
 // (Mirrors the columnsSqlValue helper in views.ts.)
 function sqlTextArray(values: string[]) {

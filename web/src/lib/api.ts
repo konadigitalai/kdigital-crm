@@ -822,6 +822,31 @@ export async function getSlackDirectory(
   );
 }
 
+// ─── Per-CRM-user Slack link (OAuth v2 user flow) ────────────────────────
+
+export interface SlackMyStatus {
+  connected: boolean;
+  link?: { slackUserId: string; slackTeamId: string | null; connectedAt: string; scopes: string | null };
+}
+export async function getSlackMyStatus(): Promise<SlackMyStatus> {
+  return await get<SlackMyStatus>(`/integrations/slack/my-status`);
+}
+export async function getSlackMyDirectory(
+  kind: "channel" | "user",
+): Promise<{ kind: string; items: SlackDirectoryChannel[] | SlackDirectoryUser[] }> {
+  return await get<{ kind: string; items: SlackDirectoryChannel[] | SlackDirectoryUser[] }>(
+    `/integrations/slack/my-directory?kind=${encodeURIComponent(kind)}`,
+  );
+}
+export async function getSlackAuthorizeUrl(returnTo: string): Promise<{ url: string }> {
+  return await get<{ url: string }>(
+    `/auth/slack/authorize-url?returnTo=${encodeURIComponent(returnTo)}`,
+  );
+}
+export async function disconnectSlack(): Promise<{ ok: true }> {
+  return await post<{ ok: true }>(`/auth/slack/disconnect`, {});
+}
+
 export async function getSlackDeliveries(limit = 50): Promise<SlackDelivery[]> {
   try {
     const { deliveries } = await get<{ deliveries: SlackDelivery[] }>(

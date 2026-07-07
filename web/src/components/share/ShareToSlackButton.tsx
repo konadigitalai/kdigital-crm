@@ -17,7 +17,9 @@ import { useEffect, useMemo, useState } from "react";
 import { Icon } from "@/components/ui/Icon";
 import { cn } from "@/lib/cn";
 import {
-  getSharePreview, getSlackDirectory, getSlackWorkspace, shareToSlack,
+  getSharePreview, getSlackAuthorizeUrl, getSlackDirectory,
+  getSlackMyDirectory, getSlackMyStatus, getSlackWorkspace,
+  shareToSlack,
   type SlackDirectoryChannel, type SlackDirectoryUser,
 } from "@/lib/api";
 import type { ShareSurface, SlackSharePreview } from "@/lib/types";
@@ -80,20 +82,41 @@ function ShareToSlackDialog({
 }) {
   const [stage, setStage] = useState<Stage>({ name: "loading-workspace" });
   const [hasBotToken, setHasBotToken] = useState(false);
+  // Whether the CURRENT USER has connected their Slack account. When true
+  // the picker uses my-directory (their channels, posts appear as them);
+  // when false we fall back to bot channels (posts appear as the bot).
+  const [userConnected, setUserConnected] = useState(false);
 
-  // Determine on mount whether bot-based sharing is available.
+  // On mount, learn: (a) does the current user have a Slack link?
+  // (b) does the workspace have a bot token at all?
   useEffect(() => {
     let cancelled = false;
-    getSlackWorkspace()
-      .then((r) => {
+    Promise.all([getSlackMyStatus().catch(() => ({ connected: false })), getSlackWorkspace().catch(() => ({ workspace: null }))])
+      .then(([mine, ws]) => {
         if (cancelled) return;
-        const bot = !!r.workspace?.hasToken;
+        const connected = !!mine.connected;
+        const bot = !!(ws as { workspace?: { hasToken?: boolean } | null }).workspace?.hasToken;
+        setUserConnected(connected);
         setHasBotToken(bot);
-        setStage(bot ? { name: "pick-kind" } : { name: "preview", destination: null });
-      })
-      .catch(() => { if (!cancelled) setStage({ name: "preview", destination: null }); });
+        // If neither route is available, skip straight to the webhook path.
+        if (!connected && !bot) setStage({ name: "preview", destination: null });
+        else setStage({ name: "pick-kind" });
+      });
     return () => { cancelled = true; };
   }, []);
+
+  // Called from within the dialog when the user clicks "Connect Slack".
+  // Redirects the browser to Slack's consent screen, carrying the current
+  // page as `returnTo` so we land back here after approval.
+  async function connectSlack() {
+    try {
+      const returnTo = typeof window !== "undefined" ? window.location.href : "";
+      const { url } = await getSlackAuthorizeUrl(returnTo);
+      window.location.assign(url);
+    } catch (e) {
+      alert(`Could not start Slack connect: ${(e as Error).message}`);
+    }
+  }
 
   return (
     <div
@@ -125,12 +148,35 @@ function ShareToSlackDialog({
         )}
 
         {stage.name === "pick-kind" && (
-          <PickKind onPick={(kind) => setStage({ name: "pick-target", kind })} />
+          <>
+            {/* Encourage the user to connect their own Slack account so
+                posts appear as them rather than @edify_os. Hidden once
+                they've connected. */}
+            {!userConnected && (
+              <div className="mb-4 flex items-center justify-between gap-3 rounded-[12px] border border-brand-violet/40 bg-brand-violet/[.06] px-4 py-3">
+                <div className="min-w-0">
+                  <div className="text-[13px] font-semibold text-ink">Post as yourself?</div>
+                  <div className="mt-0.5 text-[11.5px] text-mute">
+                    Connect your Slack account — the message will show your name and only lists channels you're in.
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={connectSlack}
+                  className="flex-shrink-0 rounded-md border border-brand-violet bg-brand-violet px-3 py-1.5 text-[12px] font-semibold text-white hover:bg-brand-violet/90"
+                >
+                  Connect Slack
+                </button>
+              </div>
+            )}
+            <PickKind onPick={(kind) => setStage({ name: "pick-target", kind })} />
+          </>
         )}
 
         {stage.name === "pick-target" && (
           <PickTarget
             kind={stage.kind}
+            userConnected={userConnected}
             onBack={() => setStage({ name: "pick-kind" })}
             onPick={(dest) => setStage({ name: "preview", destination: dest })}
           />
@@ -213,9 +259,12 @@ function PickerTile({
 // ─── Step 2: pick a specific channel or person ─────────────────────────
 
 function PickTarget({
-  kind, onPick, onBack,
+  kind, userConnected, onPick, onBack,
 }: {
   kind: "channel" | "user";
+  /** If the current CRM user has "Connect Slack" done, we hit
+   *  my-directory (their channels) instead of the bot-cached list. */
+  userConnected: boolean;
   onPick: (dest: Destination) => void;
   onBack: () => void;
 }) {
@@ -227,12 +276,18 @@ function PickTarget({
   useEffect(() => {
     let cancelled = false;
     setLoading(true); setError(null);
-    getSlackDirectory(kind)
+    // User channels come from Slack live via the user token.
+    // User list (people) stays on the bot-cached endpoint — Slack doesn't
+    // give a "users I DM often" list via the user token in any useful way.
+    const fetcher = userConnected && kind === "channel"
+      ? getSlackMyDirectory
+      : getSlackDirectory;
+    fetcher(kind)
       .then((r) => { if (!cancelled) setItems(r.items as typeof items); })
       .catch((e: Error) => { if (!cancelled) setError(e.message); })
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
-  }, [kind]);
+  }, [kind, userConnected]);
 
   const filtered = useMemo(() => {
     const s = q.trim().toLowerCase();

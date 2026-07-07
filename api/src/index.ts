@@ -32,6 +32,7 @@ import { batchesRouter } from "./routes/batches.js";
 import { viewsRouter } from "./routes/views.js";
 import { integrationsRouter } from "./routes/integrations.js";
 import { shareRouter } from "./routes/share.js";
+import { slackOAuthRouter, slackOAuthCallbackRouter } from "./routes/slack-oauth.js";
 import { whatsappRouter } from "./routes/whatsapp.js";
 import { whatsappWebhookRouter } from "./routes/whatsapp-webhook.js";
 import { partiesRouter } from "./routes/parties.js";
@@ -101,6 +102,12 @@ app.get("/health", async (_req, res) => {
 // it deliberately sits BEFORE authMiddleware so no Auth0 token is needed.
 app.use("/leads/intake", intakeRouter);
 
+// Slack OAuth callback — Slack redirects the user's browser here after
+// they approve the "Connect Slack" screen. The browser has NO auth
+// cookies for the API on this hop; security comes from the signed
+// state param the API included when it sent them to Slack.
+app.use("/auth/slack", slackOAuthCallbackRouter);
+
 // ── Authenticated ──────────────────────────────────────────────────────────
 // Auth is owned by Auth0 (see middleware/auth.ts — verifies the Bearer JWT
 // against Auth0's JWKS). The legacy /auth/login + /auth/logout endpoints
@@ -108,6 +115,9 @@ app.use("/leads/intake", intakeRouter);
 // (/auth/login, /auth/logout) instead.
 app.use(authMiddleware);
 app.use("/me", meRouter);
+
+// Slack OAuth authorize-url + disconnect — need req.userId, so behind auth.
+app.use("/auth/slack", slackOAuthRouter);
 
 // Method-aware guard: reads need readPerm, mutating verbs need writePerm.
 // We treat GET as the read fence so routes with PATCH/POST/DELETE always
