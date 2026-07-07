@@ -3,7 +3,7 @@ import { Auth0Provider } from "@auth0/nextjs-auth0";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Edify CRM — Agentic",
+  title: "Kona OS - Edify",
   description: "Digital Edify Agentic CRM",
 };
 
