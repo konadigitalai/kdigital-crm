@@ -11,11 +11,13 @@ import { PipelineListView, PIPELINE_LIST_COLUMNS, PIPELINE_LIST_DEFAULT_COLUMNS 
 import { DEFAULT_VIEW_ID, ViewTabs } from "@/components/pipeline/ViewTabs";
 import { FilterBar } from "@/components/filter/FilterBar";
 import { useFilter } from "@/components/filter/useFilter";
+import { Icon } from "@/components/ui/Icon";
+import { cn } from "@/lib/cn";
 import { getLeads } from "@/lib/api";
 import type { FilterField, FilterState } from "@/components/filter/types";
 import type { CatalogResponse, CurrentUser, Lead, SavedView } from "@/lib/types";
 import { LEAD_RATINGS } from "@/lib/types";
-import { ratingStyles } from "@/lib/ui";
+import { avatarGradClass, ratingStyles } from "@/lib/ui";
 
 // How often the background poller checks for new leads. Kept at 30s to
 // balance responsiveness (users see a new lead within ~30s of the intake
@@ -314,6 +316,10 @@ export function LeadsBoard({
         {headerSlot && <div className="flex-shrink-0">{headerSlot}</div>}
       </div>
 
+      <div className="mb-3">
+        <LeadsSearchBox leads={localLeads} />
+      </div>
+
       <div className="mb-4 rounded-[14px] border border-rule bg-paper p-3">
         <FilterBar
           fields={fields}
@@ -364,5 +370,154 @@ export function LeadsBoard({
         }}
       />
     </>
+  );
+}
+
+// ─── LeadsSearchBox ──────────────────────────────────────────────────────
+//
+// Type-ahead search over the currently-loaded leads set. Client-side —
+// searches across every text-ish field the operator might remember a lead
+// by (name, LEAD-number, phone, email, city, program, advisor, description,
+// lead status label). Case-insensitive substring; simple ranking.
+//
+// UX: floating dropdown of the top ~8 matches. Click a row → jumps to
+// /records/LEAD-xxxx. Dropdown closes on outside click or Escape. The
+// underlying grid is untouched — this is a shortcut to the record page,
+// not a grid filter (the FilterBar handles that use case).
+function LeadsSearchBox({ leads }: { leads: Lead[] }) {
+  const [query, setQuery] = useState("");
+  const [open, setOpen] = useState(false);
+  const [activeIdx, setActiveIdx] = useState(0);
+  const boxRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  // Compute matches. Empty query → no dropdown. We stringify each lead's
+  // searchable fields once, lowercased, so per-keystroke work is a single
+  // .includes() per lead. On ~320 leads this is a fraction of a millisecond.
+  const matches = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (!q) return [] as Lead[];
+    const scored: Array<{ l: Lead; score: number }> = [];
+    for (const l of leads) {
+      const hay = [
+        l.name, l.number, l.phone, l.phoneCountryCode, l.email,
+        l.city, l.program, l.advisorName, l.description,
+        l.sourceLabel, l.source, l.leadStatus,
+        // Human rating label — so typing "hot" or "new" hits.
+        ratingStyles[l.rating]?.label,
+      ].filter(Boolean).join(" ").toLowerCase();
+      if (!hay.includes(q)) continue;
+      // Rough ranking: prefix on name > name contains > everything else.
+      let score = 0;
+      const nameLc = (l.name ?? "").toLowerCase();
+      if (nameLc.startsWith(q)) score = 3;
+      else if (nameLc.includes(q)) score = 2;
+      else score = 1;
+      scored.push({ l, score });
+    }
+    scored.sort((a, b) => b.score - a.score);
+    return scored.slice(0, 8).map((s) => s.l);
+  }, [query, leads]);
+
+  useEffect(() => { setActiveIdx(0); }, [query]);
+
+  // Close on outside click.
+  useEffect(() => {
+    if (!open) return;
+    function onClick(e: MouseEvent) {
+      if (boxRef.current && !boxRef.current.contains(e.target as Node)) setOpen(false);
+    }
+    window.addEventListener("mousedown", onClick);
+    return () => window.removeEventListener("mousedown", onClick);
+  }, [open]);
+
+  const router = useRouter();
+  function goTo(l: Lead) {
+    router.push(`/records/${encodeURIComponent(l.number)}`);
+    setOpen(false);
+    setQuery("");
+  }
+
+  function onKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
+    if (e.key === "Escape") { setOpen(false); inputRef.current?.blur(); return; }
+    if (!open || matches.length === 0) return;
+    if (e.key === "ArrowDown") { e.preventDefault(); setActiveIdx((i) => Math.min(i + 1, matches.length - 1)); }
+    else if (e.key === "ArrowUp") { e.preventDefault(); setActiveIdx((i) => Math.max(i - 1, 0)); }
+    else if (e.key === "Enter") { e.preventDefault(); const l = matches[activeIdx]; if (l) goTo(l); }
+  }
+
+  return (
+    <div ref={boxRef} className="relative">
+      <div className="flex items-center gap-2 rounded-[14px] border border-rule bg-paper px-3 py-2 focus-within:border-brand-violet focus-within:ring-2 focus-within:ring-brand-violet/20">
+        <Icon name="search" size={15} strokeWidth={2} className="text-mute" />
+        <input
+          ref={inputRef}
+          value={query}
+          onChange={(e) => { setQuery(e.target.value); setOpen(true); }}
+          onFocus={() => query.trim() && setOpen(true)}
+          onKeyDown={onKeyDown}
+          placeholder="Search leads by name, phone, email, program, advisor…"
+          className="min-w-0 flex-1 bg-transparent text-[13.5px] text-ink placeholder:text-hint outline-none"
+        />
+        {query && (
+          <button
+            type="button"
+            onClick={() => { setQuery(""); inputRef.current?.focus(); }}
+            aria-label="Clear search"
+            className="text-mute hover:text-ink"
+          >
+            <Icon name="plus" size={12} strokeWidth={2.4} className="rotate-45" />
+          </button>
+        )}
+      </div>
+
+      {open && query.trim() && (
+        <div className="absolute left-0 right-0 top-full z-30 mt-1 max-h-[400px] overflow-y-auto rounded-[12px] border border-rule bg-paper py-1 shadow-card">
+          {matches.length === 0 ? (
+            <div className="px-4 py-4 text-center text-[12.5px] text-mute">
+              No leads match “{query.trim()}”.
+            </div>
+          ) : (
+            matches.map((l, i) => {
+              const sc = ratingStyles[l.rating];
+              return (
+                <button
+                  type="button"
+                  key={l.id}
+                  onMouseEnter={() => setActiveIdx(i)}
+                  onClick={() => goTo(l)}
+                  className={cn(
+                    "flex w-full items-center gap-3 px-3 py-2 text-left transition",
+                    i === activeIdx ? "bg-warm/60" : "hover:bg-warm/40",
+                  )}
+                >
+                  <div className={cn("flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full text-[10.5px] font-bold text-white", avatarGradClass[l.avatar])}>
+                    {l.initials}
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-2">
+                      <span className="truncate text-[13px] font-semibold text-ink">{l.name}</span>
+                      <span className="mono-cap text-[9.5px] tracking-[.06em] text-hint">{l.number}</span>
+                    </div>
+                    <div className="mt-0.5 truncate text-[11.5px] text-mute">
+                      {[l.phone, l.email, l.program, l.advisorName].filter(Boolean).join(" · ") || "—"}
+                    </div>
+                  </div>
+                  {sc && (
+                    <span className={cn("inline-flex flex-shrink-0 items-center gap-1 rounded-full px-2 py-0.5 text-[10.5px] font-semibold", sc.bg, sc.text)}>
+                      <span className={cn("h-1.5 w-1.5 rounded-full", sc.dot)} />
+                      {sc.label}
+                    </span>
+                  )}
+                </button>
+              );
+            })
+          )}
+          <div className="mono-cap border-t border-rule px-3 py-1.5 text-[9.5px] tracking-[.1em] text-hint">
+            {matches.length === 0 ? "0 matches" : `${matches.length} of ${leads.length} · ↑↓ navigate · enter opens`}
+          </div>
+        </div>
+      )}
+    </div>
   );
 }
