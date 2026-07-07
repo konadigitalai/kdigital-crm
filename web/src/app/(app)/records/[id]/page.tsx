@@ -15,6 +15,7 @@ import { AgentActions } from "@/components/record/AgentActions";
 import { ApprovalCard } from "@/components/record/ApprovalCard";
 import { NbaCard } from "@/components/record/NbaCard";
 import { InlineLeadField } from "@/components/record/InlineLeadField";
+import { LeadNavArrows } from "@/components/record/LeadNavArrows";
 import { PhoneField } from "@/components/record/PhoneField";
 import { PhoneCodeField } from "@/components/record/PhoneCodeField";
 
@@ -127,6 +128,7 @@ export default async function RecordPage({
             <b className="font-semibold text-ink">{lead.name}</b>
           </>
         }
+        centerSlot={<LeadNavArrows currentNumber={lead.number} />}
         status={isConverted ? "Converted to learner" : "Agent watching"}
       />
 
