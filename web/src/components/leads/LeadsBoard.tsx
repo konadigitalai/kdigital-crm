@@ -433,6 +433,12 @@ function LeadsSearchBox({ leads }: { leads: Lead[] }) {
 
   const router = useRouter();
   function goTo(l: Lead) {
+    // Search jumps to a specific lead — the "prev/next" context on the
+    // record page only makes sense when the user drilled in from an
+    // ordered list. Clear any stale snapshot so the arrows disappear.
+    if (typeof window !== "undefined") {
+      try { window.sessionStorage.removeItem("decrm_lead_nav_v1"); } catch { /* ignore */ }
+    }
     router.push(`/records/${encodeURIComponent(l.number)}`);
     setOpen(false);
     setQuery("");
