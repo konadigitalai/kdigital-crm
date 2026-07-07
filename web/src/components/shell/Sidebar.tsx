@@ -52,7 +52,7 @@ export function Sidebar({
           className="group flex min-w-0 flex-1 items-baseline gap-1.5 px-1"
         >
           <span className="font-serif text-[22px] font-normal leading-none tracking-[-.01em] text-ink transition group-hover:text-brand-violet">
-            Edify
+            Kona
           </span>
           <span className="truncate font-serif text-[15px] font-normal italic leading-none text-mute">
             Agentic&nbsp;OS
