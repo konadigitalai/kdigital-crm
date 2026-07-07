@@ -409,6 +409,184 @@ integrationsRouter.delete("/slack/share-targets/:surface", async (req, res, next
   } catch (err) { next(err); }
 });
 
+// ─── Bot token + workspace + directory (bot-based dynamic sharing) ───────
+//
+// The old model was one webhook per channel, pre-configured by an admin.
+// The new model lets an operator pick a channel or a user at share time,
+// from a cached directory. That requires a workspace bot token + the
+// scopes channels:read, groups:read, users:read, chat:write, im:write.
+//
+// Admin flow:
+//   POST /integrations/slack/workspace     ← paste bot token
+//   POST /integrations/slack/workspace/test  ← verify (auth.test)
+//   POST /integrations/slack/directory/refresh  ← pull channels + users into cache
+//   GET  /integrations/slack/directory?kind=channel|user  ← for the share dialog
+
+integrationsRouter.get("/slack/workspace", async (req, res, next) => {
+  try {
+    const row = await withTenant(req.tenantId!, async (db) => {
+      const r = await db.execute(sql`
+        SELECT id,
+               team_id     AS "teamId",
+               team_name   AS "teamName",
+               (bot_token IS NOT NULL) AS "hasToken",
+               installed_at AS "installedAt"
+        FROM slack_workspace
+        LIMIT 1
+      `);
+      return r.rows[0] ?? null;
+    });
+    res.json({ workspace: row });
+  } catch (err) { next(err); }
+});
+
+// POST /integrations/slack/workspace — paste the xoxb-… bot token.
+// Body: { botToken: string }
+integrationsRouter.post("/slack/workspace", async (req, res, next) => {
+  try {
+    const raw = (req.body?.botToken ?? "").toString().trim();
+    if (!raw) return res.status(400).json({ error: "botToken is required" });
+    // Slack bot tokens start with xoxb-. Reject anything else to catch typos
+    // early — a paste of a webhook URL, xapp- or xoxp- token would 401 later.
+    if (!/^xoxb-/.test(raw)) {
+      return res.status(400).json({ error: "botToken must start with xoxb- (Bot User OAuth Token)" });
+    }
+    // Verify it live before persisting.
+    const { authTest } = await import("../lib/slack-api.js");
+    let info;
+    try { info = await authTest(raw); }
+    catch (err) {
+      return res.status(400).json({ error: `Token rejected by Slack: ${(err as Error).message}` });
+    }
+    await withTenant(req.tenantId!, async (db) => {
+      // UPSERT — one workspace row per tenant.
+      await db.execute(sql`
+        INSERT INTO slack_workspace (tenant_id, team_id, team_name, bot_token, installed_at)
+        VALUES (current_tenant(), ${info.team_id}, ${info.team}, ${raw}, NOW())
+        ON CONFLICT (tenant_id) DO UPDATE
+          SET team_id      = EXCLUDED.team_id,
+              team_name    = EXCLUDED.team_name,
+              bot_token    = EXCLUDED.bot_token,
+              installed_at = NOW(),
+              updated_at   = NOW()
+      `);
+    });
+    res.json({ ok: true, teamName: info.team, teamId: info.team_id, botUser: info.user });
+  } catch (err) { next(err); }
+});
+
+integrationsRouter.post("/slack/workspace/test", async (req, res, next) => {
+  try {
+    const token = await loadBotToken(req.tenantId!);
+    if (!token) return res.status(409).json({ error: "No bot token configured" });
+    const { authTest } = await import("../lib/slack-api.js");
+    try {
+      const info = await authTest(token);
+      res.json({ ok: true, teamName: info.team, teamId: info.team_id, botUser: info.user, url: info.url });
+    } catch (err) {
+      return res.status(400).json({ ok: false, error: (err as Error).message });
+    }
+  } catch (err) { next(err); }
+});
+
+// POST /integrations/slack/directory/refresh — hit Slack, upsert into
+// slack_channel_cache + slack_user_cache. Returns counts.
+integrationsRouter.post("/slack/directory/refresh", async (req, res, next) => {
+  try {
+    const token = await loadBotToken(req.tenantId!);
+    if (!token) return res.status(409).json({ error: "No bot token configured" });
+    const { listAllChannels, listAllUsers } = await import("../lib/slack-api.js");
+    const [channels, users] = await Promise.all([
+      listAllChannels(token),
+      listAllUsers(token),
+    ]);
+    await withTenant(req.tenantId!, async (db) => {
+      // Channels — upsert on (tenant_id, slack_id).
+      for (const c of channels) {
+        await db.execute(sql`
+          INSERT INTO slack_channel_cache (tenant_id, slack_id, name, is_private, is_archived, is_member, topic, synced_at)
+          VALUES (current_tenant(), ${c.id}, ${c.name}, ${c.is_private ?? false}, ${c.is_archived ?? false}, ${c.is_member ?? false}, ${c.topic?.value ?? null}, NOW())
+          ON CONFLICT (tenant_id, slack_id) DO UPDATE
+            SET name        = EXCLUDED.name,
+                is_private  = EXCLUDED.is_private,
+                is_archived = EXCLUDED.is_archived,
+                is_member   = EXCLUDED.is_member,
+                topic       = EXCLUDED.topic,
+                synced_at   = NOW(),
+                updated_at  = NOW()
+        `);
+      }
+      // Users — same treatment.
+      for (const u of users) {
+        await db.execute(sql`
+          INSERT INTO slack_user_cache (tenant_id, slack_id, name, real_name, display_name, email, is_bot, is_deleted, image_url, synced_at)
+          VALUES (current_tenant(), ${u.id}, ${u.name},
+                  ${u.profile?.real_name ?? u.real_name ?? null},
+                  ${u.profile?.display_name ?? null},
+                  ${u.profile?.email ?? null},
+                  ${u.is_bot ?? false}, ${u.deleted ?? false},
+                  ${u.profile?.image_72 ?? u.profile?.image_192 ?? null},
+                  NOW())
+          ON CONFLICT (tenant_id, slack_id) DO UPDATE
+            SET name         = EXCLUDED.name,
+                real_name    = EXCLUDED.real_name,
+                display_name = EXCLUDED.display_name,
+                email        = EXCLUDED.email,
+                is_bot       = EXCLUDED.is_bot,
+                is_deleted   = EXCLUDED.is_deleted,
+                image_url    = EXCLUDED.image_url,
+                synced_at    = NOW(),
+                updated_at   = NOW()
+        `);
+      }
+    });
+    res.json({ ok: true, channelCount: channels.length, userCount: users.length });
+  } catch (err) { next(err); }
+});
+
+// GET /integrations/slack/directory?kind=channel|user
+integrationsRouter.get("/slack/directory", async (req, res, next) => {
+  try {
+    const kind = String(req.query.kind ?? "channel");
+    if (kind !== "channel" && kind !== "user") {
+      return res.status(400).json({ error: "kind must be channel or user" });
+    }
+    const rows = await withTenant(req.tenantId!, async (db) => {
+      if (kind === "channel") {
+        const r = await db.execute(sql`
+          SELECT slack_id AS id, name, is_private AS "isPrivate",
+                 is_member AS "isMember", topic
+          FROM slack_channel_cache
+          WHERE is_archived = false
+          ORDER BY is_member DESC, name
+        `);
+        return r.rows;
+      }
+      const r = await db.execute(sql`
+        SELECT slack_id AS id, name,
+               COALESCE(display_name, real_name, name) AS "label",
+               real_name AS "realName", email, image_url AS "imageUrl"
+        FROM slack_user_cache
+        WHERE is_deleted = false AND is_bot = false
+        ORDER BY COALESCE(display_name, real_name, name)
+      `);
+      return r.rows;
+    });
+    res.json({ kind, items: rows });
+  } catch (err) { next(err); }
+});
+
+// Helper — pull the bot token for the current tenant (or null).
+export async function loadBotToken(tenantId: string): Promise<string | null> {
+  return withTenant(tenantId, async (db) => {
+    const r = await db.execute(sql`
+      SELECT bot_token FROM slack_workspace LIMIT 1
+    `);
+    const row = r.rows[0] as { bot_token: string | null } | undefined;
+    return row?.bot_token ?? null;
+  });
+}
+
 // Render literal `ARRAY[$1,$2,...]::text[]` so drizzle binds each element.
 // (Mirrors the columnsSqlValue helper in views.ts.)
 function sqlTextArray(values: string[]) {

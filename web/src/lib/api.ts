@@ -780,10 +780,45 @@ export async function shareToSlack(
   surface: ShareSurface,
   recordId: string,
   notes: string | null,
+  // When present, post via the bot to this specific channel/user. When
+  // absent, backend falls back to the surface's legacy webhook target.
+  destination?: { kind: "channel" | "user"; id: string; name?: string },
 ): Promise<void> {
   await post<void>(
     `/share/slack/${encodeURIComponent(surface)}/${encodeURIComponent(recordId)}`,
-    { notes },
+    { notes, destination },
+  );
+}
+
+// ─── Slack workspace + directory (dynamic pick) ──────────────────────────
+
+export interface SlackDirectoryChannel { id: string; name: string; isPrivate: boolean; isMember: boolean; topic: string | null }
+export interface SlackDirectoryUser { id: string; name: string; label: string; realName: string | null; email: string | null; imageUrl: string | null }
+export interface SlackWorkspaceInfo { id: string; teamId: string | null; teamName: string | null; hasToken: boolean; installedAt: string | null }
+
+export async function getSlackWorkspace(): Promise<{ workspace: SlackWorkspaceInfo | null }> {
+  return await get<{ workspace: SlackWorkspaceInfo | null }>(`/integrations/slack/workspace`);
+}
+export async function saveSlackBotToken(botToken: string): Promise<{ ok: true; teamName: string; teamId: string; botUser: string }> {
+  return await post<{ ok: true; teamName: string; teamId: string; botUser: string }>(
+    `/integrations/slack/workspace`, { botToken },
+  );
+}
+export async function testSlackBotToken(): Promise<{ ok: boolean; teamName?: string; teamId?: string; botUser?: string; url?: string; error?: string }> {
+  return await post<{ ok: boolean; teamName?: string; teamId?: string; botUser?: string; url?: string; error?: string }>(
+    `/integrations/slack/workspace/test`, {},
+  );
+}
+export async function refreshSlackDirectory(): Promise<{ ok: true; channelCount: number; userCount: number }> {
+  return await post<{ ok: true; channelCount: number; userCount: number }>(
+    `/integrations/slack/directory/refresh`, {},
+  );
+}
+export async function getSlackDirectory(
+  kind: "channel" | "user",
+): Promise<{ kind: string; items: SlackDirectoryChannel[] | SlackDirectoryUser[] }> {
+  return await get<{ kind: string; items: SlackDirectoryChannel[] | SlackDirectoryUser[] }>(
+    `/integrations/slack/directory?kind=${encodeURIComponent(kind)}`,
   );
 }
 

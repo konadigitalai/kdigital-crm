@@ -11,8 +11,9 @@ import { Router } from "express";
 import { sql } from "drizzle-orm";
 import { withTenant } from "../db/app.js";
 import { postToSlack } from "../lib/slack.js";
+import { postToDestination, SlackError } from "../lib/slack-api.js";
 import { fetchShareRecord, isShareSurface, renderShare, type ShareSurface } from "../lib/share.js";
-import { loadShareTarget } from "./integrations.js";
+import { loadBotToken, loadShareTarget } from "./integrations.js";
 import type { Permission } from "../lib/permissions.js";
 import { requirePermission } from "../middleware/require.js";
 
@@ -81,18 +82,31 @@ shareRouter.get("/slack/preview/:surface/:recordId", gateBySurface, async (req, 
 
 // ─── POST /share/slack/:surface/:recordId ────────────────────────────────
 //
-// Body: { notes?: string }
-// Pulls fresh data + target config (so a stale preview doesn't smuggle in
-// dropped fields), renders, posts, logs the attempt.
+// Body: {
+//   notes?: string,
+//   destination?: { kind: "channel"|"user", id: string, name?: string }
+// }
+//
+// When `destination` is present we post via the bot token (chat.postMessage)
+// to that specific channel or DM. When absent, we fall back to the legacy
+// webhook target for the surface — keeps old admin config working during
+// rollout.
+//
+// Pulls fresh data + surface config (so a stale preview doesn't smuggle
+// in dropped fields), renders, posts, logs the attempt.
 shareRouter.post("/slack/:surface/:recordId", gateBySurface, async (req, res, next) => {
   try {
     const surface = req.params.surface as ShareSurface;
     const recordId = String(req.params.recordId ?? "");
     const notes = req.body?.notes != null ? String(req.body.notes).slice(0, 4000) : null;
+    const destRaw = req.body?.destination;
+    const destination = parseDestination(destRaw);
+    if (destRaw && !destination) {
+      return res.status(400).json({ error: "destination must be { kind: 'channel'|'user', id: string }" });
+    }
 
     const target = await loadShareTarget(req.tenantId!, surface);
     if (!target || !target.enabled) return res.status(409).json({ error: `Slack sharing is not configured for ${surface}.` });
-    if (!target.webhookUrl)         return res.status(409).json({ error: `Slack sharing is missing a webhook URL for ${surface}.` });
 
     const record = await fetchShareRecord(surface, req.tenantId!, recordId);
     if (!record) return res.status(404).json({ error: "Record not found" });
@@ -112,30 +126,74 @@ shareRouter.post("/slack/:surface/:recordId", gateBySurface, async (req, res, ne
       sharedByName,
     });
 
-    const result = await postToSlack(target.webhookUrl, payload);
+    // Dispatch — bot API when we have a destination, else legacy webhook.
+    let mode: "bot" | "webhook";
+    let deliveryStatus: "ok" | "error";
+    let httpStatus: number | null;
+    let response: string;
+    let deliveryDestination: Record<string, unknown> = {};
+    if (destination) {
+      mode = "bot";
+      const token = await loadBotToken(req.tenantId!);
+      if (!token) {
+        return res.status(409).json({ error: "Slack bot token is not configured. Admin → Integrations → Slack." });
+      }
+      try {
+        const r = await postToDestination(token, destination, payload);
+        deliveryStatus = "ok"; httpStatus = 200; response = `ok (ts=${r.ts})`;
+        deliveryDestination = { kind: destination.kind, id: destination.id, name: destRaw?.name ?? null };
+      } catch (err) {
+        if (err instanceof SlackError) {
+          deliveryStatus = "error"; httpStatus = err.httpStatus;
+          response = `${err.slackErrorCode}: ${err.message}`;
+          deliveryDestination = { kind: destination.kind, id: destination.id, name: destRaw?.name ?? null };
+        } else throw err;
+      }
+    } else {
+      mode = "webhook";
+      if (!target.webhookUrl) {
+        return res.status(409).json({ error: `Slack sharing has no webhook URL for ${surface} and no destination was picked.` });
+      }
+      const result = await postToSlack(target.webhookUrl, payload);
+      deliveryStatus = result.ok ? "ok" : "error";
+      httpStatus = result.httpStatus;
+      response = result.response;
+      deliveryDestination = { kind: "webhook", channel: target.channel };
+    }
 
     // Log to the same delivery_log used by automated rules. event_type is a
     // synthetic "share.<surface>" so admins can tell shares from automated
-    // posts in the recent-activity panel.
+    // posts in the recent-activity panel. Include mode + destination in
+    // the context payload so admins can see WHERE it went.
     await withTenant(req.tenantId!, async (db) => {
       await db.execute(sql`
         INSERT INTO slack_delivery_log (tenant_id, rule_id, event_type, status, http_status, response, context)
         VALUES (
           current_tenant(), NULL,
           ${`share.${surface}`},
-          ${result.ok ? "ok" : "error"},
-          ${result.httpStatus}, ${result.response},
-          ${JSON.stringify({ surface, recordId, sharedBy: sharedByName, notes })}::jsonb
+          ${deliveryStatus},
+          ${httpStatus}, ${response},
+          ${JSON.stringify({ surface, recordId, sharedBy: sharedByName, notes, mode, destination: deliveryDestination })}::jsonb
         )
       `);
     });
 
-    if (!result.ok) {
-      return res.status(502).json({ error: `Slack rejected the message (HTTP ${result.httpStatus}). ${result.response}` });
+    if (deliveryStatus !== "ok") {
+      return res.status(502).json({ error: `Slack rejected the message: ${response}` });
     }
     res.json({ ok: true });
   } catch (err) { next(err); }
 });
+
+// Best-effort parse of the destination object off the request body.
+// Returns null for malformed input; caller emits a 400.
+function parseDestination(raw: unknown): { kind: "channel" | "user"; id: string } | null {
+  if (!raw || typeof raw !== "object") return null;
+  const r = raw as { kind?: unknown; id?: unknown };
+  if (r.kind !== "channel" && r.kind !== "user") return null;
+  if (typeof r.id !== "string" || !r.id.trim()) return null;
+  return { kind: r.kind, id: r.id.trim() };
+}
 
 // Trim the record we send back to the client to just the fields we render —
 // the dialog doesn't need the full row, and some fields (description) are

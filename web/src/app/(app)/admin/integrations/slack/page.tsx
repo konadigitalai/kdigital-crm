@@ -6,6 +6,7 @@ import {
 import { requirePagePermission } from "@/lib/guards";
 import { SlackRulesTable } from "@/components/admin/SlackRulesTable";
 import { SlackShareTargetsCard } from "@/components/admin/SlackShareTargetsCard";
+import { SlackWorkspaceCard } from "@/components/admin/SlackWorkspaceCard";
 import Link from "next/link";
 
 export default async function AdminSlackIntegrationPage() {
@@ -55,10 +56,19 @@ export default async function AdminSlackIntegrationPage() {
           </div>
         </div>
 
+        <h2 className="mb-3 mt-8 font-serif text-[24px] tracking-[-.005em]">Bot workspace</h2>
+        <p className="mb-4 max-w-[720px] text-[13px] text-mute">
+          Paste a Slack bot token to enable the dynamic "pick channel or person" flow on the
+          "Share to Slack" button. Without a token the share button falls back to the pre-configured
+          webhooks below.
+        </p>
+
+        <SlackWorkspaceCard canManage={canManage} />
+
         <h2 className="mb-3 mt-8 font-serif text-[24px] tracking-[-.005em]">Manual share targets</h2>
         <p className="mb-4 max-w-[720px] text-[13px] text-mute">
-          One target per surface. Anyone with read access to the surface (e.g.{" "}
-          <span className="font-mono">leads.read</span>) can use the "Share to Slack" button on a record.
+          Fallback webhooks per surface — used when no bot token is configured, and as a default
+          suggestion inside the "Share to Slack" dialog.
         </p>
 
         <SlackShareTargetsCard

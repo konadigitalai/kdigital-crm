@@ -1201,6 +1201,53 @@ export const slackWorkspace = pgTable(
   }),
 );
 
+// Cached Slack directory — populated by the /integrations/slack/directory/
+// refresh endpoint (or a scheduled job). Everything here is fetch-and-store
+// from Slack's Web API. Never authoritative on its own — refresh nightly.
+export const slackChannelCache = pgTable(
+  "slack_channel_cache",
+  {
+    id:          uuid("id").primaryKey().defaultRandom(),
+    tenantId:    uuid("tenant_id").notNull().references(() => tenant.id),
+    slackId:     text("slack_id").notNull(),
+    name:        text("name").notNull(),
+    isPrivate:   boolean("is_private").notNull().default(false),
+    isArchived:  boolean("is_archived").notNull().default(false),
+    isMember:    boolean("is_member").notNull().default(false),
+    topic:       text("topic"),
+    syncedAt:    timestamp("synced_at", { withTimezone: true }).notNull().defaultNow(),
+    createdAt:   timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt:   timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    tenantSlackIdKey: uniqueIndex("slack_channel_cache_tenant_slack_id_key").on(t.tenantId, t.slackId),
+    tenantNameIdx: index("slack_channel_cache_tenant_name_idx").on(t.tenantId, t.name),
+  }),
+);
+
+export const slackUserCache = pgTable(
+  "slack_user_cache",
+  {
+    id:            uuid("id").primaryKey().defaultRandom(),
+    tenantId:      uuid("tenant_id").notNull().references(() => tenant.id),
+    slackId:       text("slack_id").notNull(),
+    name:          text("name").notNull(),
+    realName:      text("real_name"),
+    displayName:   text("display_name"),
+    email:         text("email"),
+    isBot:         boolean("is_bot").notNull().default(false),
+    isDeleted:     boolean("is_deleted").notNull().default(false),
+    imageUrl:      text("image_url"),
+    syncedAt:      timestamp("synced_at", { withTimezone: true }).notNull().defaultNow(),
+    createdAt:     timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt:     timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    tenantSlackIdKey: uniqueIndex("slack_user_cache_tenant_slack_id_key").on(t.tenantId, t.slackId),
+    tenantNameIdx: index("slack_user_cache_tenant_name_idx").on(t.tenantId, t.name),
+  }),
+);
+
 // ─── WhatsApp (Meta Cloud API direct) ────────────────────────────────────
 // Phase 1: config + templates + tags + conversations + messages.
 // Phases 2-4 add wa_broadcast / wa_broadcast_recipient / wa_automation / wa_automation_run.
