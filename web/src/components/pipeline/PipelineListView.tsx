@@ -145,6 +145,27 @@ const TZ_OPTIONS = [
 
 const STORAGE_KEY = "decrm_pipeline_list_columns_v1";
 const SORT_STORAGE_KEY = "decrm_pipeline_list_sort_v1";
+// The record page's prev/next arrows read this key to know which lead
+// numbers to cycle through, in what order. Written by CellIdle on every
+// name/number click so whatever sort+filter is currently active in the
+// list becomes the navigation context. Kept in sync with
+// components/record/LeadNavArrows.tsx.
+const LEAD_NAV_STORAGE_KEY = "decrm_lead_nav_v1";
+
+// Snapshot the ordered list of visible lead numbers to sessionStorage.
+// Called just before Next.js Link click navigation kicks in. Failure
+// modes (private mode, quota, JSON errors) are silently swallowed —
+// the record page treats a missing/malformed snapshot as "no context"
+// and hides the arrows.
+function stashLeadNav(numbers: string[]) {
+  if (typeof window === "undefined") return;
+  try {
+    window.sessionStorage.setItem(
+      LEAD_NAV_STORAGE_KEY,
+      JSON.stringify({ numbers, savedAt: Date.now() }),
+    );
+  } catch { /* ignore */ }
+}
 
 // Default sort: newest created lead on top. Applied when the user hasn't
 // picked their own sort (or has explicitly cycled back to "clear").
@@ -1151,7 +1172,11 @@ export function PipelineListView({
                     )}
                   >
                     {/* Always render the idle value so column widths stay stable. */}
-                    <CellIdle column={c} lead={l} />
+                    <CellIdle
+                      column={c}
+                      lead={l}
+                      onNavigate={() => stashLeadNav(sortedLeads.map((x) => x.number))}
+                    />
                     {/* When this cell is being edited, overlay a popover that
                         sits ABOVE the cell with its own width — long values
                         get the room they need without disturbing the row. */}
@@ -1224,12 +1249,22 @@ function isEditableType(t: ColumnDef["type"]): boolean {
   return !t.startsWith("readonly-");
 }
 
-function CellIdle({ column, lead }: { column: ColumnDef; lead: Lead }) {
+function CellIdle({
+  column, lead, onNavigate,
+}: {
+  column: ColumnDef;
+  lead: Lead;
+  /** Called just before Link click navigates. Used to snapshot the
+   *  ordered list of visible lead numbers into sessionStorage so the
+   *  record page's prev/next arrows have context. Optional so this
+   *  component stays reusable outside the leads grid. */
+  onNavigate?: () => void;
+}) {
   if (column.type === "readonly-name") {
     return (
       <Link
         href={`/records/${lead.number}`}
-        onClick={(e) => e.stopPropagation()}
+        onClick={(e) => { onNavigate?.(); e.stopPropagation(); }}
         className="flex min-w-0 items-center gap-2.5 hover:text-brand-violet"
       >
         <div className={cn("flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-full text-[10.5px] font-bold text-white", avatarGradClass[lead.avatar])}>
@@ -1245,7 +1280,7 @@ function CellIdle({ column, lead }: { column: ColumnDef; lead: Lead }) {
     return (
       <Link
         href={`/records/${lead.number}`}
-        onClick={(e) => e.stopPropagation()}
+        onClick={(e) => { onNavigate?.(); e.stopPropagation(); }}
         className="font-mono text-[11px] font-semibold tracking-[.04em] text-brand-violet hover:underline"
       >
         {lead.number}

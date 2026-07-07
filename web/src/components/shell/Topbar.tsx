@@ -1,15 +1,21 @@
 import { Icon } from "@/components/ui/Icon";
 
 export function Topbar({
-  crumb, search, status,
+  crumb, search, status, centerSlot,
 }: {
   crumb: React.ReactNode;
   search?: string;
   status?: string;
+  /** Rendered between the crumb and the status — used by the lead record
+   *  page for prev/next navigation. Optional; when absent the layout
+   *  falls back to a single stretchy spacer. */
+  centerSlot?: React.ReactNode;
 }) {
   return (
     <div className="sticky top-0 z-20 flex items-center gap-[18px] border-b border-rule bg-canvas/[.82] px-9 py-3 backdrop-blur">
       <div className="mono-cap flex items-center gap-2 text-[11px] text-mute">{crumb}</div>
+      <div className="flex-1" />
+      {centerSlot && <div className="flex-shrink-0">{centerSlot}</div>}
       <div className="flex-1" />
       {search && (
         <div className="flex w-[280px] items-center gap-[9px] rounded-full border border-rule bg-paper px-[14px] py-2 text-[13px] text-mute">
