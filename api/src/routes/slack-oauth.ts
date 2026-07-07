@@ -178,8 +178,12 @@ slackOAuthCallbackRouter.get("/callback", async (req, res, next) => {
     });
 
     // Success — hop back to whatever page kicked off the flow. Append a
-    // ?slackConnected=1 marker so the frontend can show a toast.
-    const target = new URL(returnTo);
+    // ?slackConnected=1 marker so the frontend can show a toast. The
+    // fallback to WEB_APP_URL should never fire in practice (authorize-url
+    // always fills returnTo), but keeps TypeScript happy about optional
+    // Record<string,string> properties.
+    const safeReturn = returnTo || optCfg("WEB_APP_URL", "http://localhost:3000");
+    const target = new URL(safeReturn);
     target.searchParams.set("slackConnected", "1");
     res.redirect(target.toString());
   } catch (e) { next(e); }

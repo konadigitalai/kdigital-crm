@@ -14,5 +14,18 @@
     "forceConsistentCasingInFileNames": true,
     "noUncheckedIndexedAccess": true
   },
-  "include": ["src/**/*.ts"]
+  "include": ["src/**/*.ts"],
+  "exclude": [
+    "node_modules",
+    "dist",
+    // Ops-only scripts. Run manually via `npx tsx`, never bundled into
+    // the deployed server. Excluded from `tsc -p` so their optional
+    // deps (xlsx, etc.) don't need to be in the deployed package.json
+    // and Render builds stay fast.
+    "src/db/_*.ts",
+    "src/db/import-leads-xlsx.ts",
+    "src/db/backfill-*.ts",
+    "src/db/dump-and-wipe-leads.ts",
+    "src/db/purge-soft-deleted-leads.ts"
+  ]
 }
