@@ -137,18 +137,15 @@ viewsRouter.patch("/:id", async (req, res, next) => {
     if (!isUuid(id)) return res.status(400).json({ error: "invalid id" });
 
     const b = req.body ?? {};
-    const newName       = b.name !== undefined ? String(b.name).trim() : undefined;
-    const newVisibility = b.visibility !== undefined ? String(b.visibility) : undefined;
-    const newFilter     = b.filter && typeof b.filter === "object" ? b.filter : undefined;
-    const newColumns    = b.columns !== undefined
+    const newName    = b.name !== undefined ? String(b.name).trim() : undefined;
+    const newFilter  = b.filter && typeof b.filter === "object" ? b.filter : undefined;
+    const newColumns = b.columns !== undefined
       ? (Array.isArray(b.columns) ? b.columns.filter((s: unknown) => typeof s === "string") : null)
       : undefined;
+    // visibility on the request body is silently ignored (locked at create).
 
     if (newName !== undefined && (!newName || newName.length > 80)) {
       return res.status(400).json({ error: "name must be 1..80 chars" });
-    }
-    if (newVisibility !== undefined && !["personal", "shared"].includes(newVisibility)) {
-      return res.status(400).json({ error: "visibility must be personal|shared" });
     }
 
     const result = await withTenant(req.tenantId!, async (db) => {
@@ -169,18 +166,23 @@ viewsRouter.patch("/:id", async (req, res, next) => {
       //   - Editing a shared view (or promoting/demoting) requires the
       //     surface's write perm.
       const isOwner = row.ownerId === req.userId;
-      const willBeShared = newVisibility === "shared" || (newVisibility === undefined && row.visibility === "shared");
       const wasShared = row.visibility === "shared";
       const need = SHARED_WRITE_PERM[row.scope];
       const hasPerm = req.permissions?.has(need) === true;
 
       if (!isOwner && !(wasShared && hasPerm)) return { kind: "forbidden" as const };
-      if ((willBeShared || wasShared) && !hasPerm) return { kind: "forbidden-shared" as const, need };
+      if (wasShared && !hasPerm) return { kind: "forbidden-shared" as const, need };
+
+      // Visibility is LOCKED on create — the frontend no longer sends
+      // visibility on PATCH. If a legacy client or curl does send it,
+      // we silently drop it rather than 400-ing (forgiving to old
+      // clients; the field is a no-op on edit). Flipping personal↔shared
+      // has team-wide consequences and is a create-time decision only.
+      // To move a view between scopes, delete it and recreate.
 
       // Build dynamic UPDATE.
       const sets: ReturnType<typeof sql>[] = [];
       if (newName       !== undefined) sets.push(sql`name = ${newName}`);
-      if (newVisibility !== undefined) sets.push(sql`visibility = ${newVisibility}`);
       if (newFilter     !== undefined) sets.push(sql`filter = ${JSON.stringify(newFilter)}::jsonb`);
       if (newColumns    !== undefined) sets.push(sql`columns = ${columnsSqlValue(newColumns)}`);
       if (sets.length === 0) return { kind: "no-op" as const };

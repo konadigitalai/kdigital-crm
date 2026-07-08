@@ -52,6 +52,26 @@ interface Props {
   /** True if the user can promote views to shared and edit shared views.
    *  In the pipeline, that's `pipeline.write`. Resolved by the parent. */
   canShare: boolean;
+
+  /** Per-tab lead counts. Parent computes these from the full local list so
+   *  the tab strip can show "All leads 339 · Hot & Super Hot 41 · …". Key
+   *  is the view id, or DEFAULT_VIEW_ID for the "All leads" pseudo-tab.
+   *  Undefined per-view means "don't show a count for this tab". */
+  counts?: Record<string, number>;
+
+  /** Ordered list of view ids the current user has HIDDEN. Hidden tabs are
+   *  omitted from the strip but still accessible via the "Manage tabs" sheet.
+   *  DEFAULT_VIEW_ID may appear in here too — a user can hide "All leads". */
+  hiddenViewIds?: string[];
+
+  /** User's preferred tab order. IDs listed here render in that order at the
+   *  front of the strip; anything not in the list falls back to natural
+   *  order (creation date, "All leads" first). */
+  tabOrder?: string[];
+
+  /** Called when the user hides/unhides or reorders. Parent persists via
+   *  PATCH /me/view-preferences. Optional — read-only if unset. */
+  onPreferencesChange?: (next: { hiddenViewIds: string[]; tabOrder: string[] }) => void;
 }
 
 export function ViewTabs({
@@ -60,19 +80,48 @@ export function ViewTabs({
   currentFilter, currentColumns,
   onChange,
   currentUser, canShare,
+  counts, hiddenViewIds, tabOrder, onPreferencesChange,
 }: Props) {
   const [editing, setEditing] = useState<{ mode: "create" } | { mode: "edit"; view: SavedView } | null>(null);
+  const [managing, setManaging] = useState(false);
   const myId = currentUser?.id ?? "";
+
+  const hiddenSet = useMemo(() => new Set(hiddenViewIds ?? []), [hiddenViewIds]);
+
+  // Compute the visible tab strip: (1) DEFAULT + all views, (2) drop hidden,
+  // (3) sort by tabOrder if provided (unlisted ids come after listed ones in
+  // natural order).
+  const orderedTabs = useMemo(() => {
+    const all: Array<{ id: string; kind: "default" | "view"; view?: SavedView }> = [
+      { id: DEFAULT_VIEW_ID, kind: "default" },
+      ...views.map((v) => ({ id: v.id, kind: "view" as const, view: v })),
+    ];
+    const visible = all.filter((t) => !hiddenSet.has(t.id));
+    if (!tabOrder || tabOrder.length === 0) return visible;
+    const rank = new Map(tabOrder.map((id, i) => [id, i]));
+    return visible.sort((a, b) => {
+      const ra = rank.get(a.id) ?? 1e9;
+      const rb = rank.get(b.id) ?? 1e9;
+      return ra - rb;
+    });
+  }, [views, hiddenSet, tabOrder]);
 
   return (
     <div className="flex flex-wrap items-center gap-1.5">
-      <Tab
-        active={activeId === DEFAULT_VIEW_ID}
-        onClick={() => onSelect(DEFAULT_VIEW_ID)}
-        label="All leads"
-      />
-      {views.map((v) => {
-        const isActive = activeId === v.id;
+      {orderedTabs.map((t) => {
+        const isActive = activeId === t.id;
+        if (t.kind === "default") {
+          return (
+            <Tab
+              key={t.id}
+              active={isActive}
+              onClick={() => onSelect(DEFAULT_VIEW_ID)}
+              label="All leads"
+              count={counts?.[DEFAULT_VIEW_ID]}
+            />
+          );
+        }
+        const v = t.view!;
         const canEdit = v.ownerId === myId || (v.visibility === "shared" && canShare);
         return (
           <Tab
@@ -81,8 +130,9 @@ export function ViewTabs({
             onClick={() => onSelect(v.id)}
             onSecondaryClick={() => isActive && canEdit ? setEditing({ mode: "edit", view: v }) : null}
             label={v.name}
-            shared={v.visibility === "shared"}
             editable={canEdit}
+            count={counts?.[v.id]}
+            visibility={v.visibility}
           />
         );
       })}
@@ -94,6 +144,30 @@ export function ViewTabs({
         <Icon name="plus" size={11} strokeWidth={2.4} />
         New view
       </button>
+      {onPreferencesChange && (
+        <button
+          type="button"
+          onClick={() => setManaging(true)}
+          className="ml-1 inline-flex items-center justify-center rounded-full border border-transparent p-1.5 text-mute hover:border-rule hover:text-ink"
+          title="Manage tabs — hide, reorder"
+          aria-label="Manage tabs"
+        >
+          <Icon name="settings" size={13} strokeWidth={2} />
+        </button>
+      )}
+
+      {managing && onPreferencesChange && (
+        <ManageTabsSheet
+          views={views}
+          hiddenSet={hiddenSet}
+          tabOrder={tabOrder ?? []}
+          onClose={() => setManaging(false)}
+          onApply={(next) => {
+            onPreferencesChange(next);
+            setManaging(false);
+          }}
+        />
+      )}
 
       {editing?.mode === "create" && (
         <ViewDialog
@@ -146,14 +220,17 @@ export function ViewTabs({
 }
 
 function Tab({
-  active, onClick, onSecondaryClick, label, shared, editable,
+  active, onClick, onSecondaryClick, label, editable, count, visibility,
 }: {
   active: boolean;
   onClick: () => void;
   onSecondaryClick?: () => void | null;
   label: string;
-  shared?: boolean;
   editable?: boolean;
+  count?: number;
+  /** Personal → single-person glyph; shared → two-person glyph; undefined
+   *  (e.g. "All leads" default tab) → no glyph. */
+  visibility?: SavedViewVisibility;
 }) {
   return (
     <button
@@ -168,24 +245,193 @@ function Tab({
         if (active && onSecondaryClick) onSecondaryClick();
         else onClick();
       }}
-      title={active && editable ? "Click again to edit" : label}
+      title={
+        active && editable ? "Click again to edit"
+        : visibility === "shared" ? `${label} · shared with the team`
+        : visibility === "personal" ? `${label} · your personal view`
+        : label
+      }
       className={cn(
-        "group relative inline-flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-[12.5px] font-semibold transition",
+        // Compact style — no border, subtle active underline instead of a pill outline.
+        // Inspired by Freshsales / Salesforce tab strips: dense, less visual noise.
+        "group relative inline-flex items-center gap-1.5 border-b-2 px-2.5 py-1.5 text-[12.5px] font-semibold transition",
         active
-          ? "border-brand-violet bg-brand-violet/10 text-brand-violet"
-          : "border-rule bg-paper text-ink2 hover:border-rule2 hover:text-ink",
+          ? "border-brand-violet text-brand-violet"
+          : "border-transparent text-ink2 hover:text-ink",
       )}
     >
+      {visibility === "personal" && <PersonGlyph className={active ? "text-brand-violet" : "text-mute"} />}
+      {visibility === "shared"   && <TeamGlyph   className={active ? "text-brand-violet" : "text-mute"} />}
       <span>{label}</span>
-      {shared && (
-        <span className="mono-cap rounded-full border border-current/30 px-1.5 py-0.5 text-[8.5px] font-bold tracking-[.06em] opacity-70">
-          shared
+      {typeof count === "number" && (
+        <span className={cn(
+          "mono-cap text-[10px] font-semibold tracking-[.04em]",
+          active ? "text-brand-violet/80" : "text-mute",
+        )}>
+          {count}
         </span>
       )}
-      {active && editable && (
-        <Icon name="settings" size={11} strokeWidth={2} className="opacity-60 group-hover:opacity-100" />
-      )}
     </button>
+  );
+}
+
+// Single-person glyph — used on tabs that are personal to this user.
+// Inlined (rather than added to the shared Icon component) because it's
+// only used here and keeps this file self-contained.
+function PersonGlyph({ className }: { className?: string }) {
+  return (
+    <svg
+      viewBox="0 0 16 16" className={cn("h-3.5 w-3.5", className)}
+      fill="none" stroke="currentColor" strokeWidth="1.6"
+      strokeLinecap="round" strokeLinejoin="round"
+      aria-hidden
+    >
+      <circle cx="8" cy="5" r="2.5" />
+      <path d="M3 14c0-2.5 2.2-4 5-4s5 1.5 5 4" />
+    </svg>
+  );
+}
+
+// Two-person glyph — used on tabs that are shared with the tenant.
+function TeamGlyph({ className }: { className?: string }) {
+  return (
+    <svg
+      viewBox="0 0 16 16" className={cn("h-3.5 w-3.5", className)}
+      fill="none" stroke="currentColor" strokeWidth="1.6"
+      strokeLinecap="round" strokeLinejoin="round"
+      aria-hidden
+    >
+      <circle cx="6" cy="5" r="2.2" />
+      <circle cx="11.5" cy="5.5" r="1.7" />
+      <path d="M1.5 14c0-2.2 2-3.6 4.5-3.6S10.5 11.8 10.5 14" />
+      <path d="M10.5 10.5c2 0 4 1.2 4 3.5" />
+    </svg>
+  );
+}
+
+// ─── Manage tabs sheet ─────────────────────────────────────────────────
+//
+// Simple list of every saved view (+ the "All leads" pseudo). Users can:
+//   - toggle each row's visibility
+//   - drag rows to reorder
+// Apply → parent's onPreferencesChange → PATCH /me/view-preferences.
+
+function ManageTabsSheet({
+  views, hiddenSet, tabOrder, onClose, onApply,
+}: {
+  views: SavedView[];
+  hiddenSet: Set<string>;
+  tabOrder: string[];
+  onClose: () => void;
+  onApply: (next: { hiddenViewIds: string[]; tabOrder: string[] }) => void;
+}) {
+  // Build the working list. Ordered like the tab strip so the sheet
+  // matches what the user sees.
+  const initial = useMemo(() => {
+    const all: Array<{ id: string; label: string; shared: boolean }> = [
+      { id: DEFAULT_VIEW_ID, label: "All leads", shared: false },
+      ...views.map((v) => ({ id: v.id, label: v.name, shared: v.visibility === "shared" })),
+    ];
+    if (!tabOrder || tabOrder.length === 0) return all;
+    const rank = new Map(tabOrder.map((id, i) => [id, i]));
+    return all.sort((a, b) => (rank.get(a.id) ?? 1e9) - (rank.get(b.id) ?? 1e9));
+  }, [views, tabOrder]);
+
+  const [rows, setRows] = useState(initial);
+  const [hidden, setHidden] = useState<Set<string>>(hiddenSet);
+
+  function move(idx: number, dir: -1 | 1) {
+    const swap = idx + dir;
+    if (swap < 0 || swap >= rows.length) return;
+    const next = [...rows];
+    [next[idx], next[swap]] = [next[swap]!, next[idx]!];
+    setRows(next);
+  }
+  function toggle(id: string) {
+    setHidden((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  }
+
+  function apply() {
+    onApply({
+      hiddenViewIds: Array.from(hidden),
+      tabOrder: rows.map((r) => r.id),
+    });
+  }
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/40 p-6 backdrop-blur-sm"
+      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
+    >
+      <div
+        className="my-12 w-full max-w-[520px] rounded-2xl border border-rule bg-paper p-6 shadow-card"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="mb-2 flex items-start justify-between gap-4">
+          <div>
+            <h2 className="font-serif text-[22px] font-normal leading-tight tracking-[-.01em]">Manage tabs</h2>
+            <p className="mt-1 text-[12.5px] text-mute">
+              Hide or reorder any tab. Your changes only affect your own view — other users keep their own layout.
+            </p>
+          </div>
+          <button onClick={onClose} className="text-mute hover:text-ink" aria-label="Close">
+            <Icon name="plus" size={18} strokeWidth={2} className="rotate-45" />
+          </button>
+        </div>
+
+        <div className="mt-4 space-y-1">
+          {rows.map((r, i) => {
+            const isHidden = hidden.has(r.id);
+            return (
+              <div key={r.id} className="flex items-center gap-2 rounded-md px-2 py-1.5 hover:bg-warm/40">
+                <button
+                  type="button"
+                  disabled={i === 0}
+                  onClick={() => move(i, -1)}
+                  className="rounded text-mute hover:text-ink disabled:opacity-30"
+                  aria-label={`Move ${r.label} up`}
+                  title="Move up"
+                >
+                  ▲
+                </button>
+                <button
+                  type="button"
+                  disabled={i === rows.length - 1}
+                  onClick={() => move(i, 1)}
+                  className="rounded text-mute hover:text-ink disabled:opacity-30"
+                  aria-label={`Move ${r.label} down`}
+                  title="Move down"
+                >
+                  ▼
+                </button>
+                <span className={cn("flex-1 truncate text-[13px]", isHidden ? "text-hint line-through" : "text-ink")}>
+                  {r.label}
+                  {r.shared && <span className="mono-cap ml-1.5 text-[9px] tracking-[.06em] text-mute">SHARED</span>}
+                </span>
+                <label className="inline-flex cursor-pointer items-center gap-1.5">
+                  <input
+                    type="checkbox"
+                    checked={!isHidden}
+                    onChange={() => toggle(r.id)}
+                    className="h-3.5 w-3.5 accent-brand-violet"
+                  />
+                  <span className="text-[11px] text-mute">Visible</span>
+                </label>
+              </div>
+            );
+          })}
+        </div>
+
+        <div className="mt-5 flex items-center justify-end gap-2 border-t border-rule pt-4">
+          <button type="button" onClick={onClose} className="btn">Cancel</button>
+          <button type="button" onClick={apply} className="btn-grad">Apply</button>
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -377,39 +623,62 @@ function ViewDialog({
               <span className="mono-cap mb-1.5 block text-[10px] font-semibold tracking-[.12em] text-mute">
                 Visibility
               </span>
-              <div className="flex gap-2">
-                <label
-                  className={cn(
-                    "flex flex-1 cursor-pointer items-center gap-2 rounded-md border px-3 py-2.5 text-[13px]",
-                    visibility === "personal" ? "border-brand-violet bg-brand-violet/[.06]" : "border-rule",
+              {mode === "edit" ? (
+                // Once a view is created, visibility is locked. Flipping a
+                // personal view to shared (or the reverse) can be surprising
+                // for the rest of the team, so we make it a create-time
+                // decision only. To change scope, delete + recreate.
+                <div className="flex items-center gap-2 rounded-md border border-rule bg-warm/30 px-3 py-2.5 text-[13px] text-ink2">
+                  {visibility === "shared" ? (
+                    <>
+                      <TeamGlyph className="text-mute" />
+                      <span className="font-semibold">Shared with team</span>
+                    </>
+                  ) : (
+                    <>
+                      <PersonGlyph className="text-mute" />
+                      <span className="font-semibold">Just me</span>
+                    </>
                   )}
-                >
-                  <input
-                    type="radio"
-                    name="visibility"
-                    checked={visibility === "personal"}
-                    onChange={() => setVisibility("personal")}
-                  />
-                  Just me
-                </label>
-                <label
-                  className={cn(
-                    "flex flex-1 items-center gap-2 rounded-md border px-3 py-2.5 text-[13px]",
-                    !canShare && "cursor-not-allowed bg-warm/40 opacity-60",
-                    canShare && (visibility === "shared" ? "cursor-pointer border-brand-violet bg-brand-violet/[.06]" : "cursor-pointer border-rule"),
-                  )}
-                  title={canShare ? "" : "Needs the pipeline.write permission"}
-                >
-                  <input
-                    type="radio"
-                    name="visibility"
-                    checked={visibility === "shared"}
-                    onChange={() => setVisibility("shared")}
-                    disabled={!canShare}
-                  />
-                  Shared with team
-                </label>
-              </div>
+                  <span className="mono-cap ml-auto text-[9.5px] tracking-[.08em] text-hint">
+                    LOCKED
+                  </span>
+                </div>
+              ) : (
+                <div className="flex gap-2">
+                  <label
+                    className={cn(
+                      "flex flex-1 cursor-pointer items-center gap-2 rounded-md border px-3 py-2.5 text-[13px]",
+                      visibility === "personal" ? "border-brand-violet bg-brand-violet/[.06]" : "border-rule",
+                    )}
+                  >
+                    <input
+                      type="radio"
+                      name="visibility"
+                      checked={visibility === "personal"}
+                      onChange={() => setVisibility("personal")}
+                    />
+                    Just me
+                  </label>
+                  <label
+                    className={cn(
+                      "flex flex-1 items-center gap-2 rounded-md border px-3 py-2.5 text-[13px]",
+                      !canShare && "cursor-not-allowed bg-warm/40 opacity-60",
+                      canShare && (visibility === "shared" ? "cursor-pointer border-brand-violet bg-brand-violet/[.06]" : "cursor-pointer border-rule"),
+                    )}
+                    title={canShare ? "" : "Needs the pipeline.write permission"}
+                  >
+                    <input
+                      type="radio"
+                      name="visibility"
+                      checked={visibility === "shared"}
+                      onChange={() => setVisibility("shared")}
+                      disabled={!canShare}
+                    />
+                    Shared with team
+                  </label>
+                </div>
+              )}
             </fieldset>
           </div>
 
