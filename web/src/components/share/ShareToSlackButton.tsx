@@ -18,7 +18,7 @@ import { Icon } from "@/components/ui/Icon";
 import { cn } from "@/lib/cn";
 import {
   getSharePreview, getSlackAuthorizeUrl, getSlackDirectory,
-  getSlackMyDirectory, getSlackMyStatus, getSlackWorkspace,
+  getSlackMyDirectory, getSlackMyStatus, getSlackWorkspaceStatus,
   shareToSlack,
   type SlackDirectoryChannel, type SlackDirectoryUser,
 } from "@/lib/api";
@@ -89,13 +89,22 @@ function ShareToSlackDialog({
 
   // On mount, learn: (a) does the current user have a Slack link?
   // (b) does the workspace have a bot token at all?
+  //
+  // Both endpoints are on the /share-slack/* mount which any authenticated
+  // user can hit — no integrations.read required. Previously we hit
+  // /integrations/slack/workspace, which non-admin users got a 403 on;
+  // the .catch() swallowed that and the dialog silently fell into the
+  // legacy webhook path. Splitting the endpoint fixes that.
   useEffect(() => {
     let cancelled = false;
-    Promise.all([getSlackMyStatus().catch(() => ({ connected: false })), getSlackWorkspace().catch(() => ({ workspace: null }))])
+    Promise.all([
+      getSlackMyStatus().catch(() => ({ connected: false })),
+      getSlackWorkspaceStatus().catch(() => ({ hasBotToken: false })),
+    ])
       .then(([mine, ws]) => {
         if (cancelled) return;
         const connected = !!mine.connected;
-        const bot = !!(ws as { workspace?: { hasToken?: boolean } | null }).workspace?.hasToken;
+        const bot = !!ws.hasBotToken;
         setUserConnected(connected);
         setHasBotToken(bot);
         // If neither route is available, skip straight to the webhook path.

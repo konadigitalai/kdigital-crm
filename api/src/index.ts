@@ -32,6 +32,7 @@ import { batchesRouter } from "./routes/batches.js";
 import { viewsRouter } from "./routes/views.js";
 import { integrationsRouter } from "./routes/integrations.js";
 import { shareRouter } from "./routes/share.js";
+import { shareSlackUserRouter } from "./routes/share-slack-user.js";
 import { slackOAuthRouter, slackOAuthCallbackRouter } from "./routes/slack-oauth.js";
 import { whatsappRouter } from "./routes/whatsapp.js";
 import { whatsappWebhookRouter } from "./routes/whatsapp-webhook.js";
@@ -180,6 +181,11 @@ app.use("/batches",     batchesRouter);
 app.use("/views",       requirePermission("pipeline.read"), viewsRouter);
 // Integrations admin — Slack rules + delivery log.
 app.use("/integrations", readWrite("integrations.read", "integrations.manage"), integrationsRouter);
+// User-facing Slack reads needed by the "Share to Slack" dialog — workspace
+// status, per-user connection status, and channel/user picker directory.
+// Kept OUT of /integrations so it doesn't require integrations.read; any
+// authenticated user who can see a lead can hit these read-only endpoints.
+app.use("/share-slack", shareSlackUserRouter);
 // Manual "Share to Slack" — gated per-handler by the surface's read perm.
 app.use("/share", shareRouter);
 // WhatsApp — config in Phase 1; conversations/messages/broadcasts in

@@ -796,8 +796,17 @@ export interface SlackDirectoryChannel { id: string; name: string; isPrivate: bo
 export interface SlackDirectoryUser { id: string; name: string; label: string; realName: string | null; email: string | null; imageUrl: string | null }
 export interface SlackWorkspaceInfo { id: string; teamId: string | null; teamName: string | null; hasToken: boolean; installedAt: string | null }
 
+// Admin-only. Returns rich workspace metadata (team name, installed date).
+// Requires integrations.read — used by the admin's Slack Workspace card.
 export async function getSlackWorkspace(): Promise<{ workspace: SlackWorkspaceInfo | null }> {
   return await get<{ workspace: SlackWorkspaceInfo | null }>(`/integrations/slack/workspace`);
+}
+
+// User-facing. Returns only { hasBotToken } — enough for the share
+// dialog to decide whether to show the new picker. No admin
+// permission required.
+export async function getSlackWorkspaceStatus(): Promise<{ hasBotToken: boolean }> {
+  return await get<{ hasBotToken: boolean }>(`/share-slack/workspace-status`);
 }
 export async function saveSlackBotToken(botToken: string): Promise<{ ok: true; teamName: string; teamId: string; botUser: string }> {
   return await post<{ ok: true; teamName: string; teamId: string; botUser: string }>(
@@ -814,11 +823,17 @@ export async function refreshSlackDirectory(): Promise<{ ok: true; channelCount:
     `/integrations/slack/directory/refresh`, {},
   );
 }
+// Directory picker for the "Share to Slack" dialog. Backed by the
+// user-facing /share-slack/directory endpoint which smart-routes:
+//   - channel + user has Connect Slack → live from user's Slack (their channels)
+//   - channel + user NOT connected      → bot-cached channels
+//   - user                              → bot-cached user directory
+// Any authenticated user can call this — no admin gate.
 export async function getSlackDirectory(
   kind: "channel" | "user",
 ): Promise<{ kind: string; items: SlackDirectoryChannel[] | SlackDirectoryUser[] }> {
   return await get<{ kind: string; items: SlackDirectoryChannel[] | SlackDirectoryUser[] }>(
-    `/integrations/slack/directory?kind=${encodeURIComponent(kind)}`,
+    `/share-slack/directory?kind=${encodeURIComponent(kind)}`,
   );
 }
 
@@ -829,13 +844,16 @@ export interface SlackMyStatus {
   link?: { slackUserId: string; slackTeamId: string | null; connectedAt: string; scopes: string | null };
 }
 export async function getSlackMyStatus(): Promise<SlackMyStatus> {
-  return await get<SlackMyStatus>(`/integrations/slack/my-status`);
+  return await get<SlackMyStatus>(`/share-slack/my-status`);
 }
+// Kept for callers that still import it — same endpoint as
+// getSlackDirectory since the /share-slack/directory route already
+// smart-routes for user-connection. Both entry points work.
 export async function getSlackMyDirectory(
   kind: "channel" | "user",
 ): Promise<{ kind: string; items: SlackDirectoryChannel[] | SlackDirectoryUser[] }> {
   return await get<{ kind: string; items: SlackDirectoryChannel[] | SlackDirectoryUser[] }>(
-    `/integrations/slack/my-directory?kind=${encodeURIComponent(kind)}`,
+    `/share-slack/directory?kind=${encodeURIComponent(kind)}`,
   );
 }
 export async function getSlackAuthorizeUrl(returnTo: string): Promise<{ url: string }> {
