@@ -158,9 +158,22 @@ async function buildSnapshot(
     const user = userR.rows[0] as { id: string; name: string | null; email: string };
 
     // Totals
+    //
+    // activeLeads matches the /leads grid's definition — a lead is "active"
+    // when its party still has a current lead role (party_role.role='lead'
+    // AND valid_to IS NULL). Previously we counted `lead WHERE rating <> 'enrolled'`,
+    // which included soft-deleted rows and converted-to-learner rows where
+    // the rating wasn't set to 'enrolled' — the number the chat reported
+    // was consistently higher than the grid.
     const totalsR = await db.execute(sql`
       SELECT
-        (SELECT COUNT(*)::int FROM lead WHERE rating <> 'enrolled')                             AS "activeLeads",
+        (
+          SELECT COUNT(*)::int
+          FROM lead l
+          JOIN work_item wi ON wi.id = l.work_item_id
+          JOIN party_role pr ON pr.party_id = wi.party_id
+          WHERE pr.role = 'lead' AND pr.valid_to IS NULL
+        )                                                                                       AS "activeLeads",
         (SELECT COUNT(*)::int FROM party_role pr WHERE pr.role = 'learner' AND pr.valid_to IS NULL) AS "enrolledLearners",
         (SELECT COUNT(*)::int FROM support_case WHERE status NOT IN ('closed','resolved','cancelled')) AS "openCases",
         (SELECT COUNT(*)::int FROM support_case WHERE due_at < NOW() AND status NOT IN ('closed','resolved','cancelled')) AS "overdueCases",
@@ -169,11 +182,14 @@ async function buildSnapshot(
     `);
     const totals = totalsR.rows[0] as CrmSnapshot["totals"];
 
-    // Rating funnel
+    // Rating funnel — same active-lead filter as above.
     const funnelR = await db.execute(sql`
-      SELECT rating, COUNT(*)::int AS count
-      FROM lead
-      GROUP BY rating
+      SELECT l.rating, COUNT(*)::int AS count
+      FROM lead l
+      JOIN work_item wi ON wi.id = l.work_item_id
+      JOIN party_role pr ON pr.party_id = wi.party_id
+      WHERE pr.role = 'lead' AND pr.valid_to IS NULL
+      GROUP BY l.rating
     `);
     const ratingFunnel = funnelR.rows as Array<{ rating: string; count: number }>;
 
@@ -194,9 +210,9 @@ async function buildSnapshot(
       FROM lead l
       JOIN work_item wi ON wi.id = l.work_item_id
       JOIN party p      ON p.id  = wi.party_id
+      JOIN party_role pr ON pr.party_id = p.id AND pr.role = 'lead' AND pr.valid_to IS NULL
       LEFT JOIN last_act la ON la.work_item_id = l.work_item_id
       LEFT JOIN app_user u  ON u.party_id = l.advisor_id
-      WHERE l.rating <> 'enrolled'
       ORDER BY
         CASE l.rating
           WHEN 'superhot' THEN 0
@@ -317,7 +333,14 @@ async function buildSnapshot(
     const progsR = await db.execute(sql`
       SELECT
         p.id, p.name, p.price, p.enabled,
-        (SELECT COUNT(*)::int FROM lead l WHERE l.program_id = p.id AND l.rating <> 'enrolled') AS "activeLeads",
+        (
+          SELECT COUNT(*)::int
+          FROM lead l
+          JOIN work_item wi ON wi.id = l.work_item_id
+          JOIN party_role pr ON pr.party_id = wi.party_id
+          WHERE l.program_id = p.id
+            AND pr.role = 'lead' AND pr.valid_to IS NULL
+        ) AS "activeLeads",
         (SELECT COUNT(*)::int FROM enrolment e WHERE e.program_id = p.id) AS "enrolments"
       FROM program p
       ORDER BY p.name
