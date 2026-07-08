@@ -142,11 +142,22 @@ async function provisionUser(claims: JWTPayload): Promise<NonNullable<Request["u
   const tenantId = await resolveDefaultTenantId();
   if (!tenantId) return null;
 
-  // 4. Adopt-or-insert. If a row already exists for this email (e.g. seeded
-  // by the demo data), attach the Auth0 sub to it instead of creating a
-  // duplicate. Otherwise insert fresh. The (tenant_id, email) uniqueness
-  // constraint forces us to pick one or the other — we go email-first
-  // because the email is what humans recognise in the timeline.
+  // 4. Adopt-or-insert. If a row already exists for this email (e.g.
+  // seeded by demo data, or created earlier when the same human logged
+  // in via a different Auth0 identity provider — auth0|xxx vs
+  // google-oauth2|xxx both return the same email), rebind the row to
+  // the CURRENT auth0_sub instead of creating a duplicate.
+  //
+  // Previously this UPDATE guarded with
+  //     (auth0_sub IS NULL OR auth0_sub = $1)
+  // which meant a row whose auth0_sub had drifted (different IdP) would
+  // NOT be adopted, and the fresh INSERT below tripped the
+  // (tenant_id, email) unique constraint → 500 on every login.
+  //
+  // Now: email + tenant is the identity key. Whatever sub the current
+  // token has wins. That's OK because Auth0 verified the email before
+  // it minted the token; if the caller has a valid token for that
+  // email, they ARE that user, regardless of which IdP got them here.
   const adopted = await appPool.query<{
     id: string; tenant_id: string; email: string; name: string | null;
     role: string; active: boolean;
@@ -156,7 +167,6 @@ async function provisionUser(claims: JWTPayload): Promise<NonNullable<Request["u
          name = COALESCE(name, $2)
      WHERE tenant_id = $3
        AND LOWER(email) = LOWER($4)
-       AND (auth0_sub IS NULL OR auth0_sub = $1)
      RETURNING id, tenant_id, email, name, role, active`,
     [sub, name, tenantId, email],
   );
