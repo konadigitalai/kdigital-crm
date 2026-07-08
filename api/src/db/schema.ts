@@ -1112,6 +1112,28 @@ export const savedView = pgTable(
   }),
 );
 
+// Per-user preferences for saved-view tabs. See post-0064.
+export const userViewPreference = pgTable(
+  "user_view_preference",
+  {
+    id:        uuid("id").primaryKey().defaultRandom(),
+    tenantId:  uuid("tenant_id").notNull().references(() => tenant.id),
+    userId:    uuid("user_id").notNull(),
+    // NULL viewId represents the implicit "All leads" tab. No FK to
+    // saved_view — pref rows can outlive a deleted view; they become
+    // inert and are reaped later.
+    viewId:    uuid("view_id"),
+    scope:     text("scope").notNull(),
+    hidden:    boolean("hidden").notNull().default(false),
+    sortOrder: integer("sort_order").notNull().default(0),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    scopeIdx: index("user_view_preference_scope_idx").on(t.tenantId, t.userId, t.scope),
+  }),
+);
+
 // ─── Slack integration ────────────────────────────────────────────────────
 // Outbound notification rules + delivery log + a placeholder workspace
 // table reserved for the v2 bot-token flow. v1 ships with `webhookUrl`

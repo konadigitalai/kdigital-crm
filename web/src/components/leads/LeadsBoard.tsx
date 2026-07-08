@@ -13,7 +13,8 @@ import { FilterBar } from "@/components/filter/FilterBar";
 import { useFilter } from "@/components/filter/useFilter";
 import { Icon } from "@/components/ui/Icon";
 import { cn } from "@/lib/cn";
-import { getLeads } from "@/lib/api";
+import { getLeads, getViewPreferences, updateViewPreferences, type UserViewPreference } from "@/lib/api";
+import { applyFilter } from "@/components/filter/operators";
 import type { FilterField, FilterState } from "@/components/filter/types";
 import type { CatalogResponse, CurrentUser, Lead, SavedView } from "@/lib/types";
 import { LEAD_RATINGS } from "@/lib/types";
@@ -295,6 +296,84 @@ export function LeadsBoard({
     setFilterState(next);
   }
 
+  // ── per-tab lead counts ───────────────────────────────────────────────
+  // Compute the count of leads that would match each saved view's filter,
+  // against the full local list (not the currently-filtered view). Runs
+  // in a memo — with ~340 leads and a handful of views this is well
+  // under a millisecond per render.
+  const tabCounts = useMemo<Record<string, number>>(() => {
+    const out: Record<string, number> = { [DEFAULT_VIEW_ID]: localLeads.length };
+    for (const v of views) {
+      const raw = (v.filter && typeof v.filter === "object")
+        ? (v.filter as Record<string, unknown>) : {};
+      const rulesRaw = Array.isArray(raw.rules) ? raw.rules : [];
+      const rules = rulesRaw
+        .filter((r): r is Record<string, unknown> => !!r && typeof r === "object")
+        .filter((r) => typeof r.fieldKey === "string")
+        .map((r) => ({
+          id: `c${Math.random().toString(36).slice(2, 8)}`,
+          fieldKey: r.fieldKey as string,
+          operator: String(r.operator ?? ""),
+          value: r.value,
+        }));
+      const state: FilterState = {
+        combinator: raw.combinator === "or" ? "or" : "and",
+        rules: rules as unknown as FilterState["rules"],
+      };
+      out[v.id] = applyFilter(state, localLeads, fields).length;
+    }
+    return out;
+  }, [views, localLeads, fields]);
+
+  // ── per-user view preferences ─────────────────────────────────────────
+  // Which shared views this user has hidden + custom tab order.
+  const [hiddenViewIds, setHiddenViewIds] = useState<string[]>([]);
+  const [tabOrder, setTabOrder] = useState<string[]>([]);
+  useEffect(() => {
+    let cancelled = false;
+    getViewPreferences("pipeline_list")
+      .then((prefs: UserViewPreference[]) => {
+        if (cancelled) return;
+        const hidden = prefs.filter((p) => p.hidden)
+          .map((p) => p.viewId ?? DEFAULT_VIEW_ID);
+        // Sort a copy so unspecified tabs fall back to natural order.
+        const ordered = [...prefs]
+          .filter((p) => !p.hidden)
+          .sort((a, b) => a.sortOrder - b.sortOrder)
+          .map((p) => p.viewId ?? DEFAULT_VIEW_ID);
+        setHiddenViewIds(hidden);
+        setTabOrder(ordered);
+      })
+      .catch(() => { /* silent — defaults are fine */ });
+    return () => { cancelled = true; };
+  }, []);
+
+  function onPrefsChange(next: { hiddenViewIds: string[]; tabOrder: string[] }) {
+    setHiddenViewIds(next.hiddenViewIds);
+    setTabOrder(next.tabOrder);
+    // Persist. Merge hidden + order into a single preference-per-view
+    // payload. Views not in either list get an "unhide, order=1e6" write
+    // to reset any prior override.
+    const seen = new Set<string>();
+    const payload: Array<{ viewId: string | null; hidden?: boolean; sortOrder?: number }> = [];
+    next.tabOrder.forEach((id, i) => {
+      seen.add(id);
+      payload.push({
+        viewId: id === DEFAULT_VIEW_ID ? null : id,
+        hidden: next.hiddenViewIds.includes(id),
+        sortOrder: i,
+      });
+    });
+    for (const id of next.hiddenViewIds) {
+      if (seen.has(id)) continue;
+      payload.push({
+        viewId: id === DEFAULT_VIEW_ID ? null : id,
+        hidden: true,
+      });
+    }
+    updateViewPreferences("pipeline_list", payload).catch(() => { /* silent */ });
+  }
+
   return (
     <>
       <div className="mb-3 flex items-center justify-between gap-3">
@@ -311,16 +390,44 @@ export function LeadsBoard({
             onChange={setViews}
             currentUser={currentUser}
             canShare={canWrite}
+            counts={tabCounts}
+            hiddenViewIds={hiddenViewIds}
+            tabOrder={tabOrder}
+            onPreferencesChange={onPrefsChange}
           />
         </div>
         {headerSlot && <div className="flex-shrink-0">{headerSlot}</div>}
       </div>
 
-      <div className="mb-3">
-        <LeadsSearchBox leads={localLeads} />
-      </div>
-
-      <div className="mb-4 rounded-[14px] border border-rule bg-paper p-3">
+      {/* Search + quick-filter pills + full filter builder — one row.
+          Search on the left, then two dropdown pills (Rating, Status),
+          then the FilterBar's "+ Add filter" for anything more complex.
+          Matches the reference UI: dense, low-friction, only what you
+          actually reach for on most days. */}
+      <div className="mb-4 flex flex-wrap items-center gap-3 rounded-[14px] border border-rule bg-paper p-3">
+        <div className="min-w-[240px] flex-1">
+          <LeadsSearchBox leads={localLeads} />
+        </div>
+        <QuickFilterPill
+          label="Rating"
+          options={RATING_OPTIONS}
+          state={filterState}
+          fieldKey="rating"
+          onChange={(next) => {
+            setFilterState(next);
+            if (activeViewId !== DEFAULT_VIEW_ID) setActiveViewId(DEFAULT_VIEW_ID);
+          }}
+        />
+        <QuickFilterPill
+          label="Status"
+          options={LEAD_STATUS_OPTIONS}
+          state={filterState}
+          fieldKey="leadStatus"
+          onChange={(next) => {
+            setFilterState(next);
+            if (activeViewId !== DEFAULT_VIEW_ID) setActiveViewId(DEFAULT_VIEW_ID);
+          }}
+        />
         <FilterBar
           fields={fields}
           state={filterState}
@@ -522,6 +629,117 @@ function LeadsSearchBox({ leads }: { leads: Lead[] }) {
           <div className="mono-cap border-t border-rule px-3 py-1.5 text-[9.5px] tracking-[.1em] text-hint">
             {matches.length === 0 ? "0 matches" : `${matches.length} of ${leads.length} · ↑↓ navigate · enter opens`}
           </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── QuickFilterPill ──────────────────────────────────────────────────
+//
+// Dropdown pill for a single enum field (Rating, Status). Writes into the
+// same FilterState the FilterBar edits — so the "Add filter" builder and
+// the pills stay in sync and never disagree.
+//
+// Behaviour: pick "Any" → removes any existing rule for this field.
+// Pick a specific value → replaces any existing rule with an "is" rule.
+// Multi-select support is deliberately absent; if a user needs "hot OR
+// warm" they use the full FilterBar with is_any_of.
+function QuickFilterPill({
+  label, options, state, fieldKey, onChange,
+}: {
+  label: string;
+  options: ReadonlyArray<{ value: string; label: string }>;
+  state: FilterState;
+  fieldKey: string;
+  onChange: (next: FilterState) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  // Close on outside click.
+  useEffect(() => {
+    if (!open) return;
+    function onClick(e: MouseEvent) {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    }
+    window.addEventListener("mousedown", onClick);
+    return () => window.removeEventListener("mousedown", onClick);
+  }, [open]);
+
+  // The current value shown on the pill. Reads back from FilterState so
+  // it always reflects reality — flipping a rule off in the FilterBar
+  // reverts the pill to "Any" automatically.
+  const currentRule = state.rules.find((r) => r.fieldKey === fieldKey);
+  const currentVal = currentRule && currentRule.operator === "is" && typeof currentRule.value === "string"
+    ? currentRule.value : "";
+  const currentLabel = currentVal
+    ? (options.find((o) => o.value === currentVal)?.label ?? currentVal)
+    : "Any";
+
+  function pick(value: string) {
+    const others = state.rules.filter((r) => r.fieldKey !== fieldKey);
+    if (!value) {
+      onChange({ ...state, rules: others });
+    } else {
+      onChange({
+        ...state,
+        rules: [
+          ...others,
+          {
+            id: `q${Math.random().toString(36).slice(2, 8)}`,
+            fieldKey,
+            operator: "is",
+            value,
+          },
+        ],
+      });
+    }
+    setOpen(false);
+  }
+
+  return (
+    <div ref={ref} className="relative">
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        className={cn(
+          "inline-flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-[12.5px] font-semibold transition",
+          currentVal
+            ? "border-brand-violet bg-brand-violet/10 text-brand-violet"
+            : "border-rule bg-paper text-ink2 hover:border-rule2 hover:text-ink",
+        )}
+      >
+        <span className="mono-cap text-[9.5px] tracking-[.08em] text-mute">{label}:</span>
+        <span>{currentLabel}</span>
+        <span className="text-[9px] text-mute">▾</span>
+      </button>
+      {open && (
+        <div className="absolute left-0 top-full z-30 mt-1 min-w-[180px] max-h-[320px] overflow-y-auto rounded-lg border border-rule bg-paper py-1 shadow-card">
+          <button
+            type="button"
+            onClick={() => pick("")}
+            className={cn(
+              "block w-full px-3 py-1.5 text-left text-[12.5px] hover:bg-warm",
+              !currentVal && "bg-warm font-semibold",
+            )}
+          >
+            Any
+          </button>
+          <div className="my-1 border-t border-rule" />
+          {options.map((o) => (
+            <button
+              type="button"
+              key={o.value}
+              onClick={() => pick(o.value)}
+              className={cn(
+                "block w-full px-3 py-1.5 text-left text-[12.5px] hover:bg-warm",
+                currentVal === o.value && "bg-warm font-semibold",
+              )}
+            >
+              {o.label}
+            </button>
+          ))}
         </div>
       )}
     </div>

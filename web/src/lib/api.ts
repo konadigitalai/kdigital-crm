@@ -710,6 +710,34 @@ export async function updateSavedView(id: string, patch: Partial<SavedViewInput>
   return view;
 }
 
+// Per-user view preferences (which shared views the current user has hidden,
+// and their tab order). Absence of a preference row means "use defaults".
+export interface UserViewPreference {
+  viewId: string | null;   // NULL = "All leads" pseudo-tab
+  hidden: boolean;
+  sortOrder: number;
+  updatedAt: string;
+}
+
+export async function getViewPreferences(scope: SavedViewScope): Promise<UserViewPreference[]> {
+  try {
+    const { preferences } = await get<{ preferences: UserViewPreference[] }>(
+      `/me/view-preferences?scope=${encodeURIComponent(scope)}`,
+    );
+    return preferences;
+  } catch (err) {
+    if ((err as Error).message.includes("→ 401")) return [];
+    return [];
+  }
+}
+
+export async function updateViewPreferences(
+  scope: SavedViewScope,
+  preferences: Array<{ viewId: string | null; hidden?: boolean; sortOrder?: number }>,
+): Promise<void> {
+  await send<{ ok: true; updated: number }>("PATCH", `/me/view-preferences`, { scope, preferences });
+}
+
 export async function deleteSavedView(id: string): Promise<void> {
   await send<void>("DELETE", `/views/${encodeURIComponent(id)}`);
 }
