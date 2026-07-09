@@ -168,8 +168,7 @@ async function main() {
       }
 
       // Belt-and-braces: activity/audit already have `ON DELETE SET NULL` so
-      // PostgreSQL will null actor_party_id itself. Same for cohort trainer,
-      // wa_message.sender_user_id, wa_conversation.assigned_user_id, etc.
+      // PostgreSQL will null actor_party_id itself. Same for cohort trainer, etc.
 
       // Nuke the app_user rows first — the party.id CASCADE below would take
       // them anyway via `app_user_party_unique`, but doing it explicitly gives
@@ -181,7 +180,7 @@ async function main() {
       console.log(`  deleted ${uDel.rowCount} app_user rows`);
 
       // Delete the party rows. CASCADE covers contact_point, party_role,
-      // party_external_id, party_affiliation, party_consent, wa_party_tag,
+      // party_external_id, party_affiliation, party_consent,
       // edify_chat_session/message, saved_view, calendar_event/invitee,
       // leave_day, party_duplicate_candidate.
       const pDel = await client.query(

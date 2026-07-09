@@ -71,6 +71,45 @@ npm run db:seed
 - **Schema diff**: edit `src/db/schema.ts`, run `npm run drizzle:generate` — it produces a new SQL file under `drizzle/`.
 - **Inspect DB**: `npx drizzle-kit studio` (opens a web UI at https://local.drizzle.studio).
 
+## Twilio (SMS + WhatsApp) — local testing
+
+The `/twilio` outbound and `/webhooks/twilio` inbound routes use these env
+vars. All required.
+
+```
+TWILIO_ACCOUNT_SID=AC...                 # from Twilio Console → Account Info
+TWILIO_AUTH_TOKEN=...                    # secret; keep out of source
+TWILIO_SMS_FROM=+15551234567             # a Twilio-owned SMS number
+TWILIO_WHATSAPP_FROM=+14155238886        # WhatsApp sandbox or approved WA number (no whatsapp: prefix)
+TWILIO_WEBHOOK_URL=https://<ngrok>.ngrok-free.app/webhooks/twilio
+                                         # MUST byte-match what Twilio Console has registered;
+                                         # used for HMAC signature verification
+```
+
+Missing any of these → `POST /twilio/send` returns `503 Twilio not configured` with a clear list.
+
+### End-to-end local flow (Windows, ngrok)
+
+1. **Auth0**: grant `messaging.read` and `messaging.send` to your user (or the "Administrators" role). Otherwise the FE renders read-only.
+2. **API + web**: `npm run dev` in `api/` (port 4000) and separately in `web/` (port 3000).
+3. **Public URL**: `ngrok http 4000` → copy the HTTPS URL, e.g. `https://abc.ngrok-free.app`.
+4. **Env**: paste the five `TWILIO_*` vars into `api/.env` (using the ngrok URL) and **restart the API** — env is only read at boot.
+5. **Twilio Console** (`console.twilio.com`):
+   - Phone Numbers → your SMS number → *A message comes in* webhook: `https://abc.ngrok-free.app/webhooks/twilio` (HTTP POST).
+   - Messaging → WhatsApp Sandbox → *When a message comes in*: the same URL.
+   - Join the sandbox from your phone: send `join <sandbox-code>` (Twilio shows the code) to `+1 415 523 8886`.
+6. **Outbound test**: open a lead in the CRM → click **Send message** → toggle SMS or WhatsApp → send. Your phone should receive it within a few seconds.
+7. **Inbound test**: reply from your phone. `/inbox` shows the thread within ~5 s; the lead's **Messages** tab shows the reply.
+8. **Signature check**: change `TWILIO_WEBHOOK_URL` to a wrong value → replay a webhook from Twilio Console → API returns 403 (signature mismatch). Restore the env and try again.
+
+### Gotchas
+
+- **ngrok URL rotates** on free-tier restart — you'll need to update `TWILIO_WEBHOOK_URL` AND Twilio Console AND restart the API each time. Paid ngrok gives a stable subdomain.
+- **WhatsApp 24 h window**: Twilio only accepts freeform WA messages within 24 h of the customer's last reply. Outside that, the send fails with error code **63016** — the CRM surfaces the error inline. Templates (which work outside 24 h) are deferred to v2.
+- **Idempotency**: `tw_message.provider_message_id` is `UNIQUE`. Twilio retries webhooks on any non-2xx, so we always return 200; duplicate SIDs are dropped by `ON CONFLICT DO NOTHING`.
+- **Unknown senders**: an inbound from a phone that doesn't match any party creates a stub `party (name='Unknown +E164')` and a `tw_conversation` with `is_unlinked=true`. The inbox shows a **Promote to lead** button in the thread header (needs `leads.write`).
+- **Multi-tenant**: the webhook currently routes to `DEFAULT_TENANT_ID` (or the newest tenant). Real multi-tenant routing needs a `To`-number-to-tenant map — not shipped yet.
+
 ## Why RLS uses an "escape hatch"
 
 Policies are `tenant_id = current_tenant() OR current_tenant() IS NULL`. The seed script and migration runner don't set the GUC, so the second clause lets them through. The API will always set `app.tenant_id` per request (via `withTenant()` in `src/db/client.ts`), so the escape never fires for it.

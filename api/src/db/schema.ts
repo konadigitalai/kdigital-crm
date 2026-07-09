@@ -178,8 +178,8 @@ export const partyRole = pgTable(
 //
 // See post-0040/0041/0042-*.sql. During Phase 1 the existing party.email
 // and party.phone columns remain canonical; writers dual-write into
-// contact_point in the same transaction (see routes/leads.ts, lib/whatsapp/inbox.ts,
-// db/seed.ts). Read paths migrate in Phase 3.
+// contact_point in the same transaction (see routes/leads.ts, db/seed.ts).
+// Read paths migrate in Phase 3.
 
 export const contactPoint = pgTable(
   "contact_point",
@@ -1293,202 +1293,76 @@ export const slackUserCache = pgTable(
   }),
 );
 
-// ─── WhatsApp (Meta Cloud API direct) ────────────────────────────────────
-// Phase 1: config + templates + tags + conversations + messages.
-// Phases 2-4 add wa_broadcast / wa_broadcast_recipient / wa_automation / wa_automation_run.
+// ─── Twilio messaging (SMS + WhatsApp via Twilio) ────────────────────────
+// One conversation row per (tenant, party, channel) — SMS and WA threads
+// with the same person are separate rows. See post-0066-twilio.sql for
+// the DDL + RLS.
 
-export const waConfig = pgTable(
-  "wa_config",
-  {
-    id:                   uuid("id").primaryKey().defaultRandom(),
-    tenantId:             uuid("tenant_id").notNull().references(() => tenant.id),
-    phoneNumberId:        text("phone_number_id"),
-    wabaId:               text("waba_id"),
-    appId:                text("app_id"),
-    appSecret:            text("app_secret"),
-    systemUserToken:      text("system_user_token"),
-    webhookVerifyToken:   text("webhook_verify_token"),
-    displayPhoneNumber:   text("display_phone_number"),
-    verifiedName:         text("verified_name"),
-    qualityRating:        text("quality_rating"),
-    status:               text("status").notNull().default("disconnected"),
-    connectedAt:          timestamp("connected_at",  { withTimezone: true }),
-    registeredAt:         timestamp("registered_at", { withTimezone: true }),
-    subscribedAt:         timestamp("subscribed_at", { withTimezone: true }),
-    createdAt:            timestamp("created_at",    { withTimezone: true }).notNull().defaultNow(),
-    updatedAt:            timestamp("updated_at",    { withTimezone: true }).notNull().defaultNow(),
-  },
-  (t) => ({
-    tenantUnique: uniqueIndex("wa_config_tenant_unique").on(t.tenantId),
-    statusCheck:  check("wa_config_status_check", sql`${t.status} IN ('disconnected','connected')`),
-  }),
-);
-
-export const waTemplate = pgTable(
-  "wa_template",
-  {
-    id:             uuid("id").primaryKey().defaultRandom(),
-    tenantId:       uuid("tenant_id").notNull().references(() => tenant.id),
-    templateName:   text("template_name").notNull(),
-    language:       text("language").notNull().default("en_US"),
-    category:       text("category").notNull(),
-    headerType:     text("header_type"),
-    headerContent:  text("header_content"),
-    bodyText:       text("body_text").notNull(),
-    footerText:     text("footer_text"),
-    buttons:        jsonb("buttons"),
-    variableCount:  integer("variable_count").notNull().default(0),
-    status:         text("status").notNull().default("pending"),
-    lastSyncedAt:   timestamp("last_synced_at", { withTimezone: true }),
-    createdAt:      timestamp("created_at",     { withTimezone: true }).notNull().defaultNow(),
-    updatedAt:      timestamp("updated_at",     { withTimezone: true }).notNull().defaultNow(),
-  },
-  (t) => ({
-    tenantNameLangKey: uniqueIndex("wa_template_tenant_name_lang_key").on(t.tenantId, t.templateName, t.language),
-    tenantStatusIdx:   index("wa_template_tenant_status_idx").on(t.tenantId, t.status),
-    categoryCheck: check("wa_template_category_check", sql`${t.category} IN ('UTILITY','MARKETING','AUTHENTICATION')`),
-    statusCheck:   check("wa_template_status_check",   sql`${t.status} IN ('approved','pending','rejected','paused')`),
-  }),
-);
-
-export const waTag = pgTable(
-  "wa_tag",
-  {
-    id:        uuid("id").primaryKey().defaultRandom(),
-    tenantId:  uuid("tenant_id").notNull().references(() => tenant.id),
-    name:      text("name").notNull(),
-    color:     text("color").notNull().default("#3b82f6"),
-    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-  },
-  (t) => ({
-    tenantNameKey: uniqueIndex("wa_tag_tenant_name_key").on(t.tenantId, sql`lower(${t.name})`),
-  }),
-);
-
-export const waPartyTag = pgTable(
-  "wa_party_tag",
-  {
-    tenantId:  uuid("tenant_id").notNull().references(() => tenant.id),
-    partyId:   uuid("party_id").notNull().references(() => party.id, { onDelete: "cascade" }),
-    tagId:     uuid("tag_id").notNull().references(() => waTag.id, { onDelete: "cascade" }),
-    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-  },
-  (t) => ({
-    pk:        uniqueIndex("wa_party_tag_pk").on(t.partyId, t.tagId),
-    tagIdx:    index("wa_party_tag_tag_idx").on(t.tagId),
-    partyIdx:  index("wa_party_tag_party_idx").on(t.partyId),
-  }),
-);
-
-export const waConversation = pgTable(
-  "wa_conversation",
+export const twConversation = pgTable(
+  "tw_conversation",
   {
     id:                uuid("id").primaryKey().defaultRandom(),
     tenantId:          uuid("tenant_id").notNull().references(() => tenant.id),
     partyId:           uuid("party_id").notNull().references(() => party.id, { onDelete: "cascade" }),
+    channel:           text("channel").notNull(),
     status:            text("status").notNull().default("open"),
     assignedUserId:    uuid("assigned_user_id").references(() => party.id, { onDelete: "set null" }),
     lastMessageText:   text("last_message_text"),
     lastMessageAt:     timestamp("last_message_at", { withTimezone: true }),
     lastInboundAt:     timestamp("last_inbound_at", { withTimezone: true }),
     unreadCount:       integer("unread_count").notNull().default(0),
-    labels:            text("labels").array().notNull().default(sql`'{}'::text[]`),
+    isUnlinked:        boolean("is_unlinked").notNull().default(false),
     createdAt:         timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt:         timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => ({
-    tenantPartyKey:   uniqueIndex("wa_conversation_tenant_party_key").on(t.tenantId, t.partyId),
-    tenantStatusIdx:  index("wa_conversation_tenant_status_idx").on(t.tenantId, t.status, t.lastMessageAt),
-    statusCheck:      check("wa_conversation_status_check", sql`${t.status} IN ('open','pending','closed')`),
+    tenantPartyChannelKey: uniqueIndex("tw_conversation_tenant_party_channel_key")
+      .on(t.tenantId, t.partyId, t.channel),
+    tenantStatusIdx: index("tw_conversation_tenant_status_idx")
+      .on(t.tenantId, t.status, t.lastMessageAt),
+    tenantChannelIdx: index("tw_conversation_tenant_channel_idx")
+      .on(t.tenantId, t.channel, t.lastMessageAt),
+    channelCheck: check("tw_conversation_channel_check",
+      sql`${t.channel} IN ('sms','whatsapp')`),
+    statusCheck: check("tw_conversation_status_check",
+      sql`${t.status} IN ('open','closed')`),
   }),
 );
 
-export const waMessage = pgTable(
-  "wa_message",
-  {
-    id:                     uuid("id").primaryKey().defaultRandom(),
-    tenantId:               uuid("tenant_id").notNull().references(() => tenant.id),
-    conversationId:         uuid("conversation_id").notNull().references(() => waConversation.id, { onDelete: "cascade" }),
-    direction:              text("direction").notNull(),
-    senderType:             text("sender_type").notNull(),
-    senderUserId:           uuid("sender_user_id").references(() => party.id, { onDelete: "set null" }),
-    contentType:            text("content_type").notNull().default("text"),
-    body:                   text("body"),
-    mediaUrl:               text("media_url"),
-    mediaMime:              text("media_mime"),
-    templateName:           text("template_name"),
-    templateVariables:      jsonb("template_variables"),
-    providerMessageId:      text("provider_message_id"),
-    status:                 text("status").notNull().default("queued"),
-    httpStatus:             integer("http_status"),
-    errorCode:              text("error_code"),
-    errorMessage:           text("error_message"),
-    inReplyToProviderId:    text("in_reply_to_provider_id"),
-    sentAt:                 timestamp("sent_at",      { withTimezone: true }).notNull().defaultNow(),
-    deliveredAt:            timestamp("delivered_at", { withTimezone: true }),
-    readAt:                 timestamp("read_at",      { withTimezone: true }),
-    rawPayload:             jsonb("raw_payload"),
-  },
-  (t) => ({
-    conversationSentIdx:   index("wa_message_conversation_sent_idx").on(t.conversationId, t.sentAt),
-    tenantSentIdx:         index("wa_message_tenant_sent_idx").on(t.tenantId, t.sentAt),
-    directionCheck:        check("wa_message_direction_check",    sql`${t.direction} IN ('inbound','outbound')`),
-    senderTypeCheck:       check("wa_message_sender_type_check",  sql`${t.senderType} IN ('customer','agent','bot','system')`),
-    statusCheck:           check("wa_message_status_check",       sql`${t.status} IN ('queued','sent','delivered','read','failed')`),
-  }),
-);
-
-// ─── WhatsApp broadcasts (Phase 3) ────────────────────────────────────────
-
-export const waBroadcast = pgTable(
-  "wa_broadcast",
-  {
-    id:                 uuid("id").primaryKey().defaultRandom(),
-    tenantId:           uuid("tenant_id").notNull().references(() => tenant.id),
-    name:               text("name").notNull(),
-    templateId:         uuid("template_id").notNull().references(() => waTemplate.id, { onDelete: "restrict" }),
-    createdBy:          uuid("created_by").references(() => party.id, { onDelete: "set null" }),
-    defaultVariables:   jsonb("default_variables").notNull().default(sql`'{}'::jsonb`),
-    status:             text("status").notNull().default("draft"),
-    scheduledAt:        timestamp("scheduled_at", { withTimezone: true }),
-    startedAt:          timestamp("started_at",   { withTimezone: true }),
-    finishedAt:         timestamp("finished_at",  { withTimezone: true }),
-    totalRecipients:    integer("total_recipients").notNull().default(0),
-    sentCount:          integer("sent_count").notNull().default(0),
-    deliveredCount:     integer("delivered_count").notNull().default(0),
-    readCount:          integer("read_count").notNull().default(0),
-    failedCount:        integer("failed_count").notNull().default(0),
-    createdAt:          timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-    updatedAt:          timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
-  },
-  (t) => ({
-    tenantStatusIdx: index("wa_broadcast_tenant_status_idx").on(t.tenantId, t.status, t.createdAt),
-    statusCheck: check("wa_broadcast_status_check",
-      sql`${t.status} IN ('draft','scheduled','sending','completed','cancelled','failed')`),
-  }),
-);
-
-export const waBroadcastRecipient = pgTable(
-  "wa_broadcast_recipient",
+export const twMessage = pgTable(
+  "tw_message",
   {
     id:                  uuid("id").primaryKey().defaultRandom(),
     tenantId:            uuid("tenant_id").notNull().references(() => tenant.id),
-    broadcastId:         uuid("broadcast_id").notNull().references(() => waBroadcast.id, { onDelete: "cascade" }),
-    partyId:             uuid("party_id").references(() => party.id, { onDelete: "set null" }),
-    toPhone:             text("to_phone").notNull(),
-    variables:           jsonb("variables").notNull().default(sql`'{}'::jsonb`),
-    status:              text("status").notNull().default("pending"),
+    conversationId:      uuid("conversation_id").notNull()
+                           .references(() => twConversation.id, { onDelete: "cascade" }),
+    direction:           text("direction").notNull(),
+    channel:             text("channel").notNull(),
+    fromNumber:          text("from_number").notNull(),
+    toNumber:            text("to_number").notNull(),
+    body:                text("body"),
     providerMessageId:   text("provider_message_id"),
+    status:              text("status").notNull().default("queued"),
     errorCode:           text("error_code"),
     errorMessage:        text("error_message"),
-    queuedAt:            timestamp("queued_at",    { withTimezone: true }).notNull().defaultNow(),
-    sentAt:              timestamp("sent_at",      { withTimezone: true }),
+    senderUserId:        uuid("sender_user_id").references(() => party.id, { onDelete: "set null" }),
+    sentAt:              timestamp("sent_at", { withTimezone: true }).notNull().defaultNow(),
     deliveredAt:         timestamp("delivered_at", { withTimezone: true }),
-    readAt:              timestamp("read_at",      { withTimezone: true }),
+    rawPayload:          jsonb("raw_payload"),
   },
   (t) => ({
-    statusCheck: check("wa_broadcast_recipient_status_check",
-      sql`${t.status} IN ('pending','sent','delivered','read','failed','cancelled')`),
+    conversationSentIdx: index("tw_message_conversation_sent_idx")
+      .on(t.conversationId, t.sentAt),
+    tenantSentIdx: index("tw_message_tenant_sent_idx")
+      .on(t.tenantId, t.sentAt),
+    providerMessageIdKey: uniqueIndex("tw_message_provider_message_id_key")
+      .on(t.providerMessageId),
+    directionCheck: check("tw_message_direction_check",
+      sql`${t.direction} IN ('inbound','outbound')`),
+    channelCheck: check("tw_message_channel_check",
+      sql`${t.channel} IN ('sms','whatsapp')`),
+    statusCheck: check("tw_message_status_check",
+      sql`${t.status} IN ('queued','sent','delivered','read','failed','received')`),
   }),
 );
 
@@ -1515,57 +1389,5 @@ export type SlackRule = typeof slackRule.$inferSelect;
 export type SlackDeliveryLog = typeof slackDeliveryLog.$inferSelect;
 export type SlackWorkspace = typeof slackWorkspace.$inferSelect;
 export type SlackShareTarget = typeof slackShareTarget.$inferSelect;
-export type WaConfig = typeof waConfig.$inferSelect;
-export type WaTemplate = typeof waTemplate.$inferSelect;
-export type WaTag = typeof waTag.$inferSelect;
-export type WaConversation = typeof waConversation.$inferSelect;
-export type WaMessage = typeof waMessage.$inferSelect;
-export type WaBroadcast = typeof waBroadcast.$inferSelect;
-export type WaBroadcastRecipient = typeof waBroadcastRecipient.$inferSelect;
-
-// ─── WhatsApp automations (Phase 4) ───────────────────────────────────
-
-export const waAutomation = pgTable(
-  "wa_automation",
-  {
-    id:          uuid("id").primaryKey().defaultRandom(),
-    tenantId:    uuid("tenant_id").notNull().references(() => tenant.id),
-    name:        text("name").notNull(),
-    description: text("description"),
-    trigger:     jsonb("trigger").notNull(),
-    actions:     jsonb("actions").notNull().default(sql`'[]'::jsonb`),
-    enabled:     boolean("enabled").notNull().default(false),
-    createdBy:   uuid("created_by").references(() => party.id, { onDelete: "set null" }),
-    createdAt:   timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-    updatedAt:   timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
-  },
-  (t) => ({
-    nameLen: check("wa_automation_name_len_check", sql`char_length(${t.name}) BETWEEN 1 AND 120`),
-  }),
-);
-
-export const waAutomationRun = pgTable(
-  "wa_automation_run",
-  {
-    id:             uuid("id").primaryKey().defaultRandom(),
-    tenantId:       uuid("tenant_id").notNull().references(() => tenant.id),
-    automationId:   uuid("automation_id").notNull().references(() => waAutomation.id, { onDelete: "cascade" }),
-    partyId:        uuid("party_id").references(() => party.id, { onDelete: "set null" }),
-    conversationId: uuid("conversation_id").references(() => waConversation.id, { onDelete: "set null" }),
-    status:         text("status").notNull().default("running"),
-    context:        jsonb("context").notNull().default(sql`'{}'::jsonb`),
-    actionsLog:     jsonb("actions_log").notNull().default(sql`'[]'::jsonb`),
-    errorMessage:   text("error_message"),
-    startedAt:      timestamp("started_at", { withTimezone: true }).notNull().defaultNow(),
-    completedAt:    timestamp("completed_at", { withTimezone: true }),
-  },
-  (t) => ({
-    statusCheck: check(
-      "wa_automation_run_status_check",
-      sql`${t.status} IN ('running','completed','failed','skipped')`,
-    ),
-  }),
-);
-
-export type WaAutomation = typeof waAutomation.$inferSelect;
-export type WaAutomationRun = typeof waAutomationRun.$inferSelect;
+export type TwConversation = typeof twConversation.$inferSelect;
+export type TwMessage = typeof twMessage.$inferSelect;

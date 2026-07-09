@@ -3,7 +3,6 @@
 // Every 6 hours, walks every tenant and runs scanForDuplicates. New
 // candidate pairs land in party_duplicate_candidate for ops review.
 //
-// Same shape as startBroadcastWorker in lib/whatsapp/broadcasts.ts —
 // setInterval + a per-tick guard so ticks never overlap.
 
 import { appPool, withTenant } from "../../db/app.js";

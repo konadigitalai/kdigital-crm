@@ -37,10 +37,8 @@ export const PERMISSIONS = [
   "integrations.read",
   "integrations.manage",
 
-  "whatsapp.read",
-  "whatsapp.send",
-  "whatsapp.broadcast",
-  "whatsapp.manage",
+  "messaging.read",
+  "messaging.send",
 ] as const;
 
 export type Permission = (typeof PERMISSIONS)[number];
@@ -185,14 +183,12 @@ export const MODULE_CATALOG: ModuleAccess[] = [
     ],
   },
   {
-    key: "whatsapp",
-    label: "WhatsApp",
-    description: "Inbox, send messages, broadcasts, and Meta config.",
+    key: "messaging",
+    label: "Messaging (SMS / WhatsApp)",
+    description: "Inbox + send SMS/WhatsApp to leads via Twilio.",
     levels: [
-      { key: "read",      label: "Read",      permission: "whatsapp.read" },
-      { key: "send",      label: "Send",      permission: "whatsapp.send" },
-      { key: "broadcast", label: "Broadcast", permission: "whatsapp.broadcast" },
-      { key: "manage",    label: "Manage",    permission: "whatsapp.manage" },
+      { key: "read", label: "Read", permission: "messaging.read" },
+      { key: "send", label: "Send", permission: "messaging.send" },
     ],
   },
 ];
@@ -213,7 +209,7 @@ const ADVISOR_PERMS: Permission[] = [
   "events.manage.self",
   "leaves.read.self",
   "reports.read",
-  "whatsapp.read", "whatsapp.send",
+  "messaging.read", "messaging.send",
 ];
 
 const SUPPORT_PERMS: Permission[] = [
@@ -221,7 +217,7 @@ const SUPPORT_PERMS: Permission[] = [
   "learners.read", "learners.write",
   "events.manage.self",
   "leaves.read.self",
-  "whatsapp.read", "whatsapp.send",
+  "messaging.read", "messaging.send",
 ];
 
 const TRAINER_PERMS: Permission[] = [
@@ -285,7 +281,7 @@ export const SYSTEM_GROUPS: Array<{ name: string; description: string; permissio
       "reports.read",
       "leaves.read.self",
       "events.manage.self",
-      "whatsapp.read", "whatsapp.send",
+      "messaging.read", "messaging.send",
     ],
   },
   {

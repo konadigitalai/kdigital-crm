@@ -18,6 +18,11 @@
     "db:backup-catalog": "tsx src/db/backup-catalog.ts",
     "db:cleanup-fake-users": "tsx src/db/cleanup-fake-users.ts",
     "db:export-prod-catalog": "tsx src/db/export-prod-catalog.ts",
+    "db:import-leads-xlsx": "tsx src/db/import-leads-xlsx.ts",
+    "db:backfill-imported-phones": "tsx src/db/backfill-imported-phones.ts",
+    "db:twilio-peek": "tsx src/db/_twilio-peek.ts",
+    "db:twilio-cleanup-junk": "tsx src/db/_twilio-cleanup-junk.ts",
+    "db:twilio-raw-peek": "tsx src/db/_twilio-raw-peek.ts",
     "drizzle:generate": "drizzle-kit generate"
   },
   "dependencies": {

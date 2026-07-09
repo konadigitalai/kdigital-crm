@@ -10,6 +10,7 @@ import { ConvertButton } from "@/components/record/ConvertDialog";
 import { DeleteLeadButton } from "@/components/record/DeleteLeadButton";
 import { EditLeadButton, type LeadEditable } from "@/components/record/EditLeadDialog";
 import { ShareToSlackButton } from "@/components/share/ShareToSlackButton";
+import { SendMessageButton } from "@/components/record/SendMessageButton";
 import { TimelineTabs } from "@/components/record/TimelineTabs";
 import { AgentActions } from "@/components/record/AgentActions";
 import { ApprovalCard } from "@/components/record/ApprovalCard";
@@ -71,6 +72,7 @@ export default async function RecordPage({
   const canConvert     = !isConverted && (me?.permissions.includes("leads.write") ?? false);
   const canRunAgents   = !isConverted && (me?.permissions.includes("agents.run")  ?? false);
   const canDecideApproval = me?.permissions.includes("agents.run")  ?? false;
+  const canSendMessage    = me?.permissions.includes("messaging.send") ?? false;
   const sourceKey = (lead as { leadSource?: string | null }).leadSource ?? null;
   const advisorId = (lead as { advisorId?: string | null }).advisorId ?? null;
 
@@ -212,6 +214,12 @@ export default async function RecordPage({
               {!isConverted && (
                 <ShareToSlackButton surface="leads" recordId={lead.number} />
               )}
+              {!isConverted && canSendMessage && (
+                <SendMessageButton
+                  leadNumber={lead.number}
+                  leadPhone={composeE164(attrs.phoneCountryCode ?? null, attrs.phone ?? null)}
+                />
+              )}
               {!isConverted && canDeleteLead && (
                 <DeleteLeadButton leadNumber={lead.number} leadName={lead.name} />
               )}
@@ -249,7 +257,13 @@ export default async function RecordPage({
           )}
 
           {/* Timeline / Emails / Notes — interactive tabs */}
-          <TimelineTabs leadNumber={lead.number} timeline={data.timeline} />
+          <TimelineTabs
+            leadNumber={lead.number}
+            timeline={data.timeline}
+            partyId={lead.partyId}
+            hasPhone={!!composeE164(attrs.phoneCountryCode ?? null, attrs.phone ?? null)}
+            canSendMessage={canSendMessage}
+          />
         </div>
 
         {/* ASIDE */}
@@ -571,4 +585,16 @@ function DetailRow({ label, children }: { label: string; children: React.ReactNo
       <span className="min-w-0 text-right">{children}</span>
     </div>
   );
+}
+
+// Build a bare-E.164 phone string from the split (countryCode, number) that
+// the record page exposes. Returns null when either half is missing so the
+// SendMessageButton renders disabled with an explanatory tooltip.
+function composeE164(cc: string | null, phone: string | null): string | null {
+  const c = (cc ?? "").trim();
+  const p = (phone ?? "").replace(/\D/g, "");
+  if (!p) return null;
+  if (!c) return `+${p}`;
+  const ccDigits = c.replace(/\D/g, "");
+  return ccDigits ? `+${ccDigits}${p}` : `+${p}`;
 }

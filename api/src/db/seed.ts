@@ -595,7 +595,7 @@ async function main() {
     // NOTE: we intentionally do NOT write party_external_id here — L.source is
     // a category enum ('web','instagram_ad',…), not a per-party external ID.
     // Real external IDs (Instagram lead id, Razorpay customer id) come from
-    // the runtime routes (see leads.ts / whatsapp inbox).
+    // the runtime routes (see leads.ts / intake webhooks).
     if (email) {
       await db.insert(contactPoint).values({
         tenantId, partyId: partyRow!.id, kind: "email",
@@ -732,8 +732,8 @@ async function main() {
       ($1, 'Fuzzy name + same city',   'fuzzy_name_city',   '{"pg_trgm_threshold":0.7}'::jsonb, 50)
   `, [tenantId]);
 
-  // ── Phase 4: consent rows for a handful of leads so the WhatsApp
-  // broadcast UI has something to work with out of the box.
+  // ── Phase 4: consent rows for a handful of leads so channel-consent
+  // enforcement has representative data.
   console.log("→ consent rows…");
   const seededPartyIds = Object.values(leadByNumber).map((v) => v.partyId);
   // Mark 3 leads opt-in for WhatsApp, 1 opt-out, rest unknown (blocked

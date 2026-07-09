@@ -1101,225 +1101,75 @@ export async function setAgentMode(key: string, mode: AgentMode): Promise<void> 
   await send<void>("PATCH", `/agents/${encodeURIComponent(key)}`, { mode });
 }
 
-// ── WhatsApp ────────────────────────────────────────────────────────────
+// ── Twilio messaging (SMS + WhatsApp) ──────────────────────────────────
 
 import type {
-  WaAutomationAction, WaAutomationListItem, WaAutomationRunItem, WaAutomationTrigger,
-  WaBroadcastDetail, WaBroadcastListItem,
-  WaConfig, WaConversationDetail, WaConversationListItem,
-  WaConversationStatus, WaTag, WaTemplate,
+  TwChannel, TwConversationDetail, TwConversationListItem,
 } from "./types";
 
-export async function getWaConfig(): Promise<WaConfig> {
-  return await get<WaConfig>("/whatsapp/config");
+export interface TwConversationFilter {
+  channel?:  TwChannel;
+  assignee?: "me" | "unassigned" | string;
+  q?:        string;
+  limit?:    number;
 }
 
-export async function saveWaConfig(input: {
-  credentials: {
-    phone_number_id: string;
-    waba_id: string;
-    app_id: string;
-    app_secret: string;
-    system_user_token: string;
-    webhook_verify_token: string;
-  };
-}): Promise<{ ok: boolean; status: "connected" | "disconnected"; verify: { ok: boolean; httpStatus: number; data?: unknown; error?: string } }> {
-  return await post("/whatsapp/config", input);
-}
-
-export async function deleteWaConfig(): Promise<void> {
-  await send<void>("DELETE", "/whatsapp/config");
-}
-
-export async function verifyWaConnection(): Promise<{ ok: boolean; httpStatus: number; data?: unknown; error?: string }> {
-  return await post("/whatsapp/config/verify", {});
-}
-
-export async function registerWaPhone(pin: string): Promise<{ ok: boolean; httpStatus: number; error?: string }> {
-  return await post("/whatsapp/config/register", { pin });
-}
-
-export async function subscribeWaWaba(): Promise<{ ok: boolean; httpStatus: number; error?: string }> {
-  return await post("/whatsapp/config/subscribe", {});
-}
-
-export async function getWaTemplates(): Promise<WaTemplate[]> {
-  const { templates } = await get<{ templates: WaTemplate[] }>("/whatsapp/templates");
-  return templates;
-}
-
-export async function syncWaTemplates(): Promise<{ ok: boolean; inserted: number; updated: number; total: number }> {
-  return await post("/whatsapp/templates/sync", {});
-}
-
-export async function getWaTags(): Promise<WaTag[]> {
-  const { tags } = await get<{ tags: WaTag[] }>("/whatsapp/tags");
-  return tags;
-}
-
-export async function createWaTag(input: { name: string; color: string }): Promise<WaTag> {
-  const { tag } = await post<{ tag: WaTag }>("/whatsapp/tags", input);
-  return tag;
-}
-
-export async function deleteWaTag(id: string): Promise<void> {
-  await send<void>("DELETE", `/whatsapp/tags/${encodeURIComponent(id)}`);
-}
-
-export interface WaConversationFilter {
-  status?: "all" | WaConversationStatus;
-  assignee?: "me" | "unassigned" | string;       // userId
-  q?: string;
-  limit?: number;
-}
-
-export async function getWaConversations(filter: WaConversationFilter = {}): Promise<WaConversationListItem[]> {
+export async function getTwConversations(
+  filter: TwConversationFilter = {},
+): Promise<TwConversationListItem[]> {
   const qs = new URLSearchParams();
-  if (filter.status)   qs.set("status", filter.status);
+  if (filter.channel)  qs.set("channel",  filter.channel);
   if (filter.assignee) qs.set("assignee", filter.assignee);
-  if (filter.q)        qs.set("q", filter.q);
-  if (filter.limit)    qs.set("limit", String(filter.limit));
-  const path = qs.toString() ? `/whatsapp/conversations?${qs}` : "/whatsapp/conversations";
-  const { conversations } = await get<{ conversations: WaConversationListItem[] }>(path);
+  if (filter.q)        qs.set("q",        filter.q);
+  if (filter.limit)    qs.set("limit",    String(filter.limit));
+  const path = qs.toString() ? `/twilio/conversations?${qs}` : "/twilio/conversations";
+  const { conversations } = await get<{ conversations: TwConversationListItem[] }>(path);
   return conversations;
 }
 
-export async function getWaConversation(id: string): Promise<WaConversationDetail> {
-  return await get<WaConversationDetail>(`/whatsapp/conversations/${encodeURIComponent(id)}`);
+export async function getTwConversation(id: string): Promise<TwConversationDetail> {
+  return await get<TwConversationDetail>(`/twilio/conversations/${encodeURIComponent(id)}`);
 }
 
-export async function sendWaMessage(
+export interface SendTwilioResult {
+  ok: boolean;
+  messageId: string;
+  providerMessageId: string | null;
+  errorCode: string | null;
+  errorMessage: string | null;
+}
+
+/**
+ * Send a message directly from the lead record. `to` may be either an E.164
+ * phone (+91...) or a lead number ("LEAD-9865"). Backend resolves.
+ */
+export async function sendTwMessageToLead(input: {
+  channel: TwChannel;
+  to: string;
+  body: string;
+}): Promise<SendTwilioResult & { conversationId?: string }> {
+  return await post("/twilio/send", input);
+}
+
+/** Send within an existing thread. Channel is inferred from the thread. */
+export async function sendTwMessageInThread(
   conversationId: string,
-  body: { body?: string; templateId?: string; variables?: Record<string, string> },
-): Promise<{ ok: boolean; messageId: string; providerMessageId?: string | null; error?: string; httpStatus?: number }> {
-  try {
-    return await post(
-      `/whatsapp/conversations/${encodeURIComponent(conversationId)}/messages`,
-      body,
-    );
-  } catch (err) {
-    if (err instanceof ApiError) {
-      const b = err.body as { error?: string; messageId?: string; httpStatus?: number } | undefined;
-      return {
-        ok: false,
-        messageId: b?.messageId ?? "",
-        error: b?.error ?? err.message,
-        httpStatus: b?.httpStatus ?? err.status,
-      };
-    }
-    throw err;
-  }
-}
-
-export async function assignWaConversation(id: string, userId: string | null): Promise<void> {
-  await post<void>(`/whatsapp/conversations/${encodeURIComponent(id)}/assign`, { userId });
-}
-
-export async function setWaConversationStatus(id: string, status: WaConversationStatus): Promise<void> {
-  await post<void>(`/whatsapp/conversations/${encodeURIComponent(id)}/status`, { status });
-}
-
-export async function markWaConversationRead(id: string): Promise<void> {
-  await post<void>(`/whatsapp/conversations/${encodeURIComponent(id)}/read`, {});
-}
-
-export async function tagWaConversation(id: string, tagId: string): Promise<void> {
-  await post<void>(`/whatsapp/conversations/${encodeURIComponent(id)}/tag`, { tagId });
-}
-
-export async function untagWaConversation(id: string, tagId: string): Promise<void> {
-  await send<void>("DELETE", `/whatsapp/conversations/${encodeURIComponent(id)}/tag/${encodeURIComponent(tagId)}`);
-}
-
-export async function promoteWaConversationToLead(id: string): Promise<{ ok: boolean; number: string; alreadyLead: boolean }> {
-  return await post(`/whatsapp/conversations/${encodeURIComponent(id)}/promote-to-lead`, {});
-}
-
-// ─── Broadcasts ─────────────────────────────────────────────────────────
-
-export async function getWaBroadcasts(): Promise<WaBroadcastListItem[]> {
-  const { broadcasts } = await get<{ broadcasts: WaBroadcastListItem[] }>("/whatsapp/broadcasts");
-  return broadcasts;
-}
-
-export async function getWaBroadcast(id: string): Promise<WaBroadcastDetail> {
-  return await get<WaBroadcastDetail>(`/whatsapp/broadcasts/${encodeURIComponent(id)}`);
-}
-
-export async function createWaBroadcast(input: {
-  name: string;
-  templateId: string;
-  defaultVariables?: Record<string, string>;
-  scheduledAt?: string | null;
-}): Promise<{ id: string }> {
-  return await post("/whatsapp/broadcasts", input);
-}
-
-export async function addWaBroadcastRecipients(
-  id: string,
-  input: { partyIds?: string[]; entries?: { phone: string; variables?: Record<string, string> }[] },
-): Promise<{ ok: boolean; added: number }> {
-  return await post(`/whatsapp/broadcasts/${encodeURIComponent(id)}/recipients`, input);
-}
-
-export async function removeWaBroadcastRecipient(id: string, recipientId: string): Promise<void> {
-  await send<void>(
-    "DELETE",
-    `/whatsapp/broadcasts/${encodeURIComponent(id)}/recipients/${encodeURIComponent(recipientId)}`,
+  body: string,
+): Promise<SendTwilioResult> {
+  return await post(
+    `/twilio/conversations/${encodeURIComponent(conversationId)}/messages`,
+    { body },
   );
 }
 
-export async function sendWaBroadcast(id: string): Promise<{ ok: boolean }> {
-  return await post(`/whatsapp/broadcasts/${encodeURIComponent(id)}/send`, {});
+export async function markTwConversationRead(id: string): Promise<void> {
+  await post<void>(`/twilio/conversations/${encodeURIComponent(id)}/read`, {});
 }
 
-export async function cancelWaBroadcast(id: string): Promise<{ ok: boolean }> {
-  return await post(`/whatsapp/broadcasts/${encodeURIComponent(id)}/cancel`, {});
+export async function assignTwConversation(id: string, userId: string | null): Promise<void> {
+  await post<void>(`/twilio/conversations/${encodeURIComponent(id)}/assign`, { userId });
 }
 
-export async function deleteWaBroadcast(id: string): Promise<void> {
-  await send<void>("DELETE", `/whatsapp/broadcasts/${encodeURIComponent(id)}`);
-}
-
-// ─── Automations ────────────────────────────────────────────────────────
-
-export async function getWaAutomations(): Promise<WaAutomationListItem[]> {
-  const { automations } = await get<{ automations: WaAutomationListItem[] }>("/whatsapp/automations");
-  return automations;
-}
-
-export async function getWaAutomation(id: string): Promise<WaAutomationListItem> {
-  const { automation } = await get<{ automation: WaAutomationListItem }>(`/whatsapp/automations/${encodeURIComponent(id)}`);
-  return automation;
-}
-
-export interface WaAutomationInput {
-  name: string;
-  description?: string | null;
-  trigger: WaAutomationTrigger;
-  actions: WaAutomationAction[];
-  enabled?: boolean;
-}
-
-export async function createWaAutomation(input: WaAutomationInput): Promise<{ id: string }> {
-  return await post("/whatsapp/automations", input);
-}
-
-export async function updateWaAutomation(id: string, input: WaAutomationInput): Promise<{ ok: boolean }> {
-  return await send("PATCH", `/whatsapp/automations/${encodeURIComponent(id)}`, input);
-}
-
-export async function setWaAutomationEnabled(id: string, enabled: boolean): Promise<{ ok: boolean; enabled: boolean }> {
-  return await send("PATCH", `/whatsapp/automations/${encodeURIComponent(id)}/enabled`, { enabled });
-}
-
-export async function deleteWaAutomation(id: string): Promise<void> {
-  await send<void>("DELETE", `/whatsapp/automations/${encodeURIComponent(id)}`);
-}
-
-export async function getWaAutomationRuns(id: string, limit = 50): Promise<WaAutomationRunItem[]> {
-  const { runs } = await get<{ runs: WaAutomationRunItem[] }>(
-    `/whatsapp/automations/${encodeURIComponent(id)}/runs?limit=${limit}`,
-  );
-  return runs;
+export async function promoteTwConversationToLead(id: string): Promise<{ ok: boolean; number: string; alreadyLead: boolean }> {
+  return await post(`/twilio/conversations/${encodeURIComponent(id)}/promote-to-lead`, {});
 }

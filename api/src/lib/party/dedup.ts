@@ -57,13 +57,6 @@ const REPARENT_MAP: Array<{ table: string; column: string }> = [
   { table: "saved_view",               column: "owner_id" },
   { table: "support_case",             column: "created_by_id" },
   { table: "support_case",             column: "party_id" },
-  { table: "wa_automation",            column: "created_by" },
-  { table: "wa_automation_run",        column: "party_id" },
-  { table: "wa_broadcast",             column: "created_by" },
-  { table: "wa_broadcast_recipient",   column: "party_id" },
-  { table: "wa_conversation",          column: "assigned_user_id" },
-  { table: "wa_conversation",          column: "party_id" },
-  { table: "wa_message",               column: "sender_user_id" },
   { table: "work_item",                column: "assignee_id" },
   { table: "work_item",                column: "party_id" },
 ];
@@ -385,41 +378,6 @@ export async function mergeParties(
   `);
   reparented["party_external_id_deleted_dupes"] = extCollide.rows.length;
 
-  // wa_conversation — unique (tenant_id, party_id). If both have a
-  // conversation, keep the winner's and delete the loser's (its messages
-  // reparent through wa_message.conversation_id → the winner's convo? No —
-  // conversations aren't merged by us here; if both exist, delete the
-  // loser's conversation entirely. Rare in practice — WhatsApp inbox path
-  // does find-by-phone first, so both parties usually don't have one.
-  await db.execute(sql`
-    DELETE FROM wa_conversation l
-    WHERE l.party_id = ${loserId}
-      AND EXISTS (SELECT 1 FROM wa_conversation w WHERE w.party_id = ${winnerId})
-  `);
-
-  // wa_party_tag — pk on (party_id, tag_id). Delete loser rows that would
-  // collide.
-  await db.execute(sql`
-    DELETE FROM wa_party_tag l
-    WHERE l.party_id = ${loserId}
-      AND EXISTS (SELECT 1 FROM wa_party_tag w
-                  WHERE w.party_id = ${winnerId} AND w.tag_id = l.tag_id)
-  `);
-  const tagR = await db.execute(sql`
-    UPDATE wa_party_tag SET party_id = ${winnerId}
-    WHERE party_id = ${loserId} RETURNING party_id
-  `);
-  reparented["wa_party_tag"] = tagR.rows.length;
-
-  // wa_broadcast_recipient — partial unique (broadcast_id, party_id)
-  // WHERE party_id IS NOT NULL. Delete loser rows that would collide.
-  await db.execute(sql`
-    DELETE FROM wa_broadcast_recipient l
-    WHERE l.party_id = ${loserId}
-      AND EXISTS (SELECT 1 FROM wa_broadcast_recipient w
-                  WHERE w.party_id = ${winnerId} AND w.broadcast_id = l.broadcast_id)
-  `);
-
   // course_assignment / batch_assignment — each has UNIQUE (party_id, course_id/cohort_id).
   await db.execute(sql`
     DELETE FROM course_assignment l
@@ -459,7 +417,6 @@ export async function mergeParties(
     "party_affiliation.org_party_id",
     "party_consent.party_id",
     "party_external_id.party_id",
-    "wa_party_tag.party_id",
   ]);
   for (const { table, column } of REPARENT_MAP) {
     const key = `${table}.${column}`;

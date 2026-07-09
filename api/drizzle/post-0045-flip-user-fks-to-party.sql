@@ -274,65 +274,79 @@ DO $$ BEGIN
 END $$;
 
 -- 14. wa_conversation.assigned_user_id (nullable, ON DELETE SET NULL, partial index)
+-- Guarded so this migration replays cleanly on a fresh DB after
+-- post-0065-drop-whatsapp.sql has removed the wa_* tables.
 DO $$ BEGIN
-  IF NOT _pm_col_targets('wa_conversation','assigned_user_id','party') THEN
-    ALTER TABLE wa_conversation ADD COLUMN IF NOT EXISTS assigned_user_id_new uuid;
-    UPDATE wa_conversation t SET assigned_user_id_new = u.party_id
-      FROM app_user u WHERE t.assigned_user_id = u.id AND t.assigned_user_id_new IS NULL;
-    ALTER TABLE wa_conversation ADD CONSTRAINT wa_conversation_assigned_party_fk
-      FOREIGN KEY (assigned_user_id_new) REFERENCES party(id) ON DELETE SET NULL;
-    ALTER TABLE wa_conversation DROP CONSTRAINT IF EXISTS wa_conversation_assigned_fk;
-    DROP INDEX IF EXISTS wa_conversation_assignee_idx;
-    ALTER TABLE wa_conversation DROP COLUMN assigned_user_id;
-    ALTER TABLE wa_conversation RENAME COLUMN assigned_user_id_new TO assigned_user_id;
-    ALTER TABLE wa_conversation RENAME CONSTRAINT wa_conversation_assigned_party_fk TO wa_conversation_assigned_fk;
-    CREATE INDEX wa_conversation_assignee_idx ON wa_conversation (tenant_id, assigned_user_id, status)
-      WHERE assigned_user_id IS NOT NULL;
+  IF EXISTS (SELECT 1 FROM information_schema.tables
+             WHERE table_schema = current_schema() AND table_name = 'wa_conversation') THEN
+    IF NOT _pm_col_targets('wa_conversation','assigned_user_id','party') THEN
+      ALTER TABLE wa_conversation ADD COLUMN IF NOT EXISTS assigned_user_id_new uuid;
+      UPDATE wa_conversation t SET assigned_user_id_new = u.party_id
+        FROM app_user u WHERE t.assigned_user_id = u.id AND t.assigned_user_id_new IS NULL;
+      ALTER TABLE wa_conversation ADD CONSTRAINT wa_conversation_assigned_party_fk
+        FOREIGN KEY (assigned_user_id_new) REFERENCES party(id) ON DELETE SET NULL;
+      ALTER TABLE wa_conversation DROP CONSTRAINT IF EXISTS wa_conversation_assigned_fk;
+      DROP INDEX IF EXISTS wa_conversation_assignee_idx;
+      ALTER TABLE wa_conversation DROP COLUMN assigned_user_id;
+      ALTER TABLE wa_conversation RENAME COLUMN assigned_user_id_new TO assigned_user_id;
+      ALTER TABLE wa_conversation RENAME CONSTRAINT wa_conversation_assigned_party_fk TO wa_conversation_assigned_fk;
+      CREATE INDEX wa_conversation_assignee_idx ON wa_conversation (tenant_id, assigned_user_id, status)
+        WHERE assigned_user_id IS NOT NULL;
+    END IF;
   END IF;
 END $$;
 
 -- 15. wa_message.sender_user_id (nullable, ON DELETE SET NULL)
 DO $$ BEGIN
-  IF NOT _pm_col_targets('wa_message','sender_user_id','party') THEN
-    ALTER TABLE wa_message ADD COLUMN IF NOT EXISTS sender_user_id_new uuid;
-    UPDATE wa_message t SET sender_user_id_new = u.party_id
-      FROM app_user u WHERE t.sender_user_id = u.id AND t.sender_user_id_new IS NULL;
-    ALTER TABLE wa_message ADD CONSTRAINT wa_message_sender_user_party_fk
-      FOREIGN KEY (sender_user_id_new) REFERENCES party(id) ON DELETE SET NULL;
-    ALTER TABLE wa_message DROP CONSTRAINT IF EXISTS wa_message_sender_user_fk;
-    ALTER TABLE wa_message DROP COLUMN sender_user_id;
-    ALTER TABLE wa_message RENAME COLUMN sender_user_id_new TO sender_user_id;
-    ALTER TABLE wa_message RENAME CONSTRAINT wa_message_sender_user_party_fk TO wa_message_sender_user_fk;
+  IF EXISTS (SELECT 1 FROM information_schema.tables
+             WHERE table_schema = current_schema() AND table_name = 'wa_message') THEN
+    IF NOT _pm_col_targets('wa_message','sender_user_id','party') THEN
+      ALTER TABLE wa_message ADD COLUMN IF NOT EXISTS sender_user_id_new uuid;
+      UPDATE wa_message t SET sender_user_id_new = u.party_id
+        FROM app_user u WHERE t.sender_user_id = u.id AND t.sender_user_id_new IS NULL;
+      ALTER TABLE wa_message ADD CONSTRAINT wa_message_sender_user_party_fk
+        FOREIGN KEY (sender_user_id_new) REFERENCES party(id) ON DELETE SET NULL;
+      ALTER TABLE wa_message DROP CONSTRAINT IF EXISTS wa_message_sender_user_fk;
+      ALTER TABLE wa_message DROP COLUMN sender_user_id;
+      ALTER TABLE wa_message RENAME COLUMN sender_user_id_new TO sender_user_id;
+      ALTER TABLE wa_message RENAME CONSTRAINT wa_message_sender_user_party_fk TO wa_message_sender_user_fk;
+    END IF;
   END IF;
 END $$;
 
 -- 16. wa_broadcast.created_by (nullable, ON DELETE SET NULL)
 DO $$ BEGIN
-  IF NOT _pm_col_targets('wa_broadcast','created_by','party') THEN
-    ALTER TABLE wa_broadcast ADD COLUMN IF NOT EXISTS created_by_new uuid;
-    UPDATE wa_broadcast t SET created_by_new = u.party_id
-      FROM app_user u WHERE t.created_by = u.id AND t.created_by_new IS NULL;
-    ALTER TABLE wa_broadcast ADD CONSTRAINT wa_broadcast_creator_party_fk
-      FOREIGN KEY (created_by_new) REFERENCES party(id) ON DELETE SET NULL;
-    ALTER TABLE wa_broadcast DROP CONSTRAINT IF EXISTS wa_broadcast_creator_fk;
-    ALTER TABLE wa_broadcast DROP COLUMN created_by;
-    ALTER TABLE wa_broadcast RENAME COLUMN created_by_new TO created_by;
-    ALTER TABLE wa_broadcast RENAME CONSTRAINT wa_broadcast_creator_party_fk TO wa_broadcast_creator_fk;
+  IF EXISTS (SELECT 1 FROM information_schema.tables
+             WHERE table_schema = current_schema() AND table_name = 'wa_broadcast') THEN
+    IF NOT _pm_col_targets('wa_broadcast','created_by','party') THEN
+      ALTER TABLE wa_broadcast ADD COLUMN IF NOT EXISTS created_by_new uuid;
+      UPDATE wa_broadcast t SET created_by_new = u.party_id
+        FROM app_user u WHERE t.created_by = u.id AND t.created_by_new IS NULL;
+      ALTER TABLE wa_broadcast ADD CONSTRAINT wa_broadcast_creator_party_fk
+        FOREIGN KEY (created_by_new) REFERENCES party(id) ON DELETE SET NULL;
+      ALTER TABLE wa_broadcast DROP CONSTRAINT IF EXISTS wa_broadcast_creator_fk;
+      ALTER TABLE wa_broadcast DROP COLUMN created_by;
+      ALTER TABLE wa_broadcast RENAME COLUMN created_by_new TO created_by;
+      ALTER TABLE wa_broadcast RENAME CONSTRAINT wa_broadcast_creator_party_fk TO wa_broadcast_creator_fk;
+    END IF;
   END IF;
 END $$;
 
 -- 17. wa_automation.created_by (nullable, ON DELETE SET NULL)
 DO $$ BEGIN
-  IF NOT _pm_col_targets('wa_automation','created_by','party') THEN
-    ALTER TABLE wa_automation ADD COLUMN IF NOT EXISTS created_by_new uuid;
-    UPDATE wa_automation t SET created_by_new = u.party_id
-      FROM app_user u WHERE t.created_by = u.id AND t.created_by_new IS NULL;
-    ALTER TABLE wa_automation ADD CONSTRAINT wa_automation_creator_party_fk
-      FOREIGN KEY (created_by_new) REFERENCES party(id) ON DELETE SET NULL;
-    ALTER TABLE wa_automation DROP CONSTRAINT IF EXISTS wa_automation_creator_fk;
-    ALTER TABLE wa_automation DROP COLUMN created_by;
-    ALTER TABLE wa_automation RENAME COLUMN created_by_new TO created_by;
-    ALTER TABLE wa_automation RENAME CONSTRAINT wa_automation_creator_party_fk TO wa_automation_creator_fk;
+  IF EXISTS (SELECT 1 FROM information_schema.tables
+             WHERE table_schema = current_schema() AND table_name = 'wa_automation') THEN
+    IF NOT _pm_col_targets('wa_automation','created_by','party') THEN
+      ALTER TABLE wa_automation ADD COLUMN IF NOT EXISTS created_by_new uuid;
+      UPDATE wa_automation t SET created_by_new = u.party_id
+        FROM app_user u WHERE t.created_by = u.id AND t.created_by_new IS NULL;
+      ALTER TABLE wa_automation ADD CONSTRAINT wa_automation_creator_party_fk
+        FOREIGN KEY (created_by_new) REFERENCES party(id) ON DELETE SET NULL;
+      ALTER TABLE wa_automation DROP CONSTRAINT IF EXISTS wa_automation_creator_fk;
+      ALTER TABLE wa_automation DROP COLUMN created_by;
+      ALTER TABLE wa_automation RENAME COLUMN created_by_new TO created_by;
+      ALTER TABLE wa_automation RENAME CONSTRAINT wa_automation_creator_party_fk TO wa_automation_creator_fk;
+    END IF;
   END IF;
 END $$;
 

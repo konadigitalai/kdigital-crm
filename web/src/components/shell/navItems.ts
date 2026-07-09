@@ -3,10 +3,10 @@
 // drift out of sync. Permission gates apply identically — anything that's
 // hidden from one panel is hidden from the other.
 //
-// Admin / configuration entries (users, groups, programs, integrations,
-// WhatsApp broadcasts/automations, etc.) live behind a single Settings
-// link. /settings is a hub page that lists the sections the user has
-// access to. Keeps the sidebar lean as the surface grows.
+// Admin / configuration entries (users, groups, programs, integrations)
+// live behind a single Settings link. /settings is a hub page that lists
+// the sections the user has access to. Keeps the sidebar lean as the
+// surface grows.
 
 import type { IconName } from "@/components/ui/Icon";
 import type { SummaryResponse } from "@/lib/types";
@@ -38,7 +38,6 @@ export const SETTINGS_ANY_PERMISSIONS = [
   "admin.courses.manage",
   "admin.batches.manage",
   "integrations.read",
-  "whatsapp.read",
   "leads.delete",
 ];
 
@@ -47,9 +46,7 @@ export function buildNavItems(summary: SummaryResponse): NavItem[] {
   const leadBadge = summary.overall.total ? String(summary.overall.total) : undefined;
   return [
     { href: "/",                          icon: "home",            label: "Agent Home" },
-    // Inbox is hidden for now — WhatsApp conversations module is still WIP.
-    // Re-enable by uncommenting once the inbox UX is finalized.
-    // { href: "/inbox",                     icon: "message-square",  label: "Inbox",                          requires: "whatsapp.read" },
+    { href: "/inbox",                     icon: "message-square",  label: "Inbox",                          requires: "messaging.read" },
     { href: "/leads",                     icon: "user-plus",       label: "Leads",       badge: leadBadge, requires: "leads.read" },
     { href: "/learners",                  icon: "graduation-cap",  label: "Learners",                       requires: "learners.read" },
     { href: "/cases",                     icon: "life-ring",       label: "Cases",       badge: caseBadge, requires: "cases.read" },
@@ -78,7 +75,7 @@ export function filterNavItems(items: NavItem[], user: CurrentUser | null): NavI
 // Rule: exactly one nav item lights up at a time. Items with their own
 // dedicated entry (Batches → /admin/cohorts, Calendar → /calendar, etc.)
 // always win over the generic Settings catch-all, even though their paths
-// happen to live under /admin or /whatsapp.
+// happen to live under /admin.
 //
 // The dedicated-entry exception list below MUST stay in sync with the
 // `href` values that appear in buildNavItems().
@@ -98,19 +95,17 @@ export function isActive(pathname: string, href: string): boolean {
   if (href === "/leads") return pathname.startsWith("/leads") || pathname.startsWith("/records");
   if (href === "/learners") return pathname.startsWith("/learners");
   if (href === "/cases") return pathname.startsWith("/cases");
-  // Settings is the catch-all for admin + WhatsApp config. But it must NOT
-  // light up when the user is on a path that has its own dedicated nav
-  // entry — e.g. /admin/cohorts (Batches) is also under /admin, but we
-  // want only Batches to highlight, not Settings.
+  // Settings is the catch-all for admin config. But it must NOT light up
+  // when the user is on a path that has its own dedicated nav entry —
+  // e.g. /admin/cohorts (Batches) is also under /admin, but we want only
+  // Batches to highlight, not Settings.
   if (href === "/settings") {
     const onDedicated = DEDICATED_HREFS.some(
       (h) => h !== "/settings" && (pathname === h || pathname.startsWith(`${h}/`)),
     );
     if (onDedicated) return false;
     return pathname.startsWith("/settings")
-        || pathname.startsWith("/admin")
-        || pathname.startsWith("/whatsapp/broadcasts")
-        || pathname.startsWith("/whatsapp/automations");
+        || pathname.startsWith("/admin");
   }
   // For every other entry, use strict prefix-with-boundary so /admin/cohorts
   // doesn't accidentally match /admin or vice versa.

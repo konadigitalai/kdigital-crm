@@ -1,6 +1,8 @@
 // Settings hub. Lists every admin / configuration section the current
 // user has access to. Items are grouped (Workspace, Operations, Channels,
 // Data) so it scales as we add more.
+
+
 //
 // Each card links to its existing page (URLs unchanged from the previous
 // flat sidebar). When a user has zero permissions for any section, we
@@ -20,7 +22,7 @@ interface SettingsCard {
   /** Permission gate. Card is hidden if the user lacks this permission. */
   requires: string;
   /** Section the card belongs to in the page layout. */
-  section: "Workspace" | "Operations" | "Channels" | "WhatsApp" | "Data";
+  section: "Workspace" | "Operations" | "Channels" | "Data";
   /** When true, render as an external link (opens new tab). Used for the
    *  Auth0 dashboard card. */
   external?: boolean;
@@ -61,17 +63,6 @@ const ALL_CARDS: SettingsCard[] = [
   { section: "Channels", href: "/admin/integrations/slack",    icon: "globe",          title: "Slack",
     blurb: "Automated rules + manual share targets.",
     requires: "integrations.read" },
-  { section: "Channels", href: "/admin/integrations/whatsapp", icon: "message-square", title: "WhatsApp",
-    blurb: "Connection, templates, tags, and recent deliveries.",
-    requires: "whatsapp.read" },
-
-  // WhatsApp ops — daily-use surfaces, but config-adjacent enough to belong here
-  { section: "WhatsApp", href: "/whatsapp/broadcasts",  icon: "send",  title: "Broadcasts",
-    blurb: "Send approved templates to many recipients at once.",
-    requires: "whatsapp.read" },
-  { section: "WhatsApp", href: "/whatsapp/automations", icon: "spark", title: "Automations",
-    blurb: "Run actions automatically on WhatsApp events.",
-    requires: "whatsapp.read" },
 
   // Data — destructive / archival
   { section: "Data", href: "/admin/leads/deleted", icon: "inbox", title: "Deleted leads",
@@ -79,7 +70,7 @@ const ALL_CARDS: SettingsCard[] = [
     requires: "leads.delete" },
 ];
 
-const SECTION_ORDER: SettingsCard["section"][] = ["Workspace", "Operations", "Channels", "WhatsApp", "Data"];
+const SECTION_ORDER: SettingsCard["section"][] = ["Workspace", "Operations", "Channels", "Data"];
 
 export default async function SettingsPage() {
   const me = await getCurrentUser();
@@ -102,7 +93,7 @@ export default async function SettingsPage() {
         <div className="mb-[22px]">
           <h1 className="font-serif text-[40px] font-normal leading-none tracking-[-.01em]">Settings</h1>
           <p className="mt-2 max-w-[720px] text-[13.5px] text-mute">
-            Workspace administration, operational data, channel integrations, and broadcast/automation tools.
+            Workspace administration, operational data, and channel integrations.
             Only sections you have permission for are listed.
           </p>
         </div>

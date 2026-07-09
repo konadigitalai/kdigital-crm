@@ -34,27 +34,30 @@ import { integrationsRouter } from "./routes/integrations.js";
 import { shareRouter } from "./routes/share.js";
 import { shareSlackUserRouter } from "./routes/share-slack-user.js";
 import { slackOAuthRouter, slackOAuthCallbackRouter } from "./routes/slack-oauth.js";
-import { whatsappRouter } from "./routes/whatsapp.js";
-import { whatsappWebhookRouter } from "./routes/whatsapp-webhook.js";
 import { partiesRouter } from "./routes/parties.js";
 import { partyConsentRouter } from "./routes/party-consent.js";
-import { startBroadcastWorker } from "./lib/whatsapp/broadcasts.js";
+import { twilioRouter } from "./routes/twilio.js";
+import { twilioWebhookRouter } from "./routes/twilio-webhook.js";
 import { startDedupWorker } from "./lib/party/dedup-worker.js";
 import { ensureCheckpointerSetup } from "./agents/runtime.js";
 
 const app = express();
 
-// Mount the WhatsApp webhook FIRST with raw-body parsing — Meta signs the
-// raw bytes with HMAC-SHA256, so any re-stringified JSON would break
-// signature verification. We can't use the app-wide express.json() before
-// this, hence the per-route ordering.
-//
-// CORS doesn't apply to webhook (Meta isn't a browser). So this mount
-// runs against a bare app — fine for one route, weird if it grew.
+// Twilio's inbound webhook posts application/x-www-form-urlencoded, and its
+// X-Twilio-Signature is HMAC-SHA1 over the URL + sorted form params. We mount
+// its parser BEFORE the global express.json so the request body ends up in
+// req.body as a parsed object AND the raw buffer is available on req.rawBody
+// for signature verification (belt-and-braces — we canonicalize from req.body
+// in the verify path).
 app.use(
-  "/webhooks/whatsapp",
-  express.raw({ type: "application/json", limit: "1mb" }),
-  whatsappWebhookRouter,
+  "/webhooks/twilio",
+  express.urlencoded({
+    extended: false,
+    verify: (req, _res, buf) => {
+      (req as unknown as { rawBody: Buffer }).rawBody = buf;
+    },
+  }),
+  twilioWebhookRouter,
 );
 
 // 6 MB gives us headroom for base64-encoded receipt images (3 MB source →
@@ -188,15 +191,16 @@ app.use("/integrations", readWrite("integrations.read", "integrations.manage"), 
 app.use("/share-slack", shareSlackUserRouter);
 // Manual "Share to Slack" — gated per-handler by the surface's read perm.
 app.use("/share", shareRouter);
-// WhatsApp — config in Phase 1; conversations/messages/broadcasts in
-// Phase 2+. Permission gates are enforced per-handler inside the router.
-app.use("/whatsapp", whatsappRouter);
 
 // Phase 4 Party Model — dedup + consent endpoints. Gated per-handler
 // (admin-only for merge/scan). Consent PUT is any-authenticated for now;
 // tighten via a dedicated permission later if needed.
 app.use("/parties", partiesRouter);
 app.use("/party",   partyConsentRouter);
+
+// Twilio SMS/WhatsApp — inbox reads + outbound send. Per-handler perms
+// (messaging.read / messaging.send / leads.write for promote-to-lead).
+app.use("/twilio", twilioRouter);
 
 // JSON error envelope
 app.use((err: Error, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
@@ -207,7 +211,6 @@ app.use((err: Error, _req: express.Request, res: express.Response, _next: expres
 const port = Number(process.env.PORT ?? 4000);
 app.listen(port, async () => {
   console.log(`api listening on http://localhost:${port}`);
-  startBroadcastWorker();
   startDedupWorker();
   // Idempotent: creates the LangGraph checkpoint tables on first boot.
   try {

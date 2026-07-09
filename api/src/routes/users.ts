@@ -2,10 +2,10 @@
 // deactivate / reset-password have all moved to Auth0 (manage at
 // https://manage.auth0.com → User Management → Users).
 //
-// GET /users is preserved because in-app pickers — case assignee, WhatsApp
-// automation targeting, inbox triage — still need the list of provisioned
-// users. Rows are populated by JIT provisioning inside the Auth0-backed
-// authMiddleware as people log in.
+// GET /users is preserved because in-app pickers — case assignee, inbox
+// triage — still need the list of provisioned users. Rows are populated
+// by JIT provisioning inside the Auth0-backed authMiddleware as people
+// log in.
 
 import { Router } from "express";
 import { sql } from "drizzle-orm";

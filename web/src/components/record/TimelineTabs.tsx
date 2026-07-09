@@ -6,11 +6,13 @@ import { Icon } from "@/components/ui/Icon";
 import { cn } from "@/lib/cn";
 import { addLeadNote, updateLeadNote } from "@/lib/api";
 import type { TimelineRow } from "@/lib/types";
+import { MessagesTab } from "./MessagesTab";
 
-type Tab = "timeline" | "emails" | "notes";
+type Tab = "notes" | "messages" | "timeline" | "emails";
 
 const TABS: { key: Tab; label: string }[] = [
   { key: "notes",    label: "Notes" },
+  { key: "messages", label: "Messages" },
   { key: "timeline", label: "Timeline" },
   { key: "emails",   label: "Emails" },
 ];
@@ -80,11 +82,19 @@ function TimeLabel({ iso, className }: { iso: string | null | undefined; classNa
 }
 
 export function TimelineTabs({
-  leadNumber, timeline,
+  leadNumber, timeline, partyId, hasPhone = false, canSendMessage = false,
 }: {
   leadNumber: string;
   timeline: TimelineRow[];
+  /** Lead's party id — used by the Messages tab to fetch/send Twilio threads. */
+  partyId?: string;
+  /** Hide the Messages tab when the lead has no phone (nowhere to send to). */
+  hasPhone?: boolean;
+  /** From current user's `messaging.send` — gates the reply box. */
+  canSendMessage?: boolean;
 }) {
+  const showMessages = hasPhone && !!partyId;
+  const visibleTabs = TABS.filter((t) => t.key !== "messages" || showMessages);
   const [tab, setTab] = useState<Tab>("notes");
 
   // Filter rows by tab.
@@ -94,10 +104,11 @@ export function TimelineTabs({
   return (
     <>
       <div className="mb-5 flex gap-1 border-b border-rule">
-        {TABS.map((t) => {
+        {visibleTabs.map((t) => {
           const count = t.key === "timeline" ? timeline.length
                       : t.key === "emails"   ? emails.length
-                      : notes.length;
+                      : t.key === "notes"    ? notes.length
+                      : 0;
           return (
             <button
               key={t.key}
@@ -116,6 +127,9 @@ export function TimelineTabs({
         })}
       </div>
 
+      {tab === "messages" && showMessages && partyId && (
+        <MessagesTab partyId={partyId} canSend={canSendMessage} />
+      )}
       {tab === "timeline" && <TimelineView rows={timeline} />}
       {tab === "emails"   && <EmailsView   rows={emails} />}
       {tab === "notes"    && <NotesView    rows={notes} leadNumber={leadNumber} />}

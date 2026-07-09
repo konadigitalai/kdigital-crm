@@ -1,352 +1,132 @@
 "use client";
 
-/**
- * Three-pane inbox.
- *
- *   ┌────────────────┬───────────────────────────┬────────────────────┐
- *   │ filters        │  active thread             │  contact pane      │
- *   │ + thread list  │  (messages + reply box)    │  (party + tags +   │
- *   │                │                            │   promote-to-lead) │
- *   └────────────────┴───────────────────────────┴────────────────────┘
- *
- * Owns: selected conversation, filter state, thread + tags fetched on
- * select, polling for fresh thread/list every 8s when window is focused.
- */
+// Unified inbox shell — 2-column layout: thread list on the left, thread
+// view on the right. Polls the thread list every 30s (paused when the tab
+// is hidden). Open thread polls every 10s inside <ThreadView>.
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import {
-  assignWaConversation, getWaConversation, getWaConversations,
-  markWaConversationRead, promoteWaConversationToLead, sendWaMessage,
-  setWaConversationStatus, tagWaConversation, untagWaConversation,
-} from "@/lib/api";
-import type {
-  AdminUser, CurrentUser, WaConversationDetail, WaConversationListItem,
-  WaConversationStatus, WaTag, WaTemplate,
-} from "@/lib/types";
-import { ThreadList } from "./ThreadList";
-import { ThreadView } from "./ThreadView";
-import { ReplyBox } from "./ReplyBox";
-import { ContactPane } from "./ContactPane";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Icon } from "@/components/ui/Icon";
+import { cn } from "@/lib/cn";
+import { getTwConversations } from "@/lib/api";
+import type { TwChannel, TwConversationListItem } from "@/lib/types";
+import { ThreadList, type ChannelFilter, type AssigneeFilter } from "./ThreadList";
+import { ThreadView } from "./ThreadView";
 
-const POLL_MS = 8000;
-
-type AssigneeFilter = "all" | "me" | "unassigned";
+const LIST_POLL_MS = 30_000;
 
 export function InboxShell({
   initialConversations,
-  tags,
-  templates,
-  users,
-  currentUser,
   canSend,
-  canManageTags,
-  configStatus,
+  canPromote,
 }: {
-  initialConversations: WaConversationListItem[];
-  tags: WaTag[];
-  templates: WaTemplate[];
-  users: AdminUser[];
-  currentUser: CurrentUser | null;
+  initialConversations: TwConversationListItem[];
   canSend: boolean;
-  canManageTags: boolean;
-  configStatus: "connected" | "disconnected";
+  canPromote: boolean;
 }) {
-  const [conversations, setConversations] = useState<WaConversationListItem[]>(initialConversations);
-  const [statusFilter,   setStatusFilter]   = useState<WaConversationStatus | "all">("open");
-  const [assigneeFilter, setAssigneeFilter] = useState<AssigneeFilter>("all");
-  const [search, setSearch] = useState("");
-  const [selectedId, setSelectedId] = useState<string | null>(initialConversations[0]?.id ?? null);
-  const [thread, setThread] = useState<WaConversationDetail | null>(null);
-  const [threadLoading, setThreadLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [threads, setThreads] = useState(initialConversations);
+  const [activeId, setActiveId] = useState<string | null>(initialConversations[0]?.id ?? null);
+  const [channel, setChannel] = useState<ChannelFilter>("all");
+  const [assignee, setAssignee] = useState<AssigneeFilter>("all");
+  const [q, setQ] = useState("");
 
-  // Polling needs the latest filter args; capturing them via refs avoids
-  // tearing them down/up on every state change.
-  const filterRef = useRef({ statusFilter, assigneeFilter, search });
-  useEffect(() => { filterRef.current = { statusFilter, assigneeFilter, search }; }, [statusFilter, assigneeFilter, search]);
+  const refresh = useCallback(async () => {
+    const filter: Parameters<typeof getTwConversations>[0] = {};
+    if (channel !== "all")  filter.channel  = channel as TwChannel;
+    if (assignee !== "all") filter.assignee = assignee;
+    if (q.trim())           filter.q        = q.trim();
+    const rows = await getTwConversations(filter).catch(() => null);
+    if (rows) setThreads(rows);
+  }, [channel, assignee, q]);
 
-  // ── Load list (initial filter change + poll) ───────────────────────────
-  const refreshList = useCallback(async () => {
-    try {
-      const f = filterRef.current;
-      const next = await getWaConversations({
-        status: f.statusFilter,
-        assignee: f.assigneeFilter === "all" ? undefined : f.assigneeFilter,
-        q: f.search || undefined,
-        limit: 100,
-      });
-      setConversations(next);
-    } catch (err) {
-      // Polling failures are silent — the existing list stays usable.
-      console.error(err);
-    }
-  }, []);
+  // Refresh whenever the filter changes.
+  useEffect(() => { void refresh(); }, [refresh]);
 
-  // Refetch on filter / search change (debounced).
+  // Poll every 30s, paused on hidden tab.
   useEffect(() => {
-    const t = setTimeout(refreshList, search ? 300 : 0);
-    return () => clearTimeout(t);
-  }, [statusFilter, assigneeFilter, search, refreshList]);
+    const t = setInterval(() => {
+      if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
+      void refresh();
+    }, LIST_POLL_MS);
+    return () => clearInterval(t);
+  }, [refresh]);
 
-  // Poll list every 8s when document visible.
-  useEffect(() => {
-    let id: ReturnType<typeof setInterval> | null = null;
-    const start = () => { if (!id) id = setInterval(refreshList, POLL_MS); };
-    const stop  = () => { if (id) { clearInterval(id); id = null; } };
-    const onVis = () => (document.hidden ? stop() : start());
-    onVis();
-    document.addEventListener("visibilitychange", onVis);
-    return () => { stop(); document.removeEventListener("visibilitychange", onVis); };
-  }, [refreshList]);
-
-  // ── Load thread when selection changes ─────────────────────────────────
-  const loadThread = useCallback(async (id: string) => {
-    setThreadLoading(true);
-    setError(null);
-    try {
-      const t = await getWaConversation(id);
-      setThread(t);
-      // Eagerly mark read so the unread badge clears for the user; the
-      // server-side update happens in the background.
-      if ((t.conversation.unreadCount ?? 0) > 0) {
-        markWaConversationRead(id).catch(() => undefined);
-        setConversations((all) => all.map((c) => c.id === id ? { ...c, unreadCount: 0 } : c));
-      }
-    } catch (err) {
-      setError((err as Error).message);
-      setThread(null);
-    } finally {
-      setThreadLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    if (!selectedId) { setThread(null); return; }
-    loadThread(selectedId);
-  }, [selectedId, loadThread]);
-
-  // Poll thread every 8s when focused.
-  useEffect(() => {
-    if (!selectedId) return;
-    let id: ReturnType<typeof setInterval> | null = null;
-    const start = () => { if (!id) id = setInterval(() => loadThread(selectedId), POLL_MS); };
-    const stop  = () => { if (id) { clearInterval(id); id = null; } };
-    const onVis = () => (document.hidden ? stop() : start());
-    onVis();
-    document.addEventListener("visibilitychange", onVis);
-    return () => { stop(); document.removeEventListener("visibilitychange", onVis); };
-  }, [selectedId, loadThread]);
-
-  // ── Mutations ──────────────────────────────────────────────────────────
-
-  async function onSend(input: { body?: string; templateId?: string; variables?: Record<string, string> }) {
-    if (!selectedId) return;
-    setError(null);
-    const r = await sendWaMessage(selectedId, input);
-    if (!r.ok) {
-      setError(r.error ?? "Send failed.");
-      return false;
-    }
-    // Refresh thread + list so the new message appears.
-    await Promise.all([loadThread(selectedId), refreshList()]);
-    return true;
-  }
-
-  async function onAssign(userId: string | null) {
-    if (!selectedId) return;
-    await assignWaConversation(selectedId, userId);
-    await Promise.all([loadThread(selectedId), refreshList()]);
-  }
-
-  async function onChangeStatus(status: WaConversationStatus) {
-    if (!selectedId) return;
-    await setWaConversationStatus(selectedId, status);
-    await Promise.all([loadThread(selectedId), refreshList()]);
-  }
-
-  async function onAddTag(tagId: string) {
-    if (!selectedId) return;
-    await tagWaConversation(selectedId, tagId);
-    await loadThread(selectedId);
-  }
-
-  async function onRemoveTag(tagId: string) {
-    if (!selectedId) return;
-    await untagWaConversation(selectedId, tagId);
-    await loadThread(selectedId);
-  }
-
-  async function onPromoteToLead(): Promise<{ ok: boolean; number: string; alreadyLead: boolean } | null> {
-    if (!selectedId) return null;
-    try {
-      const r = await promoteWaConversationToLead(selectedId);
-      // Refresh so the new lead number shows up in the contact pane.
-      await Promise.all([loadThread(selectedId), refreshList()]);
-      return r;
-    } catch (err) {
-      setError((err as Error).message);
-      return null;
-    }
-  }
-
-  // ── Sendable users for assign menu ─────────────────────────────────────
-  // Filter to active users. Without users.manage, users[] is empty and
-  // we degrade to "assign to me" / "unassign" only.
-  const sendableUsers = useMemo(
-    () => users.filter((u) => u.active),
-    [users],
+  const activeThread = useMemo(
+    () => threads.find((t) => t.id === activeId) ?? null,
+    [threads, activeId],
   );
 
-  // Banner when WhatsApp isn't configured at all.
-  if (configStatus !== "connected") {
-    return (
-      <div className="px-9 pb-[60px] pt-7">
-        <div className="flex items-start gap-4 rounded-2xl border border-state-amber/40 bg-state-amber/5 p-6">
-          <span className="grid h-12 w-12 flex-shrink-0 place-items-center rounded-xl bg-state-amber/15 text-state-amber">
-            <Icon name="info" size={20} strokeWidth={1.8} />
-          </span>
-          <div>
-            <h2 className="font-serif text-[22px] tracking-[-.005em]">WhatsApp not configured</h2>
-            <p className="mt-1.5 text-[13.5px] text-mute">
-              An admin needs to paste Meta WhatsApp Cloud API credentials and complete the verify / register / subscribe flow before the inbox can receive messages.
-            </p>
-            <p className="mt-1 text-[12.5px] text-mute">
-              Admin → Integrations → WhatsApp.
-            </p>
-          </div>
-        </div>
-      </div>
-    );
-  }
-
   return (
-    <div
-      className="grid h-[calc(100vh-49px)] overflow-hidden"
-      style={{ gridTemplateColumns: "320px minmax(0, 1fr) 320px" }}
-    >
-      {/* LEFT — filters + thread list */}
-      <aside className="flex h-full min-h-0 flex-col border-r border-rule bg-paper">
-        <div className="flex flex-shrink-0 flex-col gap-2 border-b border-rule px-4 py-3">
-          <div className="flex gap-1.5">
-            {(["open", "pending", "closed", "all"] as const).map((s) => (
-              <button
-                key={s}
-                type="button"
-                onClick={() => setStatusFilter(s)}
-                className={
-                  "rounded-md border px-2.5 py-1 text-[11.5px] font-semibold capitalize transition " +
-                  (statusFilter === s
-                    ? "border-brand-violet bg-brand-violet/10 text-brand-violet"
-                    : "border-rule bg-paper text-mute hover:border-rule2 hover:text-ink")
-                }
-              >
-                {s}
-              </button>
-            ))}
+    <div className="grid h-[calc(100vh-140px)] grid-cols-[360px_1fr] gap-4">
+      <div className="flex flex-col overflow-hidden rounded-2xl border border-rule bg-paper">
+        <div className="border-b border-rule p-3">
+          <div className="mb-2 flex items-center gap-2 rounded-[10px] border border-rule bg-warm/40 px-2.5 py-1.5">
+            <Icon name="search" size={12} strokeWidth={2} className="text-mute" />
+            <input
+              value={q}
+              onChange={(e) => setQ(e.target.value)}
+              placeholder="Search name, phone, message…"
+              className="min-w-0 flex-1 bg-transparent text-[12.5px] text-ink placeholder:text-hint outline-none"
+            />
           </div>
-          <div className="flex gap-1.5">
-            {(
-              [
-                { v: "all", label: "All" },
-                { v: "me", label: "Mine" },
-                { v: "unassigned", label: "Unassigned" },
-              ] as Array<{ v: AssigneeFilter; label: string }>
-            ).map((opt) => (
-              <button
-                key={opt.v}
-                type="button"
-                onClick={() => setAssigneeFilter(opt.v)}
-                className={
-                  "rounded-md border px-2.5 py-1 text-[11.5px] font-semibold transition " +
-                  (assigneeFilter === opt.v
-                    ? "border-brand-violet bg-brand-violet/10 text-brand-violet"
-                    : "border-rule bg-paper text-mute hover:border-rule2 hover:text-ink")
-                }
-              >
-                {opt.label}
-              </button>
-            ))}
+          <div className="flex flex-wrap gap-1">
+            <FilterChip active={channel === "all"}      onClick={() => setChannel("all")}     >All</FilterChip>
+            <FilterChip active={channel === "sms"}      onClick={() => setChannel("sms")}     >SMS</FilterChip>
+            <FilterChip active={channel === "whatsapp"} onClick={() => setChannel("whatsapp")}>WhatsApp</FilterChip>
+            <span className="mx-1 w-px self-stretch bg-rule" />
+            <FilterChip active={assignee === "all"}        onClick={() => setAssignee("all")}       >Any owner</FilterChip>
+            <FilterChip active={assignee === "me"}         onClick={() => setAssignee("me")}        >Mine</FilterChip>
+            <FilterChip active={assignee === "unassigned"} onClick={() => setAssignee("unassigned")}>Unassigned</FilterChip>
           </div>
-          <input
-            type="search"
-            placeholder="Search name, phone, message…"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            className="rounded-md border border-rule bg-paper px-3 py-1.5 text-[13px] text-ink placeholder:text-hint focus:border-brand-violet focus:outline-none focus:ring-2 focus:ring-brand-violet/20"
-          />
         </div>
         <ThreadList
-          conversations={conversations}
-          selectedId={selectedId}
-          onSelect={setSelectedId}
-          currentUserId={currentUser?.id ?? null}
+          threads={threads}
+          activeId={activeId}
+          onSelect={setActiveId}
         />
-      </aside>
+      </div>
 
-      {/* CENTER — thread view + reply box */}
-      <main className="flex h-full min-h-0 flex-col bg-warm/30">
-        {error && (
-          <div className="flex-shrink-0 border-b border-state-warn/40 bg-state-warn/10 px-4 py-2 text-[12.5px] text-state-warn">
-            {error}
-            <button onClick={() => setError(null)} className="ml-3 text-mute hover:text-ink" aria-label="Dismiss">×</button>
-          </div>
-        )}
-        {!selectedId ? (
-          <EmptySelected />
-        ) : threadLoading && !thread ? (
-          <div className="flex flex-1 items-center justify-center text-[13px] text-mute">Loading…</div>
-        ) : thread ? (
-          <>
-            <ThreadView thread={thread} />
-            <div className="flex-shrink-0 border-t border-rule bg-paper">
-              <ReplyBox
-                conversation={thread.conversation}
-                templates={templates}
-                canSend={canSend}
-                onSend={onSend}
-              />
-            </div>
-          </>
-        ) : (
-          <div className="flex flex-1 items-center justify-center text-[13px] text-mute">Couldn&apos;t load thread.</div>
-        )}
-      </main>
-
-      {/* RIGHT — contact pane */}
-      <aside className="flex h-full min-h-0 flex-col overflow-y-auto border-l border-rule bg-paper">
-        {thread ? (
-          <ContactPane
-            thread={thread}
-            allTags={tags}
-            users={sendableUsers}
-            currentUser={currentUser}
+      <div className="overflow-hidden rounded-2xl border border-rule bg-paper">
+        {activeThread ? (
+          <ThreadView
+            threadId={activeThread.id}
+            summary={activeThread}
             canSend={canSend}
-            canManageTags={canManageTags}
-            onAssign={onAssign}
-            onChangeStatus={onChangeStatus}
-            onAddTag={onAddTag}
-            onRemoveTag={onRemoveTag}
-            onPromoteToLead={onPromoteToLead}
+            canPromote={canPromote}
+            onRefreshList={refresh}
           />
         ) : (
-          <div className="p-6 text-[13px] text-mute">Pick a conversation to see contact details.</div>
+          <div className="flex h-full items-center justify-center p-10 text-center text-[13px] text-mute">
+            <div>
+              <Icon name="message-square" size={28} strokeWidth={1.5} className="mx-auto mb-3 text-hint" />
+              <div className="font-serif text-[20px] text-ink">No thread selected</div>
+              <div className="mt-1 text-[12.5px]">Pick a conversation from the list, or wait for a new message to arrive.</div>
+            </div>
+          </div>
         )}
-      </aside>
+      </div>
     </div>
   );
 }
 
-function EmptySelected() {
+function FilterChip({
+  active, onClick, children,
+}: {
+  active: boolean;
+  onClick: () => void;
+  children: React.ReactNode;
+}) {
   return (
-    <div className="flex flex-1 flex-col items-center justify-center gap-3 text-center">
-      <div className="grid h-14 w-14 place-items-center rounded-2xl bg-warm2 text-mute">
-        <Icon name="inbox" size={26} strokeWidth={1.6} />
-      </div>
-      <div>
-        <div className="text-[14px] font-semibold text-ink">No conversation selected</div>
-        <div className="mt-1 text-[12.5px] text-mute">Pick a thread on the left to read it here.</div>
-      </div>
-    </div>
+    <button
+      type="button"
+      onClick={onClick}
+      className={cn(
+        "rounded-full border px-2.5 py-1 text-[11px] font-semibold transition",
+        active
+          ? "border-brand-violet bg-brand-violet/10 text-brand-violet"
+          : "border-rule bg-paper text-ink2 hover:border-rule2",
+      )}
+    >
+      {children}
+    </button>
   );
 }
