@@ -23,6 +23,7 @@
     "db:twilio-peek": "tsx src/db/_twilio-peek.ts",
     "db:twilio-cleanup-junk": "tsx src/db/_twilio-cleanup-junk.ts",
     "db:twilio-raw-peek": "tsx src/db/_twilio-raw-peek.ts",
+    "db:twilio-preflight": "tsx src/db/_twilio-preflight.ts",
     "drizzle:generate": "drizzle-kit generate"
   },
   "dependencies": {
