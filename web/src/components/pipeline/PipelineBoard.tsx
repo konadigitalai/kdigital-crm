@@ -18,6 +18,7 @@ import {
   PipelineListView,
   PIPELINE_LIST_COLUMNS,
   PIPELINE_LIST_DEFAULT_COLUMNS,
+  LEAD_STATUS_OPTIONS,
 } from "./PipelineListView";
 import { DEFAULT_VIEW_ID, ViewTabs } from "./ViewTabs";
 
@@ -28,21 +29,32 @@ const DRAG_MIME = "application/x-decrm-lead";
 // The "Group by" axis selector is applied to Kanban + Chart only. Rating is
 // the default and the only axis where drag-drop is allowed (since dragging
 // across columns writes lead.rating). Other axes are read-only buckets.
-type GroupBy = "rating" | "program" | "advisor" | "source";
+type GroupBy = "rating" | "status" | "program" | "advisor" | "source";
 
 const GROUP_BY_OPTIONS: { value: GroupBy; label: string }[] = [
   { value: "rating",  label: "Rating" },
+  { value: "status",  label: "Status" },
   { value: "program", label: "Program" },
   { value: "advisor", label: "Advisor" },
   { value: "source",  label: "Source" },
 ];
 
+const LEAD_STATUS_LABEL: Record<string, string> = Object.fromEntries(
+  LEAD_STATUS_OPTIONS.map((o) => [o.value, o.label]),
+);
+
 function groupKey(l: Lead, by: GroupBy): string {
   if (by === "rating")  return l.rating;
+  if (by === "status")  return l.leadStatus || "—";
   if (by === "program") return l.program || "—";
   if (by === "advisor") return l.advisorName || "—";
   if (by === "source")  return l.sourceLabel || l.source || "—";
   return "—";
+}
+
+function groupLabel(by: GroupBy, key: string): string {
+  if (by === "status") return key === "—" ? "No status" : (LEAD_STATUS_LABEL[key] ?? key);
+  return key;
 }
 
 // ─── helpers ──────────────────────────────────────────────────────────────
@@ -91,14 +103,19 @@ const RATING_OPTIONS = LEAD_RATINGS.map((r) => ({ value: r, label: ratingStyles[
 function unique<T>(xs: T[]): T[] { return [...new Set(xs.filter(Boolean))]; }
 
 function buildFields(allLeads: Lead[]): FilterField[] {
-  const programs = unique(allLeads.map((l) => l.program));
-  const cities   = unique(allLeads.map((l) => l.city));
+  const programs = unique(allLeads.map((l) => l.program).filter((x): x is string => !!x));
+  const cities   = unique(allLeads.map((l) => l.city).filter((x): x is string => !!x));
+  const advisors = unique(allLeads.map((l) => l.advisorName).filter((x): x is string => !!x));
+  const sources  = unique(allLeads.map((l) => l.sourceLabel ?? l.source).filter((x): x is string => !!x));
   return [
     { key: "name",       label: "Name",        type: "text",   get: (l: Lead) => l.name },
     { key: "number",     label: "Lead #",      type: "text",   get: (l: Lead) => l.number },
     { key: "program",    label: "Program",     type: "enum",   options: programs.map((p) => ({ value: p, label: p })), get: (l: Lead) => l.program },
     { key: "city",       label: "City",        type: "enum",   options: cities.map((c) => ({ value: c, label: c })),   get: (l: Lead) => l.city },
+    { key: "advisor",    label: "Advisor",     type: "enum",   options: advisors.map((a) => ({ value: a, label: a })), get: (l: Lead) => l.advisorName },
+    { key: "source",     label: "Source",      type: "enum",   options: sources.map((s) => ({ value: s, label: s })),  get: (l: Lead) => l.sourceLabel ?? l.source },
     { key: "rating",     label: "Rating",      type: "enum",   options: RATING_OPTIONS,                                get: (l: Lead) => l.rating },
+    { key: "leadStatus", label: "Lead status", type: "enum",   options: LEAD_STATUS_OPTIONS.map((o) => ({ value: o.value, label: o.label })), get: (l: Lead) => l.leadStatus },
     { key: "score",      label: "Score",       type: "number", get: (l: Lead) => l.score },
     { key: "nbaLabel",   label: "Next action", type: "text",   get: (l: Lead) => l.nbaLabel },
     { key: "nextFollowupAt", label: "Next follow-up", type: "date", get: (l: Lead) => l.nextFollowupAt },
@@ -164,18 +181,34 @@ function makeColumns(
     }));
   }
 
-  // Build the bucket list from filteredAll so empty buckets disappear when a
-  // filter excludes them — but the column header still reflects the unfiltered
-  // membership count if the user has a filter active.
-  const seenKeys = unique(filteredAll.map((l) => groupKey(l, groupBy)));
-  return seenKeys.sort((a, b) => a.localeCompare(b)).map((k) => {
+  // Build the bucket list. For "status" we show the full canonical set so
+  // every status is a visible column (mirroring how Rating shows all rating
+  // buckets even when empty). For other axes we synth from the data so we
+  // don't invent buckets that don't exist yet.
+  const canonical =
+    groupBy === "status" ? LEAD_STATUS_OPTIONS.map((o) => o.value) : [];
+  const seenKeys = unique(
+    [...canonical, ...filteredAll.map((l) => groupKey(l, groupBy))],
+  );
+  const sorted = groupBy === "status"
+    ? seenKeys.sort((a, b) => {
+        // Preserve LEAD_STATUS_OPTIONS order; unknown / "—" go last.
+        const ia = canonical.indexOf(a);
+        const ib = canonical.indexOf(b);
+        if (ia === -1 && ib === -1) return a.localeCompare(b);
+        if (ia === -1) return 1;
+        if (ib === -1) return -1;
+        return ia - ib;
+      })
+    : seenKeys.sort((a, b) => a.localeCompare(b));
+  return sorted.map((k) => {
     const inAll = filteredAll.filter((l) => groupKey(l, groupBy) === k);
     const inFiltered = filtered.filter((l) => groupKey(l, groupBy) === k);
     const sumNum = inFiltered.reduce((s, l) => s + parseINR(l.value), 0);
     const palette = paletteFor(k);
     return {
       key: k,
-      label: k,
+      label: groupLabel(groupBy, k),
       count: inAll.length,
       sum: fmtINR(sumNum),
       aiNote: null,
