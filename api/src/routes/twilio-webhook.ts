@@ -77,8 +77,12 @@ async function resolveDefaultTenantId(): Promise<string | null> {
 // ─── POST /webhooks/twilio ────────────────────────────────────────────────
 
 twilioWebhookRouter.post("/", async (req, res) => {
+  // TEMP DEBUG — remove once inbound is verified on hosted envs.
+  console.log(`[twilio-webhook] hit ip=${clientIp(req)} bodyKeys=${Object.keys(req.body ?? {}).join(",")}`);
+
   // 1) Rate limit BEFORE HMAC to keep DoS cheap.
   if (!rateLimit(clientIp(req))) {
+    console.warn(`[twilio-webhook] rate-limited ip=${clientIp(req)}`);
     return res.status(429).type("text/plain").send("rate limited");
   }
 
@@ -116,15 +120,18 @@ twilioWebhookRouter.post("/", async (req, res) => {
     return res.status(200).type("text/plain").send("");
   }
 
-  // Verbose debug tracing left commented — flip back on when diagnosing
-  // "message arrived at Twilio but not in CRM" mysteries.
-  // console.log(`[twilio-webhook] kind=${parsed.kind} sid=${(parsed as { providerMessageId?: string }).providerMessageId ?? "?"} from=${(parsed as { fromE164?: string }).fromE164 ?? "?"} body=${JSON.stringify((parsed as { body?: string }).body ?? null).slice(0, 80)}`);
+  // TEMP DEBUG — remove once inbound is verified on hosted envs.
+  console.log(`[twilio-webhook] parsed kind=${parsed.kind} sid=${(parsed as { providerMessageId?: string }).providerMessageId ?? "?"} from=${(parsed as { fromE164?: string }).fromE164 ?? "?"} body=${JSON.stringify((parsed as { body?: string }).body ?? null).slice(0, 80)}`);
   try {
     if (parsed.kind === "inbound") {
       await withTenant(tenantId, async (db) => {
+        console.log(`[twilio-webhook] → matchOrCreatePartyByPhone("${parsed.fromE164}")`);
         const lookup = await matchOrCreatePartyByPhone(db, parsed.fromE164);
+        console.log(`[twilio-webhook] ← party=${lookup.partyId} isNew=${lookup.isNew} lead=${lookup.leadNumber ?? "none"}`);
         const conv = await upsertConversation(db, lookup.partyId, parsed.channel, lookup.leadWorkItemId == null);
+        console.log(`[twilio-webhook] ← conversation=${conv.id}`);
         const inserted = await insertInboundMessage(db, conv.id, parsed);
+        console.log(`[twilio-webhook] ← inserted=${inserted ?? "(duplicate)"}`);
         if (!inserted) return; // duplicate — nothing more to do
         const sentinel = await resolveSentinelPartyId(db, tenantId);
         await insertActivityForMessage(db, {
@@ -137,16 +144,18 @@ twilioWebhookRouter.post("/", async (req, res) => {
           channel:    parsed.channel,
           body:       parsed.body,
         });
+        console.log(`[twilio-webhook] ← activity inserted, done.`);
       });
     } else {
       await withTenant(tenantId, async (db) => {
-        await applyStatusUpdate(db, parsed);
+        const applied = await applyStatusUpdate(db, parsed);
+        console.log(`[twilio-webhook] status update applied=${applied} sid=${parsed.providerMessageId} status=${parsed.status}`);
       });
     }
   } catch (err) {
     // Never 5xx to Twilio — they retry, we'd double-insert on the second try.
-    // Log loudly.
-    console.error("[twilio-webhook] handler error (swallowed):", (err as Error).message);
+    // Log loudly with full stack this time.
+    console.error("[twilio-webhook] handler error (swallowed):", err);
   }
   return res.status(200).type("text/plain").send("");
 });
