@@ -17,6 +17,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Icon } from "@/components/ui/Icon";
 import { cn } from "@/lib/cn";
 import {
+  addLeadNote,
   getSharePreview, getSlackAuthorizeUrl, getSlackDirectory,
   getSlackMyDirectory, getSlackMyStatus, getSlackWorkspaceStatus,
   shareToSlack,
@@ -422,6 +423,10 @@ function PreviewAndSend({
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [notes, setNotes] = useState("");
+  // Only offered on lead records — the Notes tab lives on lead pages, so
+  // mirroring the note there wouldn't make sense for learners/cases.
+  const alsoSaveApplicable = surface === "leads";
+  const [alsoSaveNote, setAlsoSaveNote] = useState(true);
   const [busy, setBusy] = useState(false);
   const [sendError, setSendError] = useState<string | null>(null);
 
@@ -438,8 +443,22 @@ function PreviewAndSend({
   async function onSend() {
     setBusy(true);
     setSendError(null);
+    const trimmedNote = notes.trim();
     try {
-      await shareToSlack(surface, recordId, notes.trim() || null, destination ?? undefined);
+      await shareToSlack(surface, recordId, trimmedNote || null, destination ?? undefined);
+      // Mirror the note into the lead's Notes tab if the user asked us to.
+      // A failure here shouldn't roll back the Slack post — Slack already
+      // succeeded — so we swallow the error and surface it inline.
+      if (alsoSaveApplicable && alsoSaveNote && trimmedNote) {
+        const destLabel = destination?.name ?? preview?.target.channel ?? "Slack";
+        const noteBody = `Shared to Slack (${destLabel}): ${trimmedNote}`;
+        try {
+          await addLeadNote(recordId, noteBody);
+        } catch (noteErr) {
+          setSendError(`Sent to Slack, but couldn't save the note: ${(noteErr as Error).message}`);
+          return;
+        }
+      }
       onDone(destination?.name ?? preview?.target.channel ?? "the channel");
     } catch (err) {
       setSendError((err as Error).message);
@@ -492,6 +511,21 @@ function PreviewAndSend({
               Notes appear at the bottom of the message, attributed to your name.
             </span>
           </label>
+
+          {alsoSaveApplicable && (
+            <label className="mb-4 flex cursor-pointer items-center gap-2 text-[12.5px] text-ink2">
+              <input
+                type="checkbox"
+                checked={alsoSaveNote}
+                onChange={(e) => setAlsoSaveNote(e.target.checked)}
+                disabled={!notes.trim()}
+                className="h-3.5 w-3.5 accent-brand-violet"
+              />
+              <span className={cn(!notes.trim() && "text-hint")}>
+                Also save to this lead&rsquo;s Notes
+              </span>
+            </label>
+          )}
 
           {sendError && (
             <div className="mb-3 rounded-lg border border-state-warn/30 bg-state-warn/10 px-3 py-2 text-[12.5px] text-state-warn">
