@@ -1,6 +1,17 @@
+import { fileURLToPath } from "node:url";
+import { dirname } from "node:path";
+
+// Pin the workspace root to THIS directory. Next.js's "detect the root by
+// walking up until a lockfile is found" heuristic misfires when a stray
+// package-lock.json exists in a parent (e.g. C:\Users\<name>\). The wrong
+// root produces a wrong module resolver, which then dies compiling
+// globals.css with a misleading "Can't resolve './...'" error.
+const __dirname = dirname(fileURLToPath(import.meta.url));
+
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   reactStrictMode: true,
+  outputFileTracingRoot: __dirname,
 
   // Browser-side requests go to /api/* on the same Vercel origin and Next.js
   // forwards them to the actual Express API on Render. This sidesteps the

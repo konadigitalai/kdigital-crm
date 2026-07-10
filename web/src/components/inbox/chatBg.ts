@@ -49,5 +49,5 @@ const SVG = `
   </g>
 </svg>`;
 
-/** Data-URL background suitable for Tailwind's arbitrary `bg-[url(...)]`. */
+/** Data-URL background suitable for Tailwind's arbitrary bg-url utility. */
 export const CHAT_BG_DATA_URL = `url("data:image/svg+xml;utf8,${encodeURIComponent(SVG.trim())}")`;
