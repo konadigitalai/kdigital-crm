@@ -11,6 +11,25 @@ export function humanBytes(n: number): string {
   return `${(n / (1024 * 1024 * 1024)).toFixed(2)} GB`;
 }
 
+// Kept in sync with api/src/lib/twilio/media.ts. WhatsApp Business API
+// only accepts a strict MIME allowlist — anything outside fails with 63005.
+const WHATSAPP_ALLOWED_MIMES = new Set<string>([
+  "image/jpeg", "image/png",
+  "video/mp4", "video/3gpp",
+  "audio/aac", "audio/mp4", "audio/amr", "audio/mpeg", "audio/ogg",
+  "application/pdf",
+  "application/msword",
+  "application/vnd.ms-excel",
+  "application/vnd.ms-powerpoint",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+  "text/plain",
+]);
+const SMS_ALLOWED_MIMES = new Set<string>([
+  "image/jpeg", "image/png", "image/gif",
+]);
+
 /** Mirror of api/src/lib/twilio/media.ts validateMediaForChannel — client-side
  *  copy so we can block the send before hitting the API. */
 export function validateMediaForChannel(
@@ -18,15 +37,20 @@ export function validateMediaForChannel(
   contentType: string,
   sizeBytes: number,
 ): { ok: true } | { ok: false; reason: string } {
+  const mime = (contentType ?? "").toLowerCase().split(";")[0]?.trim() ?? "";
+  const allowlist = channel === "whatsapp" ? WHATSAPP_ALLOWED_MIMES : SMS_ALLOWED_MIMES;
+  if (!allowlist.has(mime)) {
+    return {
+      ok: false,
+      reason: channel === "whatsapp"
+        ? `WhatsApp doesn't support ${mime || contentType} — convert to PDF or an image and try again.`
+        : `SMS/MMS only supports images (JPG/PNG/GIF). Try WhatsApp for other file types.`,
+    };
+  }
   const fam = familyFromMime(contentType);
   const cap = CAPS[channel][fam];
   if (!cap) {
-    return {
-      ok: false,
-      reason: channel === "sms"
-        ? `${contentType} is not supported over SMS/MMS. Try WhatsApp.`
-        : `${contentType} is not supported.`,
-    };
+    return { ok: false, reason: `${contentType} is not supported on ${channel}.` };
   }
   if (sizeBytes > cap.bytes) {
     return {
@@ -72,8 +96,6 @@ const CAPS: Record<TwChannel, Partial<Record<MimeFamily, { bytes: number; label:
     video:    { bytes: 16 * MB,  label: "16 MB" },
     audio:    { bytes: 16 * MB,  label: "16 MB" },
     document: { bytes: 100 * MB, label: "100 MB" },
-    archive:  { bytes: 100 * MB, label: "100 MB" },
-    other:    { bytes: 100 * MB, label: "100 MB" },
   },
   sms: {
     image:    { bytes: 5 * MB, label: "5 MB" },

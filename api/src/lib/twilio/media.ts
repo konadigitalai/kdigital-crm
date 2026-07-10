@@ -52,16 +52,15 @@ function familyFromMime(mime: string): MimeFamily {
 
 const MB = 1024 * 1024;
 
-// WhatsApp: 5MB image; 16MB audio/video/gif; 100MB doc.
-// SMS/MMS: 5MB image; other types varies by carrier — reject non-image.
+// WhatsApp: 5MB image; 16MB audio/video; 100MB doc.
+// SMS/MMS: 5MB image; other types unreliable by carrier — reject non-image.
 const CAPS: Record<TwChannel, Partial<Record<MimeFamily, MediaCap>>> = {
   whatsapp: {
     image:    { bytes: 5  * MB,  label: "5 MB" },
     video:    { bytes: 16 * MB,  label: "16 MB" },
     audio:    { bytes: 16 * MB,  label: "16 MB" },
     document: { bytes: 100 * MB, label: "100 MB" },
-    archive:  { bytes: 100 * MB, label: "100 MB" },
-    other:    { bytes: 100 * MB, label: "100 MB" },
+    // archive/other deliberately absent — WhatsApp rejects them.
   },
   sms: {
     image:    { bytes: 5 * MB, label: "5 MB" },
@@ -70,25 +69,58 @@ const CAPS: Record<TwChannel, Partial<Record<MimeFamily, MediaCap>>> = {
   },
 };
 
+// WhatsApp Business API accepts a strict MIME allowlist. Files outside this
+// list get error 63005 ("channel does not accept media of this type"). We
+// reject them before the send to give a clear error instead of a Twilio
+// failure surfaced hours later via the status callback.
+// Source: https://www.twilio.com/docs/whatsapp/faq
+const WHATSAPP_ALLOWED_MIMES = new Set<string>([
+  // Image
+  "image/jpeg", "image/png",
+  // Video
+  "video/mp4", "video/3gpp",
+  // Audio (Ogg must be opus-encoded; we don't sniff codec, best effort)
+  "audio/aac", "audio/mp4", "audio/amr", "audio/mpeg", "audio/ogg",
+  // Document
+  "application/pdf",
+  "application/msword",
+  "application/vnd.ms-excel",
+  "application/vnd.ms-powerpoint",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+  "text/plain",
+]);
+
+const SMS_ALLOWED_MIMES = new Set<string>([
+  "image/jpeg", "image/png", "image/gif",
+]);
+
 /**
- * Throws with a human message if the given asset can't be attached to the
- * given channel. Caller catches + returns a 400. Also called from the FE
- * (mirror function to avoid stale server round-trips).
+ * Reject a media asset that Twilio's target channel can't deliver. Two-layer
+ * check: (1) MIME allowlist per channel — anything not on the list will
+ * fail with 63005 downstream, so we reject early; (2) per-family size cap.
  */
 export function validateMediaForChannel(
   channel: TwChannel,
   contentType: string,
   sizeBytes: number,
 ): { ok: true } | { ok: false; reason: string } {
+  const mime = contentType.toLowerCase().split(";")[0]?.trim() ?? "";
+  const allowlist = channel === "whatsapp" ? WHATSAPP_ALLOWED_MIMES : SMS_ALLOWED_MIMES;
+  if (!allowlist.has(mime)) {
+    return {
+      ok: false,
+      reason: channel === "whatsapp"
+        ? `WhatsApp doesn't support ${mime || contentType} — convert to PDF or an image and try again.`
+        : `SMS/MMS only supports images (JPG/PNG/GIF). Try WhatsApp for other file types.`,
+    };
+  }
   const fam = familyFromMime(contentType);
   const cap = CAPS[channel][fam];
   if (!cap) {
-    return {
-      ok: false,
-      reason: channel === "sms"
-        ? `${contentType} is not supported over SMS/MMS. Try WhatsApp.`
-        : `${contentType} is not supported.`,
-    };
+    // Should not happen given the allowlist above, but defensive.
+    return { ok: false, reason: `${contentType} is not supported on ${channel}.` };
   }
   if (sizeBytes > cap.bytes) {
     return {
