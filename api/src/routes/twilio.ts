@@ -25,6 +25,19 @@ import {
   insertActivityForMessage,
 } from "../lib/twilio/inbox.js";
 import { validateMediaForChannel } from "../lib/twilio/media.js";
+import { signMediaFetchUrl } from "./media.js";
+
+// Public API base URL — used to build signed media-fetch URLs Twilio can
+// download. Derived from TWILIO_WEBHOOK_URL (already set + validated at
+// send time) so we don't need another env var. Example:
+//   TWILIO_WEBHOOK_URL=https://api-dev.example.com/webhooks/twilio
+//   → API base https://api-dev.example.com
+function apiBaseFromWebhook(webhookUrl: string): string {
+  try {
+    const u = new URL(webhookUrl);
+    return `${u.protocol}//${u.host}`;
+  } catch { return ""; }
+}
 
 export const twilioRouter = Router();
 
@@ -69,6 +82,10 @@ twilioRouter.post("/send", requirePermission("messaging.send"), async (req, res,
       const mediaUrls: string[] = [];
       const mediaMimes: string[] = [];
       if (mediaAssetIds.length) {
+        const apiBase = apiBaseFromWebhook(cfg.webhookUrl);
+        if (!apiBase) {
+          return { kind: "bad-media" as const, reason: "Server misconfigured — TWILIO_WEBHOOK_URL is not a valid URL, can't build media fetch URLs." };
+        }
         for (const assetId of mediaAssetIds) {
           const r = await db.execute(sql`
             SELECT id, filename, content_type AS "contentType", size_bytes AS "sizeBytes",
@@ -79,7 +96,7 @@ twilioRouter.post("/send", requirePermission("messaging.send"), async (req, res,
             LIMIT 1
           `);
           const asset = r.rows[0] as
-            | { contentType: string; sizeBytes: string | number; blobUrl: string;
+            | { id: string; contentType: string; sizeBytes: string | number; blobUrl: string;
                 isLibrary: boolean; uploadedBy: string | null; providerHosted: boolean }
             | undefined;
           if (!asset) return { kind: "bad-media" as const, reason: `Unknown media asset ${assetId}` };
@@ -89,7 +106,9 @@ twilioRouter.post("/send", requirePermission("messaging.send"), async (req, res,
           const size = typeof asset.sizeBytes === "string" ? Number(asset.sizeBytes) : asset.sizeBytes;
           const check = validateMediaForChannel(channel, asset.contentType, size);
           if (!check.ok) return { kind: "bad-media" as const, reason: check.reason };
-          mediaUrls.push(asset.blobUrl);
+          // Signed URL, not raw blob URL — Twilio will download via our
+          // proxy, which serves Content-Disposition with the clean filename.
+          mediaUrls.push(signMediaFetchUrl(asset.id, apiBase));
           mediaMimes.push(asset.contentType);
         }
       }
@@ -316,15 +335,19 @@ twilioRouter.post("/conversations/:id/messages", requirePermission("messaging.se
       const mediaUrls: string[] = [];
       const mediaMimes: string[] = [];
       if (mediaAssetIds.length) {
+        const apiBase = apiBaseFromWebhook(cfg.webhookUrl);
+        if (!apiBase) {
+          return { kind: "bad-media" as const, reason: "Server misconfigured — TWILIO_WEBHOOK_URL is not a valid URL, can't build media fetch URLs." };
+        }
         for (const assetId of mediaAssetIds) {
           const r = await db.execute(sql`
-            SELECT content_type AS "contentType", size_bytes AS "sizeBytes",
+            SELECT id, content_type AS "contentType", size_bytes AS "sizeBytes",
                    blob_url AS "blobUrl", is_library AS "isLibrary",
                    uploaded_by AS "uploadedBy"
             FROM media_asset WHERE id = ${assetId} AND deleted_at IS NULL LIMIT 1
           `);
           const asset = r.rows[0] as
-            | { contentType: string; sizeBytes: string | number; blobUrl: string; isLibrary: boolean; uploadedBy: string | null }
+            | { id: string; contentType: string; sizeBytes: string | number; blobUrl: string; isLibrary: boolean; uploadedBy: string | null }
             | undefined;
           if (!asset) return { kind: "bad-media" as const, reason: `Unknown media asset ${assetId}` };
           if (!asset.isLibrary && asset.uploadedBy !== actorPartyId) {
@@ -333,7 +356,7 @@ twilioRouter.post("/conversations/:id/messages", requirePermission("messaging.se
           const size = typeof asset.sizeBytes === "string" ? Number(asset.sizeBytes) : asset.sizeBytes;
           const check = validateMediaForChannel(conv.channel, asset.contentType, size);
           if (!check.ok) return { kind: "bad-media" as const, reason: check.reason };
-          mediaUrls.push(asset.blobUrl);
+          mediaUrls.push(signMediaFetchUrl(asset.id, apiBase));
           mediaMimes.push(asset.contentType);
         }
       }

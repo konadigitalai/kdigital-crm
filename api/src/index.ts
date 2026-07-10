@@ -38,7 +38,7 @@ import { partiesRouter } from "./routes/parties.js";
 import { partyConsentRouter } from "./routes/party-consent.js";
 import { twilioRouter } from "./routes/twilio.js";
 import { twilioWebhookRouter } from "./routes/twilio-webhook.js";
-import { mediaRouter } from "./routes/media.js";
+import { mediaRouter, mediaFetchRouter } from "./routes/media.js";
 import { startDedupWorker } from "./lib/party/dedup-worker.js";
 import { ensureCheckpointerSetup } from "./agents/runtime.js";
 
@@ -112,6 +112,11 @@ app.use("/leads/intake", intakeRouter);
 // cookies for the API on this hop; security comes from the signed
 // state param the API included when it sent them to Slack.
 app.use("/auth/slack", slackOAuthCallbackRouter);
+
+// Public signed-URL fetch for outbound Twilio media. Twilio has no JWT;
+// authentication is a short-lived HMAC in the querystring. Mounted BEFORE
+// authMiddleware for that reason.
+app.use("/media/fetch", mediaFetchRouter);
 
 // ── Authenticated ──────────────────────────────────────────────────────────
 // Auth is owned by Auth0 (see middleware/auth.ts — verifies the Bearer JWT

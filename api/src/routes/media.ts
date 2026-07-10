@@ -439,6 +439,98 @@ mediaRouter.get("/proxy/:id", requirePermission("media.read"), async (req, res, 
   } catch (err) { next(err); }
 });
 
+// ─── Public signed-fetch router (for Twilio outbound media) ──────────────
+//
+// Mounted at /media/fetch in index.ts BEFORE authMiddleware — Twilio has
+// no JWT. Auth is a short-lived HMAC signature over (assetId, expiry)
+// signed with TWILIO_AUTH_TOKEN (an existing shared secret). URLs stop
+// working after `exp`; default 15 minutes.
+//
+// Content-Disposition uses the user-facing filename so WhatsApp shows a
+// clean name (e.g. "Full-AI-Stack-Curriculum.pdf") instead of the internal
+// Blob pathname (which carries a random suffix for storage uniqueness).
+
+import { createHmac, timingSafeEqual as timingSafeEqualBuf } from "node:crypto";
+
+const SIGNED_URL_TTL_MS = 15 * 60 * 1000;
+
+export function signMediaFetchUrl(assetId: string, apiBaseUrl: string): string {
+  const secret = (process.env.TWILIO_AUTH_TOKEN ?? "").trim();
+  if (!secret) throw new Error("Cannot sign media URL — TWILIO_AUTH_TOKEN not set");
+  const exp = Date.now() + SIGNED_URL_TTL_MS;
+  const sig = createHmac("sha256", secret).update(`${assetId}|${exp}`).digest("hex");
+  return `${apiBaseUrl.replace(/\/$/, "")}/media/fetch/${encodeURIComponent(assetId)}?exp=${exp}&sig=${sig}`;
+}
+
+function verifyMediaFetchSig(assetId: string, exp: number, sig: string): boolean {
+  const secret = (process.env.TWILIO_AUTH_TOKEN ?? "").trim();
+  if (!secret) return false;
+  if (Number.isNaN(exp) || Date.now() > exp) return false;
+  const expected = createHmac("sha256", secret).update(`${assetId}|${exp}`).digest("hex");
+  const a = Buffer.from(sig, "utf8");
+  const b = Buffer.from(expected, "utf8");
+  if (a.length !== b.length) return false;
+  return timingSafeEqualBuf(a, b);
+}
+
+export const mediaFetchRouter = Router();
+
+mediaFetchRouter.get("/:id", async (req, res) => {
+  try {
+    const id = String(req.params.id);
+    const exp = Number(req.query.exp ?? 0);
+    const sig = String(req.query.sig ?? "");
+    if (!verifyMediaFetchSig(id, exp, sig)) {
+      return res.status(403).type("text/plain").send("forbidden");
+    }
+
+    // No tenant context (Twilio has no JWT). Signed URL is the auth. Use
+    // the raw admin pool but scoped to the asset id — cross-tenant asset
+    // access is prevented by the signature (attacker can't forge an ID
+    // for a different tenant's asset without our secret).
+    const { appPool } = await import("../db/app.js");
+    const q = await appPool.query<{
+      filename: string; contentType: string; blobUrl: string; providerHosted: boolean;
+    }>(
+      `SELECT filename, content_type AS "contentType",
+              blob_url AS "blobUrl",
+              provider_hosted AS "providerHosted"
+       FROM media_asset WHERE id = $1 AND deleted_at IS NULL LIMIT 1`,
+      [id],
+    );
+    const meta = q.rows[0];
+    if (!meta) return res.status(404).type("text/plain").send("not found");
+
+    const headers: Record<string, string> = {};
+    if (meta.providerHosted) {
+      try {
+        const cfg = readTwilioConfig();
+        const basic = Buffer.from(`${cfg.sid}:${cfg.token}`, "utf8").toString("base64");
+        headers.Authorization = `Basic ${basic}`;
+      } catch {
+        return res.status(502).type("text/plain").send("twilio not configured");
+      }
+    }
+
+    const upstream = await fetch(meta.blobUrl, { headers });
+    if (!upstream.ok || !upstream.body) {
+      return res.status(upstream.status || 502).type("text/plain").send("upstream fetch failed");
+    }
+    res.setHeader("Content-Type", upstream.headers.get("content-type") ?? meta.contentType);
+    res.setHeader("Cache-Control", "public, max-age=300");
+    // `attachment` (not `inline`) so WhatsApp treats it as a downloadable
+    // file with the given name. Quote the filename to be safe.
+    res.setHeader("Content-Disposition", `attachment; filename="${meta.filename.replace(/"/g, "")}"`);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const { Readable } = await import("node:stream");
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    Readable.fromWeb(upstream.body as any).pipe(res);
+  } catch (err) {
+    console.error("[media/fetch]", (err as Error).message);
+    if (!res.headersSent) res.status(500).type("text/plain").send("error");
+  }
+});
+
 // ─── helpers ─────────────────────────────────────────────────────────────
 
 /**
