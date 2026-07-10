@@ -1,9 +1,3 @@
-/* Google Fonts are loaded via a <link> tag in app/layout.tsx — not here.
- * Next.js 15's webpack CSS loader tries to statically resolve any @import
- * (including remote URLs), producing "Module not found: Can't resolve
- * './...'" for external stylesheets. Serving the link from the HTML
- * bypasses the loader entirely. */
-
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
