@@ -27,6 +27,7 @@ import {
   MAX_UPLOAD_BYTES,
 } from "../lib/twilio/media.js";
 import { readTwilioAuthToken, readTwilioConfig } from "../lib/twilio/client.js";
+import type { DbExec } from "../lib/twilio/inbox.js";
 
 export const mediaRouter = Router();
 
@@ -135,6 +136,12 @@ mediaRouter.post("/assets", requirePermission("media.upload"), async (req, res, 
         const f = await db.execute(sql`SELECT 1 FROM media_folder WHERE id = ${folderId} LIMIT 1`);
         if (f.rowCount === 0) return { kind: "bad-folder" as const };
       }
+      // Only enforce uniqueness for library-scoped assets — ad-hoc uploads
+      // attached to a single message are never visible in the library, so
+      // duplicate filenames there don't hurt anyone.
+      if (isLibrary && await libraryNameTaken(db, folderId, filename, null)) {
+        return { kind: "duplicate" as const };
+      }
       const r = await db.execute(sql`
         INSERT INTO media_asset (
           tenant_id, folder_id, uploaded_by, filename,
@@ -156,6 +163,7 @@ mediaRouter.post("/assets", requirePermission("media.upload"), async (req, res, 
       return { kind: "ok" as const, asset: r.rows[0] };
     });
     if (out.kind === "bad-folder") return res.status(400).json({ error: "Unknown folder" });
+    if (out.kind === "duplicate")  return res.status(409).json({ error: "A library file with that name already exists in this folder. Rename it or pick a different folder." });
     return res.status(201).json(out.asset);
   } catch (err) { next(err); }
 });
@@ -297,12 +305,35 @@ mediaRouter.patch("/assets/:id", requirePermission("media.upload"), async (req, 
     const canManage = req.permissions?.has("media.manage") ?? false;
     const out = await withTenant(req.tenantId!, async (db) => {
       const actor = await resolveActorPartyId(db, req.tenantId!, req.userId);
-      const owner = await db.execute(sql`
-        SELECT uploaded_by AS "uploadedBy" FROM media_asset WHERE id = ${id} LIMIT 1
+      // Grab the current row so we can compute the post-patch shape without
+      // a second round-trip (needed to compare against library-uniqueness).
+      const cur = await db.execute(sql`
+        SELECT uploaded_by AS "uploadedBy",
+               filename, folder_id AS "folderId", is_library AS "isLibrary"
+        FROM media_asset WHERE id = ${id} LIMIT 1
       `);
-      const row = owner.rows[0] as { uploadedBy: string | null } | undefined;
+      const row = cur.rows[0] as
+        | { uploadedBy: string | null; filename: string; folderId: string | null; isLibrary: boolean }
+        | undefined;
       if (!row)                                     return { kind: "not-found" as const };
       if (row.uploadedBy !== actor && !canManage)   return { kind: "forbidden" as const };
+
+      // Effective post-patch shape.
+      const nextFilename  = typeof patch.filename === "string" && patch.filename.trim() ? patch.filename.trim() : row.filename;
+      const nextFolderId  = patch.folderId !== undefined ? patch.folderId : row.folderId;
+      const nextIsLibrary = typeof patch.isLibrary === "boolean" ? patch.isLibrary : row.isLibrary;
+
+      // If we're changing something that affects library-uniqueness and the
+      // resulting row would be in the library, re-check for a collision.
+      const nameChanging   = typeof patch.filename === "string" && patch.filename.trim() && patch.filename.trim() !== row.filename;
+      const folderChanging = patch.folderId !== undefined && patch.folderId !== row.folderId;
+      const nowInLibrary   = typeof patch.isLibrary === "boolean" && patch.isLibrary && !row.isLibrary;
+      if (nextIsLibrary && (nameChanging || folderChanging || nowInLibrary)) {
+        if (await libraryNameTaken(db, nextFolderId, nextFilename, id)) {
+          return { kind: "duplicate" as const };
+        }
+      }
+
       const sets: ReturnType<typeof sql>[] = [];
       if (typeof patch.filename === "string" && patch.filename.trim()) sets.push(sql`filename = ${patch.filename.trim()}`);
       if (patch.folderId !== undefined) sets.push(sql`folder_id = ${patch.folderId}`);
@@ -313,6 +344,7 @@ mediaRouter.patch("/assets/:id", requirePermission("media.upload"), async (req, 
     });
     if (out.kind === "not-found") return res.status(404).json({ error: "Not found" });
     if (out.kind === "forbidden") return res.status(403).json({ error: "You can only edit your own uploads" });
+    if (out.kind === "duplicate") return res.status(409).json({ error: "A library file with that name already exists in this folder." });
     return res.json({ ok: true });
   } catch (err) { next(err); }
 });
@@ -406,3 +438,33 @@ mediaRouter.get("/proxy/:id", requirePermission("media.read"), async (req, res, 
     Readable.fromWeb(upstream.body as any).pipe(res);
   } catch (err) { next(err); }
 });
+
+// ─── helpers ─────────────────────────────────────────────────────────────
+
+/**
+ * Case-insensitive uniqueness check for library-scoped filenames within a
+ * given folder. `null` folder_id is a real distinct value — treated as its
+ * own "uncategorized" bucket. Passes an `excludeId` so a rename that
+ * doesn't change the name (or a rename back to the same name for the same
+ * row) doesn't self-collide.
+ */
+async function libraryNameTaken(
+  db: DbExec,
+  folderId: string | null,
+  filename: string,
+  excludeId: string | null,
+): Promise<boolean> {
+  const r = await db.execute(sql`
+    SELECT 1 FROM media_asset
+    WHERE is_library = true
+      AND deleted_at IS NULL
+      AND lower(filename) = lower(${filename})
+      AND (
+        (${folderId === null} AND folder_id IS NULL)
+        OR folder_id::text = ${folderId}
+      )
+      AND (${excludeId === null} OR id::text <> ${excludeId})
+    LIMIT 1
+  `);
+  return (r.rowCount ?? 0) > 0;
+}
