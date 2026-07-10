@@ -16,6 +16,7 @@ import {
 import type { MediaAsset, MediaFolder } from "@/lib/types";
 import { familyFromMime, humanBytes } from "./mediaShared";
 import { ConfirmDialog, PromptDialog } from "./Dialogs";
+import { AssetPreview } from "./AssetPreview";
 
 // A tiny discriminated union tracks which folder-scoped dialog is open. Only
 // one shows at a time; separate state per dialog would be more code.
@@ -43,6 +44,7 @@ export function MediaLibrary({
   const [error, setError] = useState<string | null>(null);
   const [folderDialog, setFolderDialog] = useState<FolderDialog>({ kind: "none" });
   const [assetDialog, setAssetDialog] = useState<AssetDialog>({ kind: "none" });
+  const [viewingAsset, setViewingAsset] = useState<MediaAsset | null>(null);
   // Dialog-local busy + error, so a submit-in-progress spinner shows in the
   // dialog itself rather than the page background.
   const [dialogBusy, setDialogBusy] = useState(false);
@@ -160,6 +162,7 @@ export function MediaLibrary({
                   key={a.id}
                   asset={a}
                   canManage={canManage}
+                  onViewRequest={() => setViewingAsset(a)}
                   onRenameRequest={() => setAssetDialog({ kind: "rename", asset: a })}
                   onDeleteRequest={() => setAssetDialog({ kind: "delete", asset: a })}
                 />
@@ -247,6 +250,14 @@ export function MediaLibrary({
           onClose={closeDialogs}
         />
       )}
+
+      {/* ── Asset preview lightbox ────────────────────────────────────── */}
+      {viewingAsset && (
+        <AssetPreview
+          asset={viewingAsset}
+          onClose={() => setViewingAsset(null)}
+        />
+      )}
     </div>
   );
 }
@@ -304,30 +315,56 @@ function UploadButton({
 }
 
 function AssetCard({
-  asset, canManage, onRenameRequest, onDeleteRequest,
+  asset, canManage, onViewRequest, onRenameRequest, onDeleteRequest,
 }: {
   asset: MediaAsset;
   canManage: boolean;
+  onViewRequest: () => void;
   onRenameRequest: () => void;
   onDeleteRequest: () => void;
 }) {
   const fam = familyFromMime(asset.contentType);
   return (
-    <div className="group flex flex-col overflow-hidden rounded-lg border border-rule bg-warm/30">
-      {fam === "image" ? (
-        <img src={asset.blobUrl} alt={asset.filename}
-          className="h-32 w-full object-cover" loading="lazy" />
-      ) : (
-        <div className="flex h-32 w-full items-center justify-center bg-warm2/60 text-mute">
-          <Icon name="doc" size={30} strokeWidth={1.5} />
+    <div className="group flex flex-col overflow-hidden rounded-lg border border-rule bg-warm/30 transition hover:border-brand-violet hover:shadow-sm">
+      {/* Thumbnail — the whole area is a big click target that opens preview */}
+      <button
+        type="button"
+        onClick={onViewRequest}
+        className="relative block h-32 w-full overflow-hidden focus:outline-none focus:ring-2 focus:ring-brand-violet"
+        title="Click to preview"
+      >
+        {fam === "image" ? (
+          <img src={asset.blobUrl} alt={asset.filename}
+            className="h-32 w-full object-cover" loading="lazy" />
+        ) : (
+          <div className="flex h-32 w-full items-center justify-center bg-warm2/60 text-mute">
+            <Icon name="doc" size={30} strokeWidth={1.5} />
+          </div>
+        )}
+        {/* Hover overlay hint */}
+        <div className="pointer-events-none absolute inset-0 flex items-center justify-center bg-ink/0 transition group-hover:bg-ink/30">
+          <span className="opacity-0 rounded-full bg-white/95 px-3 py-1 text-[11px] font-semibold text-ink shadow-sm transition group-hover:opacity-100">
+            View
+          </span>
         </div>
-      )}
+      </button>
       <div className="flex flex-col gap-1 p-2 text-[12px]">
-        <div className="truncate font-semibold text-ink" title={asset.filename}>{asset.filename}</div>
+        <button
+          type="button"
+          onClick={onViewRequest}
+          className="truncate text-left font-semibold text-ink hover:text-brand-violet"
+          title={`Preview ${asset.filename}`}
+        >
+          {asset.filename}
+        </button>
         <div className="mono-cap text-[9.5px] tracking-[.04em] text-mute">
           {humanBytes(asset.sizeBytes)} · {asset.contentType.split("/").pop()}
         </div>
         <div className="mt-1 flex items-center gap-1 opacity-0 transition group-hover:opacity-100">
+          <button
+            onClick={onViewRequest}
+            className="rounded border border-rule bg-paper px-1.5 py-0.5 text-[10.5px] text-ink2 hover:border-brand-violet hover:text-brand-violet"
+          >View</button>
           <button
             onClick={onRenameRequest}
             className="rounded border border-rule bg-paper px-1.5 py-0.5 text-[10.5px] text-ink2 hover:border-brand-violet hover:text-brand-violet"
