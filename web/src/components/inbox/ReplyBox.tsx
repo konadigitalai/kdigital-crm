@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { Icon } from "@/components/ui/Icon";
 import { cn } from "@/lib/cn";
 import { sendTwMessageInThread } from "@/lib/api";
@@ -23,6 +23,7 @@ export function ReplyBox({
   const [error, setError] = useState<string | null>(null);
   const [staged, setStaged] = useState<MediaAsset[]>([]);
   const [pickerOpen, setPickerOpen] = useState(false);
+  const taRef = useRef<HTMLTextAreaElement>(null);
 
   async function submit() {
     const body = text.trim();
@@ -37,6 +38,8 @@ export function ReplyBox({
       }
       setText("");
       setStaged([]);
+      // Return focus to the textarea so the user can keep typing.
+      requestAnimationFrame(() => taRef.current?.focus());
       onSent();
     } catch (err) {
       setError((err as Error).message);
@@ -45,51 +48,63 @@ export function ReplyBox({
     }
   }
 
+  // WhatsApp-style key handling:
+  //   Enter               → send
+  //   Shift+Enter         → newline
+  //   Ctrl/Cmd+Enter      → also send (kept for muscle memory)
+  //   IME composition     → let the composition finish, don't send
+  function onKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
+    if (e.key !== "Enter") return;
+    // e.nativeEvent.isComposing is true while an IME is active (e.g. picking
+    // a CJK candidate). Enter there confirms the character, not the message.
+    if (e.nativeEvent.isComposing) return;
+    if (e.shiftKey) return; // allow newline
+    e.preventDefault();
+    void submit();
+  }
+
   return (
     <div>
       {staged.length > 0 && (
         <StagedStrip
           assets={staged}
           onRemove={(id) => setStaged((prev) => prev.filter((a) => a.id !== id))}
-          className="mb-2"
+          className="mb-2 px-1"
         />
       )}
-      <div className="flex items-end gap-2 rounded-[12px] border border-rule bg-warm/40 px-3 py-2 focus-within:border-brand-violet focus-within:ring-2 focus-within:ring-brand-violet/20">
+      <div className="flex items-end gap-2 rounded-full bg-white px-3 py-2 shadow-sm focus-within:shadow">
         {canUpload && (
           <button
             type="button"
             onClick={() => setPickerOpen(true)}
-            className="mb-0.5 flex-shrink-0 text-mute hover:text-brand-violet"
+            className="mb-0.5 flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full text-mute transition hover:bg-warm hover:text-brand-violet"
             aria-label="Attach file"
             title="Attach file"
           >
-            <Icon name="plus" size={16} strokeWidth={2} />
+            <Icon name="plus" size={18} strokeWidth={2} />
           </button>
         )}
         <textarea
+          ref={taRef}
           value={text}
           onChange={(e) => setText(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); void submit(); }
-          }}
-          rows={2}
-          placeholder="Type a message… (Ctrl/⌘+Enter to send)"
-          className="min-h-[36px] flex-1 resize-y bg-transparent text-[13px] text-ink placeholder:text-hint outline-none"
+          onKeyDown={onKeyDown}
+          rows={1}
+          placeholder="Type a message"
+          className="max-h-[160px] min-h-[24px] flex-1 resize-none bg-transparent py-1.5 text-[14px] leading-[1.35] text-ink placeholder:text-mute outline-none"
+          disabled={busy}
         />
-        <button
-          type="button"
-          onClick={submit}
-          disabled={busy || (!text.trim() && staged.length === 0)}
-          className={cn(
-            "flex items-center gap-1.5 rounded-md px-3 py-1.5 text-[12px] font-semibold transition",
-            (text.trim() || staged.length > 0) && !busy
-              ? "bg-brand-violet text-white hover:bg-brand-violet/90"
-              : "bg-warm2 text-mute cursor-not-allowed",
+        {/* Right-side placeholder — kept empty for now to leave room for
+            future actions (voice, emoji). No Send button — Enter sends. */}
+        <span className="mb-0.5 flex h-8 w-8 flex-shrink-0 items-center justify-center text-mute">
+          {busy ? (
+            <span className="animate-pulse text-[10px] font-mono">…</span>
+          ) : (
+            <span className="mono-cap text-[8.5px] tracking-[.08em] text-hint" title="Press Enter to send · Shift+Enter for a new line">
+              ↵
+            </span>
           )}
-        >
-          <Icon name="send" size={12} strokeWidth={2.2} />
-          {busy ? "Sending…" : "Send"}
-        </button>
+        </span>
       </div>
       {error && (
         <div className="mt-2 rounded-lg border border-state-warn/30 bg-state-warn/10 px-3 py-2 text-[12px] text-state-warn">
