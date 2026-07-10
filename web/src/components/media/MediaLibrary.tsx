@@ -15,6 +15,20 @@ import {
 } from "@/lib/api";
 import type { MediaAsset, MediaFolder } from "@/lib/types";
 import { familyFromMime, humanBytes } from "./mediaShared";
+import { ConfirmDialog, PromptDialog } from "./Dialogs";
+
+// A tiny discriminated union tracks which folder-scoped dialog is open. Only
+// one shows at a time; separate state per dialog would be more code.
+type FolderDialog =
+  | { kind: "none" }
+  | { kind: "create" }
+  | { kind: "rename"; folder: MediaFolder }
+  | { kind: "delete"; folder: MediaFolder };
+
+type AssetDialog =
+  | { kind: "none" }
+  | { kind: "rename"; asset: MediaAsset }
+  | { kind: "delete"; asset: MediaAsset };
 
 export function MediaLibrary({
   canUpload, canManage,
@@ -27,6 +41,12 @@ export function MediaLibrary({
   const [activeFolder, setActiveFolder] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [folderDialog, setFolderDialog] = useState<FolderDialog>({ kind: "none" });
+  const [assetDialog, setAssetDialog] = useState<AssetDialog>({ kind: "none" });
+  // Dialog-local busy + error, so a submit-in-progress spinner shows in the
+  // dialog itself rather than the page background.
+  const [dialogBusy, setDialogBusy] = useState(false);
+  const [dialogError, setDialogError] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
     try {
@@ -45,27 +65,25 @@ export function MediaLibrary({
 
   useEffect(() => { void refresh(); }, [refresh]);
 
-  async function onCreateFolder() {
-    const name = window.prompt("Folder name:")?.trim();
-    if (!name) return;
-    try { await createMediaFolder(name); await refresh(); }
-    catch (err) { setError((err as Error).message); }
+  function closeDialogs() {
+    setFolderDialog({ kind: "none" });
+    setAssetDialog({ kind: "none" });
+    setDialogBusy(false);
+    setDialogError(null);
   }
 
-  async function onRenameFolder(f: MediaFolder) {
-    const name = window.prompt("Rename folder:", f.name)?.trim();
-    if (!name || name === f.name) return;
-    try { await renameMediaFolder(f.id, name); await refresh(); }
-    catch (err) { setError((err as Error).message); }
-  }
-
-  async function onDeleteFolder(f: MediaFolder) {
-    if (!window.confirm(`Delete "${f.name}"? Files inside are unaffected — they'll move to Uncategorized.`)) return;
+  async function runDialog(fn: () => Promise<void>) {
+    setDialogBusy(true);
+    setDialogError(null);
     try {
-      await deleteMediaFolder(f.id);
-      if (activeFolder === f.id) setActiveFolder(null);
+      await fn();
+      closeDialogs();
       await refresh();
-    } catch (err) { setError((err as Error).message); }
+    } catch (err) {
+      setDialogError((err as Error).message);
+    } finally {
+      setDialogBusy(false);
+    }
   }
 
   return (
@@ -84,7 +102,7 @@ export function MediaLibrary({
             {canManage && (
               <button
                 type="button"
-                onClick={onCreateFolder}
+                onClick={() => setFolderDialog({ kind: "create" })}
                 className="text-mute hover:text-brand-violet"
                 title="New folder"
               >
@@ -107,12 +125,12 @@ export function MediaLibrary({
               {canManage && (
                 <div className="flex opacity-0 transition group-hover:opacity-100">
                   <button
-                    onClick={() => onRenameFolder(f)}
+                    onClick={() => setFolderDialog({ kind: "rename", folder: f })}
                     className="text-mute hover:text-brand-violet"
                     title="Rename"
                   ><Icon name="settings" size={12} strokeWidth={2} /></button>
                   <button
-                    onClick={() => onDeleteFolder(f)}
+                    onClick={() => setFolderDialog({ kind: "delete", folder: f })}
                     className="text-mute hover:text-state-warn"
                     title="Delete folder"
                   ><Icon name="plus" size={12} strokeWidth={2.2} className="rotate-45" /></button>
@@ -142,13 +160,93 @@ export function MediaLibrary({
                   key={a.id}
                   asset={a}
                   canManage={canManage}
-                  onChanged={refresh}
+                  onRenameRequest={() => setAssetDialog({ kind: "rename", asset: a })}
+                  onDeleteRequest={() => setAssetDialog({ kind: "delete", asset: a })}
                 />
               ))}
             </div>
           )}
         </main>
       </div>
+
+      {/* ── Folder dialogs ────────────────────────────────────────────── */}
+      {folderDialog.kind === "create" && (
+        <PromptDialog
+          title="New folder"
+          message="Give it a name — you can rename or delete it later."
+          placeholder="e.g. Course Brochures"
+          confirmLabel="Create"
+          busy={dialogBusy}
+          error={dialogError}
+          onSubmit={(name) => runDialog(async () => { await createMediaFolder(name); })}
+          onClose={closeDialogs}
+        />
+      )}
+      {folderDialog.kind === "rename" && (
+        <PromptDialog
+          title="Rename folder"
+          initial={folderDialog.folder.name}
+          confirmLabel="Save"
+          busy={dialogBusy}
+          error={dialogError}
+          onSubmit={(name) => {
+            const f = folderDialog.folder;
+            if (name === f.name) { closeDialogs(); return; }
+            void runDialog(async () => { await renameMediaFolder(f.id, name); });
+          }}
+          onClose={closeDialogs}
+        />
+      )}
+      {folderDialog.kind === "delete" && (
+        <ConfirmDialog
+          title="Delete folder"
+          message={`Delete "${folderDialog.folder.name}"? Files inside are unaffected — they'll move to Uncategorized.`}
+          confirmLabel="Delete folder"
+          destructive
+          busy={dialogBusy}
+          error={dialogError}
+          onConfirm={() => {
+            const f = folderDialog.folder;
+            void runDialog(async () => {
+              await deleteMediaFolder(f.id);
+              if (activeFolder === f.id) setActiveFolder(null);
+            });
+          }}
+          onClose={closeDialogs}
+        />
+      )}
+
+      {/* ── Asset dialogs ─────────────────────────────────────────────── */}
+      {assetDialog.kind === "rename" && (
+        <PromptDialog
+          title="Rename file"
+          initial={assetDialog.asset.filename}
+          confirmLabel="Save"
+          busy={dialogBusy}
+          error={dialogError}
+          onSubmit={(next) => {
+            const a = assetDialog.asset;
+            if (next === a.filename) { closeDialogs(); return; }
+            void runDialog(async () => { await renameMediaAsset(a.id, { filename: next }); });
+          }}
+          onClose={closeDialogs}
+        />
+      )}
+      {assetDialog.kind === "delete" && (
+        <ConfirmDialog
+          title="Delete file"
+          message={`Delete "${assetDialog.asset.filename}"? This can't be undone.`}
+          confirmLabel="Delete file"
+          destructive
+          busy={dialogBusy}
+          error={dialogError}
+          onConfirm={() => {
+            const a = assetDialog.asset;
+            void runDialog(async () => { await deleteMediaAsset(a.id); });
+          }}
+          onClose={closeDialogs}
+        />
+      )}
     </div>
   );
 }
@@ -206,24 +304,14 @@ function UploadButton({
 }
 
 function AssetCard({
-  asset, canManage, onChanged,
+  asset, canManage, onRenameRequest, onDeleteRequest,
 }: {
   asset: MediaAsset;
   canManage: boolean;
-  onChanged: () => void;
+  onRenameRequest: () => void;
+  onDeleteRequest: () => void;
 }) {
   const fam = familyFromMime(asset.contentType);
-  async function onRename() {
-    const next = window.prompt("Rename file:", asset.filename)?.trim();
-    if (!next || next === asset.filename) return;
-    try { await renameMediaAsset(asset.id, { filename: next }); onChanged(); }
-    catch (err) { window.alert((err as Error).message); }
-  }
-  async function onDelete() {
-    if (!window.confirm(`Delete "${asset.filename}"?`)) return;
-    try { await deleteMediaAsset(asset.id); onChanged(); }
-    catch (err) { window.alert((err as Error).message); }
-  }
   return (
     <div className="group flex flex-col overflow-hidden rounded-lg border border-rule bg-warm/30">
       {fam === "image" ? (
@@ -241,12 +329,12 @@ function AssetCard({
         </div>
         <div className="mt-1 flex items-center gap-1 opacity-0 transition group-hover:opacity-100">
           <button
-            onClick={onRename}
+            onClick={onRenameRequest}
             className="rounded border border-rule bg-paper px-1.5 py-0.5 text-[10.5px] text-ink2 hover:border-brand-violet hover:text-brand-violet"
           >Rename</button>
           {canManage && (
             <button
-              onClick={onDelete}
+              onClick={onDeleteRequest}
               className="rounded border border-rule bg-paper px-1.5 py-0.5 text-[10.5px] text-ink2 hover:border-state-warn hover:text-state-warn"
             >Delete</button>
           )}
