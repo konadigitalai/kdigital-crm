@@ -5,23 +5,17 @@
 //  - video → <video controls> player
 //  - audio → <audio controls>
 //  - PDF/doc/zip/other → download link with filename + size
-// Twilio-hosted URLs (providerHosted=true) route through /media/proxy/:id
-// so the Basic-auth exchange happens server-side.
+//
+// URL choice: the server injects a short-lived signed `fetchUrl` per
+// media item (see routes/twilio.ts). We use that so raw <img>/<video>/
+// <a href> tags work without an Authorization header — browsers can't
+// attach JWTs to media requests. If the server doesn't include a signed
+// URL (env misconfig), we fall back to a filename-only card.
 
 import { Icon } from "@/components/ui/Icon";
 import { cn } from "@/lib/cn";
 import type { TwMessageMedia } from "@/lib/types";
 import { humanBytes, familyFromMime } from "./mediaShared";
-
-// The API URL — same rule as web/src/lib/api.ts.
-const API_URL = (() => {
-  if (typeof window === "undefined") {
-    return process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4000";
-  }
-  return process.env.NODE_ENV === "production"
-    ? "/api"
-    : (process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4000");
-})();
 
 export function MessageMediaGallery({
   media, outbound, className,
@@ -39,19 +33,33 @@ export function MessageMediaGallery({
 }
 
 function Item({ media, outbound }: { media: TwMessageMedia; outbound: boolean }) {
-  // provider-hosted URLs go through our authenticated proxy; our own Blob
-  // URLs are already public HTTPS so we can hit them direct.
-  const url = media.providerHosted
-    ? `${API_URL}/media/proxy/${encodeURIComponent(media.assetId)}`
-    : `${API_URL}/media/proxy/${encodeURIComponent(media.assetId)}`;
-  // (Always through proxy — keeps auth check consistent and browsers won't
-  // leak the Blob URL to logs.)
+  const url = media.fetchUrl;
 
   const fam = familyFromMime(media.contentType);
   const cellCls = cn(
     "rounded-lg overflow-hidden max-w-[280px]",
-    outbound ? "bg-brand-violet/20 ring-1 ring-white/20" : "bg-white/70 ring-1 ring-rule",
+    outbound ? "bg-white/40 ring-1 ring-black/5" : "bg-white/70 ring-1 ring-rule",
   );
+
+  // No signed URL from the server — degrade to a filename-only card so we
+  // never render <img src="">, which would show a broken-image glyph.
+  if (!url) {
+    return (
+      <div className={cn(
+        cellCls,
+        "flex items-center gap-2 px-3 py-2 text-[12.5px] opacity-70",
+        outbound ? "text-ink" : "text-ink",
+      )}>
+        <Icon name="doc" size={16} strokeWidth={2} className="text-mute" />
+        <div className="min-w-0">
+          <div className="truncate font-semibold" title={media.filename}>{media.filename}</div>
+          <div className="font-mono text-[9.5px] text-mute">
+            {humanBytes(media.sizeBytes)} · {media.contentType.split("/").pop()} · preview unavailable
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   if (fam === "image") {
     return (
@@ -88,13 +96,13 @@ function Item({ media, outbound }: { media: TwMessageMedia; outbound: boolean })
       className={cn(
         cellCls,
         "flex items-center gap-2 px-3 py-2 text-[12.5px]",
-        outbound ? "text-white" : "text-ink",
+        outbound ? "text-ink" : "text-ink",
       )}
     >
-      <Icon name="doc" size={16} strokeWidth={2} className={outbound ? "text-white" : "text-mute"} />
+      <Icon name="doc" size={16} strokeWidth={2} className="text-mute" />
       <div className="min-w-0">
         <div className="truncate font-semibold" title={media.filename}>{media.filename}</div>
-        <div className={cn("font-mono text-[9.5px]", outbound ? "text-white/70" : "text-mute")}>
+        <div className="font-mono text-[9.5px] text-mute">
           {humanBytes(media.sizeBytes)} · {media.contentType.split("/").pop()}
         </div>
       </div>

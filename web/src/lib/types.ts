@@ -49,6 +49,11 @@ export interface TwMessageMedia {
   sizeBytes: number;
   providerHosted: boolean;
   ordinal: number;
+  /** Short-lived signed URL the FE can drop into <img src=…>, <video>,
+   *  <audio>, or a download link. Bypasses the authenticated
+   *  /media/proxy endpoint (which can't receive a JWT from an <img> tag).
+   *  Undefined when the server isn't configured to sign URLs. */
+  fetchUrl?: string;
 }
 
 // ── Media library ────────────────────────────────────────────────────────

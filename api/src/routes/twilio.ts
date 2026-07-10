@@ -277,7 +277,25 @@ twilioRouter.get("/conversations/:id", requirePermission("messaging.read"), asyn
         ORDER BY m.sent_at ASC
         LIMIT 500
       `);
-      return { conversation: conv, messages: mR.rows };
+      // Attach a short-lived signed URL to each media entry so the FE can
+      // render <img src=…>, <video>, and download links without needing a
+      // JWT (browsers can't add Authorization headers to raw asset tags).
+      // Falls back to no fetchUrl if TWILIO_AUTH_TOKEN isn't set — the FE
+      // will show a filename-only card in that case.
+      let apiBase = "";
+      try { apiBase = new URL(readTwilioConfig().webhookUrl).origin; }
+      catch { /* env missing — leave apiBase empty, FE degrades gracefully */ }
+      const messages = mR.rows.map((row) => {
+        const media = (row.media as Array<Record<string, unknown>>) ?? [];
+        const enriched = apiBase
+          ? media.map((m) => ({
+              ...m,
+              fetchUrl: signMediaFetchUrl(String(m.assetId), apiBase),
+            }))
+          : media;
+        return { ...row, media: enriched };
+      });
+      return { conversation: conv, messages };
     });
     if (!out) return res.status(404).json({ error: "Not found" });
     return res.json(out);
