@@ -1,8 +1,12 @@
+/* External @imports MUST come before any other at-rule (including
+ * @tailwind), or PostCSS / Next.js's CSS loader rejects the sheet with
+ * "Module not found: Can't resolve './...'" — the loader misreads the
+ * out-of-order @import's url() as a relative module path. */
+@import url("https://fonts.googleapis.com/css2?family=Inter+Tight:wght@400;500;600;700&family=Instrument+Serif:ital@0;1&family=JetBrains+Mono:wght@500;600;700&display=swap");
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
-
-@import url("https://fonts.googleapis.com/css2?family=Inter+Tight:wght@400;500;600;700&family=Instrument+Serif:ital@0;1&family=JetBrains+Mono:wght@500;600;700&display=swap");
 
 :root {
   --ink: #0e0a14;
