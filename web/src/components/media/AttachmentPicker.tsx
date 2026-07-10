@@ -240,18 +240,11 @@ function UploadPane({
     setBusy(true);
     setError(null);
     try {
-      await uploadMediaAsset(file, {
+      const asset = await uploadMediaAsset(file, {
         isLibrary,
         folderId: isLibrary ? (folderId || null) : null,
       });
-      // The upload created a media_asset row via the completion callback.
-      // We fetch back the most-recently-created "mine" asset to hand to
-      // the caller. Simpler than round-tripping the ID through Vercel's
-      // completion response.
-      const rows = await listMediaAssets({ scope: "mine" });
-      const created = rows[0];
-      if (created) onSelected(created);
-      else setError("Upload finished but couldn't locate the new asset — refresh and try again.");
+      onSelected(asset);
     } catch (err) {
       setError((err as Error).message);
     } finally {

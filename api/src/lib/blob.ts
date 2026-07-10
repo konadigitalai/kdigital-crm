@@ -96,6 +96,10 @@ export async function handleBlobUpload(args: HandleUploadArgs): Promise<unknown>
       return {
         allowedContentTypes: authz.allowedContentTypes,
         maximumSizeInBytes: authz.maxSizeBytes,
+        // Add a random suffix so re-uploads of the same-name file don't
+        // collide in Blob storage. Original filename is preserved in the
+        // media_asset row separately.
+        addRandomSuffix: true,
         // Re-emit the authz context in the token payload; the completion
         // callback below can rehydrate it.
         tokenPayload: JSON.stringify({

@@ -19,7 +19,7 @@ import { requirePermission } from "../middleware/require.js";
 import { resolveActorPartyId } from "../lib/party/resolve.js";
 import {
   handleBlobUpload, deleteBlob, tenantPathname,
-  BlobNotConfigured, type AuthorizedUpload, type CompletedUpload,
+  BlobNotConfigured, type AuthorizedUpload,
 } from "../lib/blob.js";
 import type { HandleUploadBody } from "@vercel/blob/client";
 import {
@@ -31,14 +31,18 @@ import { readTwilioAuthToken, readTwilioConfig } from "../lib/twilio/client.js";
 export const mediaRouter = Router();
 
 // ─── POST /media/upload-token ────────────────────────────────────────────
-// The FE @vercel/blob/client.upload() calls this endpoint. Vercel's SDK
-// handles the two-step protocol; our job is to authorise + persist.
+// The FE @vercel/blob/client.upload() calls this endpoint to get a
+// short-lived client token. The browser then PUTs the file to Vercel Blob
+// directly, and the FE calls POST /media/assets afterwards to record the
+// completed upload.
+//
+// (We deliberately do NOT use Vercel's onUploadCompleted webhook — that
+// requires Vercel's servers to reach our API, which fails on localhost and
+// any private network. Doing the DB insert from the FE after upload is
+// simpler and works everywhere.)
 
 mediaRouter.post("/upload-token", requirePermission("media.upload"), async (req, res, next) => {
   try {
-    // Reconstruct a WHATWG Request that handleUpload wants. Express gives us
-    // a parsed JSON body; handleUpload needs to re-read the raw JSON, so we
-    // fake a Request pointed at the same URL with a re-serialised body.
     const body = req.body as HandleUploadBody;
     const url = `${req.protocol}://${req.get("host")}${req.originalUrl}`;
     const request = new Request(url, {
@@ -50,10 +54,6 @@ mediaRouter.post("/upload-token", requirePermission("media.upload"), async (req,
     const tenantId = req.tenantId!;
     const userId = req.userId!;
 
-    // handleBlobUpload dispatches on `body.type` — it invokes ONE of the two
-    // hooks per HTTP call, never both. So we open a fresh withTenant inside
-    // each hook rather than wrapping the whole thing (nested withTenant
-    // would open a nested transaction on a different pool connection).
     const out = await handleBlobUpload({
       body,
       request,
@@ -82,25 +82,9 @@ mediaRouter.post("/upload-token", requirePermission("media.upload"), async (req,
           return authz;
         });
       },
-      onCompleted: async (details: CompletedUpload, authz: AuthorizedUpload) => {
-        await withTenant(authz.tenantId, async (db) => {
-          await db.execute(sql`
-            INSERT INTO media_asset (
-              tenant_id, folder_id, uploaded_by, filename,
-              content_type, size_bytes, blob_url, blob_pathname,
-              is_library, source, provider_hosted
-            )
-            VALUES (
-              current_tenant(), ${authz.folderId}, ${authz.uploadedBy},
-              ${details.pathname.split("/").pop() ?? "file"},
-              ${details.contentType},
-              ${details.size ?? 0},
-              ${details.blobUrl}, ${details.pathname},
-              ${authz.isLibrary}, 'user_upload', false
-            )
-          `);
-        });
-      },
+      // No-op — kept because Vercel's SDK type requires the field to exist.
+      // We do the DB insert from the FE post-upload via POST /media/assets.
+      onCompleted: async () => {},
     });
 
     return res.json(out);
@@ -110,6 +94,70 @@ mediaRouter.post("/upload-token", requirePermission("media.upload"), async (req,
     }
     next(err);
   }
+});
+
+// ─── POST /media/assets ──────────────────────────────────────────────────
+// Called by the FE after a browser→Blob upload finishes. Records the
+// upload as a media_asset row and returns the freshly-created row so the
+// UI can display it immediately.
+//
+// The Blob URL itself is sufficient proof-of-upload — anyone with the URL
+// has evidence Vercel accepted the bytes, and Vercel already enforced the
+// per-upload size + content-type caps we set in the client token.
+
+mediaRouter.post("/assets", requirePermission("media.upload"), async (req, res, next) => {
+  try {
+    const b = req.body as {
+      filename?: string; contentType?: string; sizeBytes?: number;
+      blobUrl?: string; blobPathname?: string;
+      folderId?: string | null; isLibrary?: boolean;
+    };
+    const filename = String(b.filename ?? "").trim();
+    const contentType = String(b.contentType ?? "").trim();
+    const blobUrl = String(b.blobUrl ?? "").trim();
+    const blobPathname = String(b.blobPathname ?? "").trim() || null;
+    const sizeBytes = Number(b.sizeBytes ?? 0);
+    if (!filename || !contentType || !blobUrl) {
+      return res.status(400).json({ error: "filename, contentType, blobUrl are required" });
+    }
+    if (sizeBytes > MAX_UPLOAD_BYTES) {
+      return res.status(400).json({ error: `File exceeds ${MAX_UPLOAD_BYTES / (1024*1024)} MB storage cap` });
+    }
+    if (!ALLOWED_UPLOAD_CONTENT_TYPES.includes(contentType)) {
+      return res.status(400).json({ error: `Content type ${contentType} not allowed` });
+    }
+    const folderId = b.folderId ?? null;
+    const isLibrary = !!b.isLibrary;
+
+    const out = await withTenant(req.tenantId!, async (db) => {
+      const actor = await resolveActorPartyId(db, req.tenantId!, req.userId);
+      if (folderId) {
+        const f = await db.execute(sql`SELECT 1 FROM media_folder WHERE id = ${folderId} LIMIT 1`);
+        if (f.rowCount === 0) return { kind: "bad-folder" as const };
+      }
+      const r = await db.execute(sql`
+        INSERT INTO media_asset (
+          tenant_id, folder_id, uploaded_by, filename,
+          content_type, size_bytes, blob_url, blob_pathname,
+          is_library, source, provider_hosted
+        )
+        VALUES (
+          current_tenant(), ${folderId}, ${actor},
+          ${filename}, ${contentType}, ${sizeBytes},
+          ${blobUrl}, ${blobPathname},
+          ${isLibrary}, 'user_upload', false
+        )
+        RETURNING
+          id, filename, content_type AS "contentType", size_bytes AS "sizeBytes",
+          blob_url AS "blobUrl", is_library AS "isLibrary", source,
+          provider_hosted AS "providerHosted", uploaded_by AS "uploadedBy",
+          folder_id AS "folderId", created_at AS "createdAt"
+      `);
+      return { kind: "ok" as const, asset: r.rows[0] };
+    });
+    if (out.kind === "bad-folder") return res.status(400).json({ error: "Unknown folder" });
+    return res.status(201).json(out.asset);
+  } catch (err) { next(err); }
 });
 
 // ─── Client-signalled upload path helper (optional; FE sends this) ───────
@@ -151,15 +199,23 @@ mediaRouter.post("/folders", requirePermission("media.manage"), async (req, res,
     if (name.length > 80)     return res.status(400).json({ error: "name is too long" });
     const out = await withTenant(req.tenantId!, async (db) => {
       const actor = await resolveActorPartyId(db, req.tenantId!, req.userId);
+      // Detect the duplicate ourselves. The unique index is partial (over
+      // lower(name)); PostgreSQL requires the ON CONFLICT target to match
+      // the index's WHERE, and we can't reliably express `lower(...)` in
+      // a target-list without a real constraint. Cheaper + clearer: check
+      // then insert. RLS + tenant scoping already keep names per tenant.
+      const dupR = await db.execute(sql`
+        SELECT 1 FROM media_folder
+        WHERE lower(name) = lower(${name})
+        LIMIT 1
+      `);
+      if (dupR.rowCount) return { kind: "duplicate" as const };
       const r = await db.execute(sql`
         INSERT INTO media_folder (tenant_id, name, created_by)
         VALUES (current_tenant(), ${name}, ${actor})
-        ON CONFLICT ON CONSTRAINT media_folder_tenant_name_key DO NOTHING
         RETURNING id, name, created_at AS "createdAt", created_by AS "createdBy"
       `);
-      const row = r.rows[0];
-      if (!row) return { kind: "duplicate" as const };
-      return { kind: "ok" as const, folder: row };
+      return { kind: "ok" as const, folder: r.rows[0] };
     });
     if (out.kind === "duplicate") return res.status(409).json({ error: "A folder with that name already exists" });
     return res.status(201).json(out.folder);

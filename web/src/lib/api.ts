@@ -1225,30 +1225,54 @@ export async function deleteMediaAsset(id: string): Promise<void> {
 }
 
 /**
- * Upload a file directly to Vercel Blob and return the newly-created
- * media_asset row. The bytes go browser → Blob without touching our API,
- * bypassing the 6MB Express body cap.
+ * Upload a file directly to Vercel Blob AND record it in our DB.
  *
- * Passes `isLibrary` + `folderId` through Vercel's `clientPayload` — the
- * API sees them at token-generate time and stores them on the media_asset
- * row it inserts on the completion callback.
+ * Two-step under the hood:
+ *   1. Browser → Vercel Blob directly (using a short-lived client token
+ *      minted by our API's /media/upload-token endpoint). Bytes never
+ *      touch our Express server, so the 6MB body cap doesn't apply.
+ *   2. FE calls POST /media/assets with the resulting Blob URL and
+ *      metadata. The API inserts the media_asset row.
+ *
+ * Vercel's built-in onUploadCompleted webhook is deliberately unused —
+ * it requires Vercel's servers to reach our API, which fails on localhost
+ * and any private network. Doing the DB insert from the FE is simpler
+ * and works in every deploy target.
+ *
+ * Blob filenames get a random suffix (Vercel's `addRandomSuffix: true`)
+ * so uploading two files with the same name doesn't collide on storage.
+ * The original filename is preserved separately in `media_asset.filename`.
  */
 export async function uploadMediaAsset(
   file: File,
   opts: { isLibrary?: boolean; folderId?: string | null } = {},
-): Promise<{ url: string; pathname: string }> {
+): Promise<MediaAsset> {
   const clientPayload = JSON.stringify({
     isLibrary: !!opts.isLibrary,
     folderId:  opts.folderId ?? null,
   });
   const authz = await authHeaders();
-  const result = await vercelBlobUpload(file.name, file, {
+
+  // Step 1: upload bytes directly to Vercel Blob.
+  const blob = await vercelBlobUpload(file.name, file, {
     access: "public",
     handleUploadUrl: `${API_URL}/media/upload-token`,
     clientPayload,
     contentType: file.type,
-    // Prepend our JWT so the API can auth the handleUpload token request.
     headers: authz,
   });
-  return { url: result.url, pathname: result.pathname };
+
+  // Step 2: tell the API to record it. Vercel's `addRandomSuffix` (enabled
+  // by default in the SDK) ensures the Blob URL is unique — but we always
+  // store the user-facing name (`file.name`) so the UI shows the original.
+  const asset = await post<MediaAsset>("/media/assets", {
+    filename: file.name,
+    contentType: file.type || blob.contentType || "application/octet-stream",
+    sizeBytes: file.size,
+    blobUrl: blob.url,
+    blobPathname: blob.pathname,
+    folderId: opts.folderId ?? null,
+    isLibrary: !!opts.isLibrary,
+  });
+  return asset;
 }
