@@ -16,6 +16,7 @@ import {
 import type {
   TwChannel, TwConversationDetail, TwConversationListItem, TwMessage,
 } from "@/lib/types";
+import { MessageMediaGallery } from "@/components/media/MessageMediaGallery";
 
 const POLL_MS = 15_000;
 
@@ -221,7 +222,10 @@ function MiniBubble({ msg }: { msg: TwMessage }) {
             : "bg-paper text-ink2 ring-1 ring-rule",
         )}
       >
-        <p className="whitespace-pre-wrap">{msg.body ?? ""}</p>
+        {msg.body && <p className="whitespace-pre-wrap">{msg.body}</p>}
+        {msg.media && msg.media.length > 0 && (
+          <MessageMediaGallery media={msg.media} outbound={outbound} />
+        )}
         <div className={cn(
           "mt-1 font-mono text-[9.5px]",
           outbound && !failed ? "text-white/70" : "text-mute",

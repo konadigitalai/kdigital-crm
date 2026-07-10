@@ -20,6 +20,7 @@
 // disambiguate via the "To" number in a follow-up.
 
 import { Router } from "express";
+import { sql } from "drizzle-orm";
 import { appPool, withTenant } from "../db/app.js";
 import { readTwilioAuthToken, readTwilioConfig, TwilioNotConfigured } from "../lib/twilio/client.js";
 import { parseTwilioWebhook, verifyTwilioSignature } from "../lib/twilio/webhook.js";
@@ -133,6 +134,33 @@ twilioWebhookRouter.post("/", async (req, res) => {
         const inserted = await insertInboundMessage(db, conv.id, parsed);
         console.log(`[twilio-webhook] ← inserted=${inserted ?? "(duplicate)"}`);
         if (!inserted) return; // duplicate — nothing more to do
+
+        // Persist inbound media (if any) — one media_asset row per URL,
+        // then a tw_message_media join row in ordinal order. We store the
+        // Twilio-hosted URL as-is (provider_hosted=true); the /media/proxy
+        // route re-fetches it with Basic auth when the FE renders.
+        for (const [ordinal, m] of parsed.media.entries()) {
+          const assetR = await db.execute(sql`
+            INSERT INTO media_asset (
+              tenant_id, uploaded_by, filename,
+              content_type, size_bytes, blob_url,
+              is_library, source, provider_hosted
+            )
+            VALUES (
+              current_tenant(), NULL,
+              ${extractFilenameFromMedia(m.url, m.contentType, ordinal)},
+              ${m.contentType}, 0, ${m.url},
+              false, 'twilio_inbound', true
+            )
+            RETURNING id
+          `);
+          const assetId = (assetR.rows[0] as { id: string }).id;
+          await db.execute(sql`
+            INSERT INTO tw_message_media (message_id, asset_id, ordinal)
+            VALUES (${inserted}, ${assetId}, ${ordinal})
+          `);
+        }
+
         const sentinel = await resolveSentinelPartyId(db, tenantId);
         await insertActivityForMessage(db, {
           workItemId: lookup.leadWorkItemId,
@@ -143,8 +171,10 @@ twilioWebhookRouter.post("/", async (req, res) => {
           direction:  "inbound",
           channel:    parsed.channel,
           body:       parsed.body,
+          mediaCount: parsed.media.length,
+          mediaMimes: parsed.media.map((m) => m.contentType),
         });
-        console.log(`[twilio-webhook] ← activity inserted, done.`);
+        console.log(`[twilio-webhook] ← activity inserted (media=${parsed.media.length}), done.`);
       });
     } else {
       await withTenant(tenantId, async (db) => {
@@ -161,6 +191,35 @@ twilioWebhookRouter.post("/", async (req, res) => {
 });
 
 // ─── helpers ──────────────────────────────────────────────────────────────
+
+/** Twilio's MediaUrl is opaque — no filename. Best we can do is derive
+ *  from the MIME type + ordinal so the CRM has something to render. */
+function extractFilenameFromMedia(url: string, contentType: string, ordinal: number): string {
+  const ext = mimeToExt(contentType);
+  return `whatsapp-${ordinal + 1}${ext ? `.${ext}` : ""}`;
+}
+
+function mimeToExt(mime: string): string {
+  const m = mime.toLowerCase();
+  if (m === "image/jpeg") return "jpg";
+  if (m === "image/png")  return "png";
+  if (m === "image/gif")  return "gif";
+  if (m === "image/webp") return "webp";
+  if (m === "video/mp4")  return "mp4";
+  if (m === "video/3gpp") return "3gp";
+  if (m === "audio/mpeg") return "mp3";
+  if (m === "audio/mp4")  return "m4a";
+  if (m === "audio/amr")  return "amr";
+  if (m === "audio/ogg")  return "ogg";
+  if (m === "application/pdf") return "pdf";
+  if (m === "application/zip" || m === "application/x-zip-compressed") return "zip";
+  if (m === "application/msword") return "doc";
+  if (m === "application/vnd.openxmlformats-officedocument.wordprocessingml.document") return "docx";
+  if (m === "application/vnd.ms-excel") return "xls";
+  if (m === "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet") return "xlsx";
+  if (m === "text/plain") return "txt";
+  return "";
+}
 
 function coerceFormBody(body: unknown): Record<string, string> {
   const out: Record<string, string> = {};

@@ -18,10 +18,14 @@ export function InboxShell({
   initialConversations,
   canSend,
   canPromote,
+  canUpload = false,
+  canAddToLibrary = false,
 }: {
   initialConversations: TwConversationListItem[];
   canSend: boolean;
   canPromote: boolean;
+  canUpload?: boolean;
+  canAddToLibrary?: boolean;
 }) {
   const [threads, setThreads] = useState(initialConversations);
   const [activeId, setActiveId] = useState<string | null>(initialConversations[0]?.id ?? null);
@@ -92,6 +96,8 @@ export function InboxShell({
             summary={activeThread}
             canSend={canSend}
             canPromote={canPromote}
+            canUpload={canUpload}
+            canAddToLibrary={canAddToLibrary}
             onRefreshList={refresh}
           />
         ) : (

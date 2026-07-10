@@ -14,16 +14,19 @@ import {
 } from "@/lib/api";
 import type { TwConversationDetail, TwConversationListItem, TwMessage } from "@/lib/types";
 import { ReplyBox } from "./ReplyBox";
+import { MessageMediaGallery } from "@/components/media/MessageMediaGallery";
 
 const DETAIL_POLL_MS = 10_000;
 
 export function ThreadView({
-  threadId, summary, canSend, canPromote, onRefreshList,
+  threadId, summary, canSend, canPromote, canUpload = false, canAddToLibrary = false, onRefreshList,
 }: {
   threadId: string;
   summary: TwConversationListItem;
   canSend: boolean;
   canPromote: boolean;
+  canUpload?: boolean;
+  canAddToLibrary?: boolean;
   onRefreshList: () => void;
 }) {
   const [detail, setDetail] = useState<TwConversationDetail | null>(null);
@@ -136,6 +139,9 @@ export function ThreadView({
         {canSend ? (
           <ReplyBox
             conversationId={threadId}
+            channel={summary.channel}
+            canUpload={canUpload}
+            canAddToLibrary={canAddToLibrary}
             onSent={() => { void fetchDetail(); onRefreshList(); }}
           />
         ) : (
@@ -163,7 +169,10 @@ function MessageBubble({ msg }: { msg: TwMessage }) {
             : "bg-paper text-ink2 ring-1 ring-rule",
         )}
       >
-        <p className="whitespace-pre-wrap">{msg.body ?? ""}</p>
+        {msg.body && <p className="whitespace-pre-wrap">{msg.body}</p>}
+        {msg.media && msg.media.length > 0 && (
+          <MessageMediaGallery media={msg.media} outbound={outbound} />
+        )}
         <div className={cn(
           "mt-1 flex items-center gap-1 font-mono text-[9.5px]",
           outbound && !failed ? "text-white/70" : "text-mute",

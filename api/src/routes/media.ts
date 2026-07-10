@@ -1,0 +1,352 @@
+// Media library + attachment API.
+//
+// Mounted at /media behind authMiddleware. Every handler enforces its own
+// permission gate.
+//
+// Two flows to know:
+//   1. Direct-to-Blob uploads — FE calls @vercel/blob/client `upload()`,
+//      which POSTs to /media/upload-token (twice: token-generate then
+//      completion). We authorise + persist the media_asset row.
+//   2. Library CRUD — /media/folders + /media/assets are ordinary REST.
+//
+// Inbound Twilio media is Basic-auth gated. /media/proxy/:id fetches
+// server-side with those credentials and streams the bytes to the browser.
+
+import { Router } from "express";
+import { sql } from "drizzle-orm";
+import { withTenant } from "../db/app.js";
+import { requirePermission } from "../middleware/require.js";
+import { resolveActorPartyId } from "../lib/party/resolve.js";
+import {
+  handleBlobUpload, deleteBlob, tenantPathname,
+  BlobNotConfigured, type AuthorizedUpload, type CompletedUpload,
+} from "../lib/blob.js";
+import type { HandleUploadBody } from "@vercel/blob/client";
+import {
+  ALLOWED_UPLOAD_CONTENT_TYPES,
+  MAX_UPLOAD_BYTES,
+} from "../lib/twilio/media.js";
+import { readTwilioAuthToken, readTwilioConfig } from "../lib/twilio/client.js";
+
+export const mediaRouter = Router();
+
+// ─── POST /media/upload-token ────────────────────────────────────────────
+// The FE @vercel/blob/client.upload() calls this endpoint. Vercel's SDK
+// handles the two-step protocol; our job is to authorise + persist.
+
+mediaRouter.post("/upload-token", requirePermission("media.upload"), async (req, res, next) => {
+  try {
+    // Reconstruct a WHATWG Request that handleUpload wants. Express gives us
+    // a parsed JSON body; handleUpload needs to re-read the raw JSON, so we
+    // fake a Request pointed at the same URL with a re-serialised body.
+    const body = req.body as HandleUploadBody;
+    const url = `${req.protocol}://${req.get("host")}${req.originalUrl}`;
+    const request = new Request(url, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+
+    const tenantId = req.tenantId!;
+    const userId = req.userId!;
+
+    // handleBlobUpload dispatches on `body.type` — it invokes ONE of the two
+    // hooks per HTTP call, never both. So we open a fresh withTenant inside
+    // each hook rather than wrapping the whole thing (nested withTenant
+    // would open a nested transaction on a different pool connection).
+    const out = await handleBlobUpload({
+      body,
+      request,
+      authorize: async (pathname, clientPayload) => {
+        let extras: { folderId?: string | null; isLibrary?: boolean } = {};
+        if (clientPayload) {
+          try { extras = JSON.parse(clientPayload); } catch { /* ignore malformed */ }
+        }
+        return await withTenant(tenantId, async (db) => {
+          const uploadedBy = await resolveActorPartyId(db, tenantId, userId);
+          const authz: AuthorizedUpload = {
+            tenantId,
+            uploadedBy,
+            folderId: extras.folderId ?? null,
+            isLibrary: !!extras.isLibrary,
+            maxSizeBytes: MAX_UPLOAD_BYTES,
+            allowedContentTypes: ALLOWED_UPLOAD_CONTENT_TYPES,
+          };
+          if (authz.folderId) {
+            const r = await db.execute(sql`
+              SELECT 1 FROM media_folder WHERE id = ${authz.folderId} LIMIT 1
+            `);
+            if (r.rowCount === 0) throw new Error("Unknown folder");
+          }
+          void pathname;
+          return authz;
+        });
+      },
+      onCompleted: async (details: CompletedUpload, authz: AuthorizedUpload) => {
+        await withTenant(authz.tenantId, async (db) => {
+          await db.execute(sql`
+            INSERT INTO media_asset (
+              tenant_id, folder_id, uploaded_by, filename,
+              content_type, size_bytes, blob_url, blob_pathname,
+              is_library, source, provider_hosted
+            )
+            VALUES (
+              current_tenant(), ${authz.folderId}, ${authz.uploadedBy},
+              ${details.pathname.split("/").pop() ?? "file"},
+              ${details.contentType},
+              ${details.size ?? 0},
+              ${details.blobUrl}, ${details.pathname},
+              ${authz.isLibrary}, 'user_upload', false
+            )
+          `);
+        });
+      },
+    });
+
+    return res.json(out);
+  } catch (err) {
+    if (err instanceof BlobNotConfigured) {
+      return res.status(503).json({ error: err.message });
+    }
+    next(err);
+  }
+});
+
+// ─── Client-signalled upload path helper (optional; FE sends this) ───────
+// FE can call GET /media/upload-path?filename=x.pdf&contentType=application/pdf
+// to get a pre-normalised pathname to embed in @vercel/blob/client's upload().
+// Not strictly required — the SDK will pick a pathname on its own — but
+// letting the API decide keeps the tenant-scoping conventions consistent.
+
+mediaRouter.get("/upload-path", requirePermission("media.upload"), (req, res) => {
+  const filename = String(req.query.filename ?? "").trim() || "file";
+  return res.json({ pathname: tenantPathname(req.tenantId!, filename) });
+});
+
+// ─── GET /media/folders ──────────────────────────────────────────────────
+
+mediaRouter.get("/folders", requirePermission("media.read"), async (req, res, next) => {
+  try {
+    const rows = await withTenant(req.tenantId!, async (db) => {
+      const r = await db.execute(sql`
+        SELECT
+          f.id, f.name, f.created_at AS "createdAt", f.created_by AS "createdBy",
+          (SELECT COUNT(*)::int FROM media_asset a
+             WHERE a.folder_id = f.id AND a.deleted_at IS NULL) AS "assetCount"
+        FROM media_folder f
+        ORDER BY lower(f.name) ASC
+      `);
+      return r.rows;
+    });
+    return res.json({ folders: rows });
+  } catch (err) { next(err); }
+});
+
+// ─── POST /media/folders ─────────────────────────────────────────────────
+
+mediaRouter.post("/folders", requirePermission("media.manage"), async (req, res, next) => {
+  try {
+    const name = String(req.body?.name ?? "").trim();
+    if (!name)                return res.status(400).json({ error: "name is required" });
+    if (name.length > 80)     return res.status(400).json({ error: "name is too long" });
+    const out = await withTenant(req.tenantId!, async (db) => {
+      const actor = await resolveActorPartyId(db, req.tenantId!, req.userId);
+      const r = await db.execute(sql`
+        INSERT INTO media_folder (tenant_id, name, created_by)
+        VALUES (current_tenant(), ${name}, ${actor})
+        ON CONFLICT ON CONSTRAINT media_folder_tenant_name_key DO NOTHING
+        RETURNING id, name, created_at AS "createdAt", created_by AS "createdBy"
+      `);
+      const row = r.rows[0];
+      if (!row) return { kind: "duplicate" as const };
+      return { kind: "ok" as const, folder: row };
+    });
+    if (out.kind === "duplicate") return res.status(409).json({ error: "A folder with that name already exists" });
+    return res.status(201).json(out.folder);
+  } catch (err) { next(err); }
+});
+
+// ─── PATCH /media/folders/:id ────────────────────────────────────────────
+
+mediaRouter.patch("/folders/:id", requirePermission("media.manage"), async (req, res, next) => {
+  try {
+    const id = String(req.params.id);
+    const name = String(req.body?.name ?? "").trim();
+    if (!name) return res.status(400).json({ error: "name is required" });
+    await withTenant(req.tenantId!, async (db) => {
+      await db.execute(sql`UPDATE media_folder SET name = ${name} WHERE id = ${id}`);
+    });
+    return res.json({ ok: true });
+  } catch (err) { next(err); }
+});
+
+// ─── DELETE /media/folders/:id ───────────────────────────────────────────
+
+mediaRouter.delete("/folders/:id", requirePermission("media.manage"), async (req, res, next) => {
+  try {
+    const id = String(req.params.id);
+    await withTenant(req.tenantId!, async (db) => {
+      // Assets in this folder get folder_id set to null (per FK SET NULL).
+      await db.execute(sql`DELETE FROM media_folder WHERE id = ${id}`);
+    });
+    return res.json({ ok: true });
+  } catch (err) { next(err); }
+});
+
+// ─── GET /media/assets ───────────────────────────────────────────────────
+// Query: ?folder_id=<uuid|null>&scope=library|mine|all
+
+mediaRouter.get("/assets", requirePermission("media.read"), async (req, res, next) => {
+  try {
+    const folderId = String(req.query.folder_id ?? "").trim();
+    const scope = String(req.query.scope ?? "library").trim().toLowerCase();
+    const rows = await withTenant(req.tenantId!, async (db) => {
+      const actor = await resolveActorPartyId(db, req.tenantId!, req.userId);
+      const r = await db.execute(sql`
+        SELECT
+          a.id, a.filename, a.content_type AS "contentType",
+          a.size_bytes AS "sizeBytes",
+          a.blob_url AS "blobUrl",
+          a.is_library AS "isLibrary",
+          a.source, a.provider_hosted AS "providerHosted",
+          a.uploaded_by AS "uploadedBy",
+          a.folder_id AS "folderId",
+          a.created_at AS "createdAt",
+          f.name AS "folderName"
+        FROM media_asset a
+        LEFT JOIN media_folder f ON f.id = a.folder_id
+        WHERE a.deleted_at IS NULL
+          AND (
+            ${scope === "library"} AND a.is_library = true
+            OR ${scope === "mine"} AND a.uploaded_by = ${actor}
+            OR ${scope === "all"}
+          )
+          AND (${folderId === ""} OR a.folder_id::text = ${folderId})
+        ORDER BY a.created_at DESC
+        LIMIT 500
+      `);
+      return r.rows;
+    });
+    return res.json({ assets: rows });
+  } catch (err) { next(err); }
+});
+
+// ─── PATCH /media/assets/:id — rename, move folders, toggle library ─────
+// Owner OR media.manage.
+
+mediaRouter.patch("/assets/:id", requirePermission("media.upload"), async (req, res, next) => {
+  try {
+    const id = String(req.params.id);
+    const patch = req.body as { filename?: string; folderId?: string | null; isLibrary?: boolean };
+    const canManage = req.permissions?.has("media.manage") ?? false;
+    const out = await withTenant(req.tenantId!, async (db) => {
+      const actor = await resolveActorPartyId(db, req.tenantId!, req.userId);
+      const owner = await db.execute(sql`
+        SELECT uploaded_by AS "uploadedBy" FROM media_asset WHERE id = ${id} LIMIT 1
+      `);
+      const row = owner.rows[0] as { uploadedBy: string | null } | undefined;
+      if (!row)                                     return { kind: "not-found" as const };
+      if (row.uploadedBy !== actor && !canManage)   return { kind: "forbidden" as const };
+      const sets: ReturnType<typeof sql>[] = [];
+      if (typeof patch.filename === "string" && patch.filename.trim()) sets.push(sql`filename = ${patch.filename.trim()}`);
+      if (patch.folderId !== undefined) sets.push(sql`folder_id = ${patch.folderId}`);
+      if (typeof patch.isLibrary === "boolean") sets.push(sql`is_library = ${patch.isLibrary}`);
+      if (sets.length === 0) return { kind: "ok" as const };
+      await db.execute(sql`UPDATE media_asset SET ${sql.join(sets, sql`, `)} WHERE id = ${id}`);
+      return { kind: "ok" as const };
+    });
+    if (out.kind === "not-found") return res.status(404).json({ error: "Not found" });
+    if (out.kind === "forbidden") return res.status(403).json({ error: "You can only edit your own uploads" });
+    return res.json({ ok: true });
+  } catch (err) { next(err); }
+});
+
+// ─── DELETE /media/assets/:id — soft-delete + free blob bytes ───────────
+
+mediaRouter.delete("/assets/:id", requirePermission("media.upload"), async (req, res, next) => {
+  try {
+    const id = String(req.params.id);
+    const canManage = req.permissions?.has("media.manage") ?? false;
+    const out = await withTenant(req.tenantId!, async (db) => {
+      const actor = await resolveActorPartyId(db, req.tenantId!, req.userId);
+      const owner = await db.execute(sql`
+        SELECT uploaded_by AS "uploadedBy",
+               blob_pathname AS "pathname",
+               provider_hosted AS "providerHosted",
+               EXISTS (SELECT 1 FROM tw_message_media m WHERE m.asset_id = media_asset.id) AS "inUse"
+        FROM media_asset WHERE id = ${id} LIMIT 1
+      `);
+      const row = owner.rows[0] as {
+        uploadedBy: string | null; pathname: string | null;
+        providerHosted: boolean; inUse: boolean;
+      } | undefined;
+      if (!row)                                     return { kind: "not-found" as const };
+      if (row.uploadedBy !== actor && !canManage)   return { kind: "forbidden" as const };
+      if (row.inUse) {
+        // Soft-delete only; keeps the blob so old message threads still render.
+        await db.execute(sql`UPDATE media_asset SET deleted_at = now() WHERE id = ${id}`);
+        return { kind: "soft" as const };
+      }
+      // Free the blob for uploads we own; leave Twilio-hosted URLs alone.
+      if (row.pathname && !row.providerHosted) {
+        try { await deleteBlob(row.pathname); }
+        catch (err) { console.warn("[media] blob delete failed (continuing):", (err as Error).message); }
+      }
+      await db.execute(sql`DELETE FROM media_asset WHERE id = ${id}`);
+      return { kind: "hard" as const };
+    });
+    if (out.kind === "not-found") return res.status(404).json({ error: "Not found" });
+    if (out.kind === "forbidden") return res.status(403).json({ error: "You can only delete your own uploads" });
+    return res.json({ ok: true, deleted: out.kind });
+  } catch (err) { next(err); }
+});
+
+// ─── GET /media/proxy/:id ───────────────────────────────────────────────
+// Streams the underlying blob to the caller. Used for provider-hosted
+// (Twilio) URLs which need Basic auth to fetch; also works transparently
+// for Vercel Blob URLs.
+
+mediaRouter.get("/proxy/:id", requirePermission("media.read"), async (req, res, next) => {
+  try {
+    const id = String(req.params.id);
+    const meta = await withTenant(req.tenantId!, async (db) => {
+      const r = await db.execute(sql`
+        SELECT filename, content_type AS "contentType",
+               blob_url AS "blobUrl",
+               provider_hosted AS "providerHosted"
+        FROM media_asset WHERE id = ${id} LIMIT 1
+      `);
+      return r.rows[0] as
+        | { filename: string; contentType: string; blobUrl: string; providerHosted: boolean }
+        | undefined;
+    });
+    if (!meta) return res.status(404).json({ error: "Not found" });
+
+    const headers: Record<string, string> = {};
+    if (meta.providerHosted) {
+      // Twilio URLs need Basic auth. Pull creds via the client helper.
+      try {
+        const cfg = readTwilioConfig();
+        const basic = Buffer.from(`${cfg.sid}:${cfg.token}`, "utf8").toString("base64");
+        headers.Authorization = `Basic ${basic}`;
+      } catch {
+        // If Twilio env isn't set we still can't fetch — return 502.
+        return res.status(502).json({ error: "Twilio not configured; cannot proxy inbound media" });
+      }
+      void readTwilioAuthToken();
+    }
+
+    const upstream = await fetch(meta.blobUrl, { headers });
+    if (!upstream.ok || !upstream.body) {
+      return res.status(upstream.status || 502).json({ error: "Upstream fetch failed" });
+    }
+    res.setHeader("Content-Type", upstream.headers.get("content-type") ?? meta.contentType);
+    res.setHeader("Cache-Control", "private, max-age=300");
+    res.setHeader("Content-Disposition", `inline; filename="${meta.filename.replace(/"/g, "")}"`);
+    // Stream through. Node 20's fetch returns a web ReadableStream; convert.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const { Readable } = await import("node:stream");
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    Readable.fromWeb(upstream.body as any).pipe(res);
+  } catch (err) { next(err); }
+});

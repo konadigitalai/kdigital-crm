@@ -31,6 +31,7 @@
     "@langchain/core": "^0.3.30",
     "@langchain/langgraph": "^0.2.34",
     "@langchain/langgraph-checkpoint-postgres": "^0.0.1",
+    "@vercel/blob": "^2.6.1",
     "dotenv": "^16.4.5",
     "drizzle-orm": "^0.36.4",
     "express": "^4.21.1",

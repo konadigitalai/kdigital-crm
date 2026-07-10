@@ -62,12 +62,17 @@ export interface SendResult {
 /**
  * POST /2010-04-01/Accounts/{SID}/Messages.json with Basic auth.
  * Body is form-encoded per the Twilio API convention.
+ *
+ * `mediaUrls` — up to 10 public HTTPS URLs. Twilio downloads each and
+ * attaches it to the message. WhatsApp accepts richer types; SMS/MMS
+ * limits to images (per-channel validation should happen in the caller).
  */
 export async function sendMessage(
   channel: TwChannel,
   toE164Addr: string,
   body: string,
   cfg: TwilioConfig = readTwilioConfig(),
+  mediaUrls: string[] = [],
 ): Promise<SendResult> {
   const url = `https://api.twilio.com/2010-04-01/Accounts/${encodeURIComponent(cfg.sid)}/Messages.json`;
   const from = channel === "whatsapp" ? formatTwilioAddr("whatsapp", cfg.waFrom) : cfg.smsFrom;
@@ -82,7 +87,9 @@ export async function sendMessage(
   const form = new URLSearchParams();
   form.set("From", from);
   form.set("To",   to);
-  form.set("Body", body);
+  if (body) form.set("Body", body);
+  // Twilio accepts repeated MediaUrl fields; cap at 10 to match their limit.
+  for (const url of mediaUrls.slice(0, 10)) form.append("MediaUrl", url);
 
   const basic = Buffer.from(`${cfg.sid}:${cfg.token}`, "utf8").toString("base64");
   const ctrl  = new AbortController();

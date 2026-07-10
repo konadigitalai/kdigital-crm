@@ -38,6 +38,42 @@ export interface TwMessage {
   senderUserId: string | null;
   sentAt: string;
   deliveredAt: string | null;
+  /** File attachments in send/receive order. Empty array when none. */
+  media?: TwMessageMedia[];
+}
+
+export interface TwMessageMedia {
+  assetId: string;
+  filename: string;
+  contentType: string;
+  sizeBytes: number;
+  providerHosted: boolean;
+  ordinal: number;
+}
+
+// ── Media library ────────────────────────────────────────────────────────
+
+export interface MediaFolder {
+  id: string;
+  name: string;
+  createdAt: string;
+  createdBy: string | null;
+  assetCount: number;
+}
+
+export interface MediaAsset {
+  id: string;
+  filename: string;
+  contentType: string;
+  sizeBytes: number;
+  blobUrl: string;
+  isLibrary: boolean;
+  source: "user_upload" | "twilio_inbound";
+  providerHosted: boolean;
+  uploadedBy: string | null;
+  folderId: string | null;
+  folderName: string | null;
+  createdAt: string;
 }
 
 export interface TwConversationDetail {

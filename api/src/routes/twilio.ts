@@ -24,6 +24,7 @@ import {
   recordOutbound,
   insertActivityForMessage,
 } from "../lib/twilio/inbox.js";
+import { validateMediaForChannel } from "../lib/twilio/media.js";
 
 export const twilioRouter = Router();
 
@@ -37,13 +38,17 @@ const CHANNELS: TwChannel[] = ["sms", "whatsapp"];
 
 twilioRouter.post("/send", requirePermission("messaging.send"), async (req, res, next) => {
   try {
-    const body = req.body as { channel?: string; to?: string; body?: string };
+    const body = req.body as { channel?: string; to?: string; body?: string; mediaAssetIds?: string[] };
     const channel = body.channel as TwChannel;
     if (!CHANNELS.includes(channel)) return res.status(400).json({ error: "channel must be 'sms' or 'whatsapp'" });
     const text = String(body.body ?? "").trim();
-    if (!text) return res.status(400).json({ error: "body is required" });
     const to   = String(body.to ?? "").trim();
     if (!to)   return res.status(400).json({ error: "to is required" });
+    const mediaAssetIds = Array.isArray(body.mediaAssetIds) ? body.mediaAssetIds.slice(0, 10) : [];
+    // Twilio requires SOMETHING to send — either body or at least one media.
+    if (!text && mediaAssetIds.length === 0) {
+      return res.status(400).json({ error: "body or mediaAssetIds is required" });
+    }
 
     // Ensure Twilio is configured before we ever touch the DB.
     let cfg;
@@ -57,9 +62,40 @@ twilioRouter.post("/send", requirePermission("messaging.send"), async (req, res,
       const { partyId, partyPhone, workItemId } = await resolveToParty(db, to);
       if (!partyPhone) return { kind: "no-phone" as const };
 
-      const send = await sendMessage(channel, partyPhone, text, cfg);
-
       const actorPartyId = await resolveActorPartyId(db, req.tenantId!, req.userId);
+
+      // Resolve media assets: must be owned by the actor OR in the library.
+      // Enforce per-channel caps server-side. Collect blob URLs in order.
+      const mediaUrls: string[] = [];
+      const mediaMimes: string[] = [];
+      if (mediaAssetIds.length) {
+        for (const assetId of mediaAssetIds) {
+          const r = await db.execute(sql`
+            SELECT id, filename, content_type AS "contentType", size_bytes AS "sizeBytes",
+                   blob_url AS "blobUrl", is_library AS "isLibrary",
+                   uploaded_by AS "uploadedBy", provider_hosted AS "providerHosted"
+            FROM media_asset
+            WHERE id = ${assetId} AND deleted_at IS NULL
+            LIMIT 1
+          `);
+          const asset = r.rows[0] as
+            | { contentType: string; sizeBytes: string | number; blobUrl: string;
+                isLibrary: boolean; uploadedBy: string | null; providerHosted: boolean }
+            | undefined;
+          if (!asset) return { kind: "bad-media" as const, reason: `Unknown media asset ${assetId}` };
+          if (!asset.isLibrary && asset.uploadedBy !== actorPartyId) {
+            return { kind: "bad-media" as const, reason: "You can only attach your own uploads or library assets." };
+          }
+          const size = typeof asset.sizeBytes === "string" ? Number(asset.sizeBytes) : asset.sizeBytes;
+          const check = validateMediaForChannel(channel, asset.contentType, size);
+          if (!check.ok) return { kind: "bad-media" as const, reason: check.reason };
+          mediaUrls.push(asset.blobUrl);
+          mediaMimes.push(asset.contentType);
+        }
+      }
+
+      const send = await sendMessage(channel, partyPhone, text, cfg, mediaUrls);
+
       const conv = await upsertConversation(db, partyId, channel, workItemId == null);
       const msgId = await recordOutbound(db, conv.id, {
         channel,
@@ -67,6 +103,7 @@ twilioRouter.post("/send", requirePermission("messaging.send"), async (req, res,
         toE164:   partyPhone,
         body:     text,
         senderUserPartyId: actorPartyId,
+        mediaAssetIds,
         send,
       });
       await insertActivityForMessage(db, {
@@ -78,6 +115,8 @@ twilioRouter.post("/send", requirePermission("messaging.send"), async (req, res,
         direction:    "outbound",
         channel,
         body:         text,
+        mediaCount:   mediaAssetIds.length,
+        mediaMimes,
       });
 
       return {
@@ -93,6 +132,9 @@ twilioRouter.post("/send", requirePermission("messaging.send"), async (req, res,
 
     if (result.kind === "no-phone") {
       return res.status(400).json({ error: `No phone number for ${to}` });
+    }
+    if (result.kind === "bad-media") {
+      return res.status(400).json({ error: result.reason });
     }
     return res.json(result);
   } catch (err) { next(err); }
@@ -184,17 +226,36 @@ twilioRouter.get("/conversations/:id", requirePermission("messaging.read"), asyn
       if (!conv) return null;
       const mR = await db.execute(sql`
         SELECT
-          id, direction, channel,
-          from_number  AS "fromNumber",
-          to_number    AS "toNumber",
-          body,
-          provider_message_id AS "providerMessageId",
-          status, error_code AS "errorCode", error_message AS "errorMessage",
-          sender_user_id AS "senderUserId",
-          sent_at AS "sentAt", delivered_at AS "deliveredAt"
-        FROM tw_message
-        WHERE conversation_id = ${id}
-        ORDER BY sent_at ASC
+          m.id, m.direction, m.channel,
+          m.from_number  AS "fromNumber",
+          m.to_number    AS "toNumber",
+          m.body,
+          m.provider_message_id AS "providerMessageId",
+          m.status, m.error_code AS "errorCode", m.error_message AS "errorMessage",
+          m.sender_user_id AS "senderUserId",
+          m.sent_at AS "sentAt", m.delivered_at AS "deliveredAt",
+          COALESCE(
+            (
+              SELECT jsonb_agg(
+                       jsonb_build_object(
+                         'assetId', a.id,
+                         'filename', a.filename,
+                         'contentType', a.content_type,
+                         'sizeBytes', a.size_bytes,
+                         'providerHosted', a.provider_hosted,
+                         'ordinal', mm.ordinal
+                       )
+                       ORDER BY mm.ordinal
+                     )
+              FROM tw_message_media mm
+              JOIN media_asset a ON a.id = mm.asset_id
+              WHERE mm.message_id = m.id
+            ),
+            '[]'::jsonb
+          ) AS "media"
+        FROM tw_message m
+        WHERE m.conversation_id = ${id}
+        ORDER BY m.sent_at ASC
         LIMIT 500
       `);
       return { conversation: conv, messages: mR.rows };
@@ -211,7 +272,10 @@ twilioRouter.post("/conversations/:id/messages", requirePermission("messaging.se
   try {
     const id   = String(req.params.id);
     const text = String((req.body?.body ?? "") as string).trim();
-    if (!text) return res.status(400).json({ error: "body is required" });
+    const mediaAssetIds = Array.isArray(req.body?.mediaAssetIds) ? (req.body.mediaAssetIds as string[]).slice(0, 10) : [];
+    if (!text && mediaAssetIds.length === 0) {
+      return res.status(400).json({ error: "body or mediaAssetIds is required" });
+    }
 
     let cfg;
     try { cfg = readTwilioConfig(); }
@@ -246,14 +310,42 @@ twilioRouter.post("/conversations/:id/messages", requirePermission("messaging.se
       if (!partyPhone) return { kind: "no-phone" as const };
       const conv = { ...row, partyPhone };
 
-      const send = await sendMessage(conv.channel, conv.partyPhone, text, cfg);
       const actorPartyId = await resolveActorPartyId(db, req.tenantId!, req.userId);
+
+      // Resolve media (same rules as /send): must be owned by actor or in library.
+      const mediaUrls: string[] = [];
+      const mediaMimes: string[] = [];
+      if (mediaAssetIds.length) {
+        for (const assetId of mediaAssetIds) {
+          const r = await db.execute(sql`
+            SELECT content_type AS "contentType", size_bytes AS "sizeBytes",
+                   blob_url AS "blobUrl", is_library AS "isLibrary",
+                   uploaded_by AS "uploadedBy"
+            FROM media_asset WHERE id = ${assetId} AND deleted_at IS NULL LIMIT 1
+          `);
+          const asset = r.rows[0] as
+            | { contentType: string; sizeBytes: string | number; blobUrl: string; isLibrary: boolean; uploadedBy: string | null }
+            | undefined;
+          if (!asset) return { kind: "bad-media" as const, reason: `Unknown media asset ${assetId}` };
+          if (!asset.isLibrary && asset.uploadedBy !== actorPartyId) {
+            return { kind: "bad-media" as const, reason: "You can only attach your own uploads or library assets." };
+          }
+          const size = typeof asset.sizeBytes === "string" ? Number(asset.sizeBytes) : asset.sizeBytes;
+          const check = validateMediaForChannel(conv.channel, asset.contentType, size);
+          if (!check.ok) return { kind: "bad-media" as const, reason: check.reason };
+          mediaUrls.push(asset.blobUrl);
+          mediaMimes.push(asset.contentType);
+        }
+      }
+
+      const send = await sendMessage(conv.channel, conv.partyPhone, text, cfg, mediaUrls);
       const msgId = await recordOutbound(db, conv.id, {
         channel: conv.channel,
         fromE164: conv.channel === "whatsapp" ? cfg.waFrom : cfg.smsFrom,
         toE164:   conv.partyPhone,
         body:     text,
         senderUserPartyId: actorPartyId,
+        mediaAssetIds,
         send,
       });
       await insertActivityForMessage(db, {
@@ -265,6 +357,8 @@ twilioRouter.post("/conversations/:id/messages", requirePermission("messaging.se
         direction:  "outbound",
         channel:    conv.channel,
         body:       text,
+        mediaCount: mediaAssetIds.length,
+        mediaMimes,
       });
 
       return {
@@ -279,6 +373,7 @@ twilioRouter.post("/conversations/:id/messages", requirePermission("messaging.se
 
     if (result.kind === "not-found") return res.status(404).json({ error: "Conversation not found" });
     if (result.kind === "no-phone")  return res.status(400).json({ error: "This contact has no phone number" });
+    if (result.kind === "bad-media") return res.status(400).json({ error: result.reason });
     return res.json(result);
   } catch (err) { next(err); }
 });

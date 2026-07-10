@@ -48,6 +48,9 @@ export interface ParsedInboundMessage {
   body:              string;
   profileName:       string | null;  // WhatsApp only
   numMedia:          number;
+  /** Media URLs Twilio sent us. Each URL is Basic-auth gated by Twilio's
+   *  master credentials — we save them as-is and proxy at render time. */
+  media:             Array<{ url: string; contentType: string }>;
   raw:               Record<string, string>;
 }
 
@@ -77,6 +80,13 @@ export function parseTwilioWebhook(form: Record<string, string>): ParsedTwilioWe
     const from = parseTwilioAddr(form.From);
     const to   = parseTwilioAddr(form.To);
     if (!from || !to) return { kind: "ignore" };
+    const numMedia = Number(form.NumMedia ?? "0") || 0;
+    const media: Array<{ url: string; contentType: string }> = [];
+    for (let i = 0; i < numMedia && i < 10; i++) {
+      const url = form[`MediaUrl${i}`];
+      const contentType = form[`MediaContentType${i}`] ?? "application/octet-stream";
+      if (url) media.push({ url, contentType });
+    }
     return {
       kind: "inbound",
       providerMessageId: sid,
@@ -85,7 +95,8 @@ export function parseTwilioWebhook(form: Record<string, string>): ParsedTwilioWe
       toE164:   to.e164,
       body: form.Body,
       profileName: (form.ProfileName ?? "").trim() || null,
-      numMedia: Number(form.NumMedia ?? "0"),
+      numMedia,
+      media,
       raw: form,
     };
   }

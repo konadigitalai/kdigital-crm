@@ -63,6 +63,9 @@ const ALL_CARDS: SettingsCard[] = [
   { section: "Channels", href: "/admin/integrations/slack",    icon: "globe",          title: "Slack",
     blurb: "Automated rules + manual share targets.",
     requires: "integrations.read" },
+  { section: "Channels", href: "/admin/media",                 icon: "doc",            title: "Media library",
+    blurb: "Shared brochures, invoices, and other files reusable across Twilio sends.",
+    requires: "media.read" },
 
   // Data — destructive / archival
   { section: "Data", href: "/admin/leads/deleted", icon: "inbox", title: "Deleted leads",

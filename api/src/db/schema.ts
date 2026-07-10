@@ -1366,6 +1366,68 @@ export const twMessage = pgTable(
   }),
 );
 
+// ─── Media library + Twilio message attachments ──────────────────────────
+// See post-0067-media.sql for DDL + RLS.
+
+export const mediaFolder = pgTable(
+  "media_folder",
+  {
+    id:         uuid("id").primaryKey().defaultRandom(),
+    tenantId:   uuid("tenant_id").notNull().references(() => tenant.id),
+    name:       text("name").notNull(),
+    createdBy:  uuid("created_by").references(() => party.id, { onDelete: "set null" }),
+    createdAt:  timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    tenantNameKey: uniqueIndex("media_folder_tenant_name_key")
+      .on(t.tenantId, sql`lower(${t.name})`),
+  }),
+);
+
+export const mediaAsset = pgTable(
+  "media_asset",
+  {
+    id:              uuid("id").primaryKey().defaultRandom(),
+    tenantId:        uuid("tenant_id").notNull().references(() => tenant.id),
+    folderId:        uuid("folder_id").references(() => mediaFolder.id, { onDelete: "set null" }),
+    uploadedBy:      uuid("uploaded_by").references(() => party.id, { onDelete: "set null" }),
+    filename:        text("filename").notNull(),
+    contentType:     text("content_type").notNull(),
+    sizeBytes:       bigint("size_bytes", { mode: "bigint" }).notNull(),
+    sha256:          text("sha256"),
+    blobUrl:         text("blob_url").notNull(),
+    blobPathname:    text("blob_pathname"),
+    isLibrary:       boolean("is_library").notNull().default(false),
+    source:          text("source").notNull().default("user_upload"),
+    providerHosted:  boolean("provider_hosted").notNull().default(false),
+    deletedAt:       timestamp("deleted_at", { withTimezone: true }),
+    createdAt:       timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    tenantFolderIdx: index("media_asset_tenant_folder_idx")
+      .on(t.tenantId, t.folderId, t.createdAt),
+    tenantUploaderIdx: index("media_asset_tenant_uploader_idx")
+      .on(t.tenantId, t.uploadedBy, t.createdAt),
+    sourceCheck: check("media_asset_source_check",
+      sql`${t.source} IN ('user_upload','twilio_inbound')`),
+  }),
+);
+
+export const twMessageMedia = pgTable(
+  "tw_message_media",
+  {
+    messageId:  uuid("message_id").notNull()
+                  .references(() => twMessage.id, { onDelete: "cascade" }),
+    assetId:    uuid("asset_id").notNull()
+                  .references(() => mediaAsset.id, { onDelete: "restrict" }),
+    ordinal:    integer("ordinal").notNull(),
+  },
+  (t) => ({
+    pk:         uniqueIndex("tw_message_media_pk").on(t.messageId, t.ordinal),
+    assetIdx:   index("tw_message_media_asset_idx").on(t.assetId),
+  }),
+);
+
 // Type exports — convenient for routes/seed
 export type Tenant = typeof tenant.$inferSelect;
 export type Stack = typeof stack.$inferSelect;
@@ -1391,3 +1453,6 @@ export type SlackWorkspace = typeof slackWorkspace.$inferSelect;
 export type SlackShareTarget = typeof slackShareTarget.$inferSelect;
 export type TwConversation = typeof twConversation.$inferSelect;
 export type TwMessage = typeof twMessage.$inferSelect;
+export type MediaFolder = typeof mediaFolder.$inferSelect;
+export type MediaAsset = typeof mediaAsset.$inferSelect;
+export type TwMessageMedia = typeof twMessageMedia.$inferSelect;

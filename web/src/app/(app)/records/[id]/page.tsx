@@ -73,6 +73,8 @@ export default async function RecordPage({
   const canRunAgents   = !isConverted && (me?.permissions.includes("agents.run")  ?? false);
   const canDecideApproval = me?.permissions.includes("agents.run")  ?? false;
   const canSendMessage    = me?.permissions.includes("messaging.send") ?? false;
+  const canUploadMedia    = me?.permissions.includes("media.upload") ?? false;
+  const canManageMedia    = me?.permissions.includes("media.manage") ?? false;
   const sourceKey = (lead as { leadSource?: string | null }).leadSource ?? null;
   const advisorId = (lead as { advisorId?: string | null }).advisorId ?? null;
 
@@ -218,6 +220,8 @@ export default async function RecordPage({
                 <SendMessageButton
                   leadNumber={lead.number}
                   leadPhone={composeE164(attrs.phoneCountryCode ?? null, attrs.phone ?? null)}
+                  canUpload={canUploadMedia}
+                  canAddToLibrary={canManageMedia}
                 />
               )}
               {!isConverted && canDeleteLead && (

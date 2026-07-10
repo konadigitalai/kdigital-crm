@@ -39,6 +39,10 @@ export const PERMISSIONS = [
 
   "messaging.read",
   "messaging.send",
+
+  "media.read",
+  "media.upload",
+  "media.manage",
 ] as const;
 
 export type Permission = (typeof PERMISSIONS)[number];
@@ -191,6 +195,16 @@ export const MODULE_CATALOG: ModuleAccess[] = [
       { key: "send", label: "Send", permission: "messaging.send" },
     ],
   },
+  {
+    key: "media",
+    label: "Media library",
+    description: "Upload files, manage the shared media library used when sending WhatsApp/SMS attachments.",
+    levels: [
+      { key: "read",   label: "Read",   permission: "media.read" },
+      { key: "upload", label: "Upload", permission: "media.upload" },
+      { key: "manage", label: "Manage", permission: "media.manage" },
+    ],
+  },
 ];
 
 // Quick-fill presets shown above the checkbox grid in the group editor.
@@ -210,6 +224,7 @@ const ADVISOR_PERMS: Permission[] = [
   "leaves.read.self",
   "reports.read",
   "messaging.read", "messaging.send",
+  "media.read", "media.upload",
 ];
 
 const SUPPORT_PERMS: Permission[] = [
@@ -218,6 +233,7 @@ const SUPPORT_PERMS: Permission[] = [
   "events.manage.self",
   "leaves.read.self",
   "messaging.read", "messaging.send",
+  "media.read", "media.upload",
 ];
 
 const TRAINER_PERMS: Permission[] = [
@@ -282,6 +298,7 @@ export const SYSTEM_GROUPS: Array<{ name: string; description: string; permissio
       "leaves.read.self",
       "events.manage.self",
       "messaging.read", "messaging.send",
+      "media.read", "media.upload", "media.manage",
     ],
   },
   {

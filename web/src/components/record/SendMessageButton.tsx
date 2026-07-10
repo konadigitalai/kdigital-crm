@@ -9,15 +9,23 @@ import { useRouter } from "next/navigation";
 import { Icon } from "@/components/ui/Icon";
 import { cn } from "@/lib/cn";
 import { sendTwMessageToLead } from "@/lib/api";
-import type { TwChannel } from "@/lib/types";
+import type { MediaAsset, TwChannel } from "@/lib/types";
+import { AttachmentPicker } from "@/components/media/AttachmentPicker";
+import { StagedStrip } from "@/components/media/StagedStrip";
 
 export function SendMessageButton({
   leadNumber,
   leadPhone,
+  canUpload = false,
+  canAddToLibrary = false,
   className,
 }: {
   leadNumber: string;
   leadPhone: string | null | undefined;
+  /** Gate the Attach button on media.upload */
+  canUpload?: boolean;
+  /** Gate the "Add to library" toggle on media.manage */
+  canAddToLibrary?: boolean;
   className?: string;
 }) {
   const [open, setOpen] = useState(false);
@@ -43,6 +51,8 @@ export function SendMessageButton({
         <SendMessageDialog
           leadNumber={leadNumber}
           leadPhone={leadPhone}
+          canUpload={canUpload}
+          canAddToLibrary={canAddToLibrary}
           onClose={() => setOpen(false)}
         />
       )}
@@ -51,10 +61,12 @@ export function SendMessageButton({
 }
 
 function SendMessageDialog({
-  leadNumber, leadPhone, onClose,
+  leadNumber, leadPhone, canUpload, canAddToLibrary, onClose,
 }: {
   leadNumber: string;
   leadPhone: string;
+  canUpload: boolean;
+  canAddToLibrary: boolean;
   onClose: () => void;
 }) {
   const router = useRouter();
@@ -63,14 +75,21 @@ function SendMessageDialog({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [done, setDone] = useState<null | { channel: TwChannel; providerMessageId: string | null }>(null);
+  const [staged, setStaged] = useState<MediaAsset[]>([]);
+  const [pickerOpen, setPickerOpen] = useState(false);
 
   async function submit() {
     const text = body.trim();
-    if (!text || busy) return;
+    if ((!text && staged.length === 0) || busy) return;
     setBusy(true);
     setError(null);
     try {
-      const r = await sendTwMessageToLead({ channel, to: leadNumber, body: text });
+      const r = await sendTwMessageToLead({
+        channel,
+        to: leadNumber,
+        body: text,
+        mediaAssetIds: staged.map((a) => a.id),
+      });
       if (!r.ok) {
         setError(r.errorMessage ?? `Send failed${r.errorCode ? ` (${r.errorCode})` : ""}`);
         return;
@@ -144,6 +163,28 @@ function SendMessageDialog({
                 : "Standard SMS. Character limits and cost per segment apply on the Twilio side."}
             </p>
 
+            {staged.length > 0 && (
+              <StagedStrip
+                assets={staged}
+                onRemove={(id) => setStaged((prev) => prev.filter((a) => a.id !== id))}
+                className="mt-3"
+              />
+            )}
+
+            <div className="mt-3 flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setPickerOpen(true)}
+                className="inline-flex items-center gap-1.5 rounded-md border border-rule bg-paper px-2.5 py-1.5 text-[12px] font-semibold text-ink2 transition hover:border-brand-violet hover:text-brand-violet"
+              >
+                <Icon name="plus" size={12} strokeWidth={2.2} />
+                Attach file
+              </button>
+              <span className="mono-cap text-[10px] tracking-[.04em] text-hint">
+                Up to 10 attachments per message.
+              </span>
+            </div>
+
             {error && (
               <div className="mt-3 rounded-lg border border-state-warn/30 bg-state-warn/10 px-3 py-2 text-[12.5px] text-state-warn">
                 {error}
@@ -155,7 +196,7 @@ function SendMessageDialog({
               <button
                 type="button"
                 onClick={submit}
-                disabled={busy || !body.trim()}
+                disabled={busy || (!body.trim() && staged.length === 0)}
                 className="btn-grad disabled:opacity-60"
               >
                 {busy ? "Sending…" : `Send ${channel === "whatsapp" ? "WhatsApp" : "SMS"}`}
@@ -164,6 +205,22 @@ function SendMessageDialog({
           </>
         )}
       </div>
+      {pickerOpen && (
+        <AttachmentPicker
+          channel={channel}
+          canUpload={canUpload}
+          canAddToLibrary={canAddToLibrary}
+          onSelected={(asset) => {
+            if (staged.length >= 10) {
+              setError("You can attach at most 10 files per message.");
+            } else if (!staged.some((a) => a.id === asset.id)) {
+              setStaged((prev) => [...prev, asset]);
+            }
+            setPickerOpen(false);
+          }}
+          onClose={() => setPickerOpen(false)}
+        />
+      )}
     </div>
   );
 }

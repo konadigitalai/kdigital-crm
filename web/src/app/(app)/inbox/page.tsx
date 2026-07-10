@@ -9,8 +9,10 @@ export default async function InboxPage() {
     getTwConversations(),
     getCurrentUser(),
   ]);
-  const canSend = me?.permissions.includes("messaging.send") ?? false;
+  const canSend    = me?.permissions.includes("messaging.send") ?? false;
   const canPromote = me?.permissions.includes("leads.write") ?? false;
+  const canUpload  = me?.permissions.includes("media.upload") ?? false;
+  const canManage  = me?.permissions.includes("media.manage") ?? false;
 
   return (
     <>
@@ -23,6 +25,8 @@ export default async function InboxPage() {
           initialConversations={conversations}
           canSend={canSend}
           canPromote={canPromote}
+          canUpload={canUpload}
+          canAddToLibrary={canManage}
         />
       </div>
     </>

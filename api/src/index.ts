@@ -38,6 +38,7 @@ import { partiesRouter } from "./routes/parties.js";
 import { partyConsentRouter } from "./routes/party-consent.js";
 import { twilioRouter } from "./routes/twilio.js";
 import { twilioWebhookRouter } from "./routes/twilio-webhook.js";
+import { mediaRouter } from "./routes/media.js";
 import { startDedupWorker } from "./lib/party/dedup-worker.js";
 import { ensureCheckpointerSetup } from "./agents/runtime.js";
 
@@ -201,6 +202,11 @@ app.use("/party",   partyConsentRouter);
 // Twilio SMS/WhatsApp — inbox reads + outbound send. Per-handler perms
 // (messaging.read / messaging.send / leads.write for promote-to-lead).
 app.use("/twilio", twilioRouter);
+
+// Media library + file uploads for Twilio attachments. Per-handler perms
+// (media.read / media.upload / media.manage). Uploads flow client→Vercel
+// Blob directly; the API only mints short-lived tokens.
+app.use("/media", mediaRouter);
 
 // JSON error envelope
 app.use((err: Error, _req: express.Request, res: express.Response, _next: express.NextFunction) => {

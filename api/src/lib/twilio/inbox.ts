@@ -198,6 +198,8 @@ export interface OutboundInput {
   toE164:             string;
   body:               string;
   senderUserPartyId:  string | null;
+  /** Media assets attached in send order (0..9). Rows persisted to tw_message_media on success. */
+  mediaAssetIds?:     string[];
   send: {
     ok:                boolean;
     providerMessageId: string | null;
@@ -209,7 +211,9 @@ export interface OutboundInput {
 
 /**
  * Insert an outbound message row for a send attempt (success or failure).
- * Bumps conversation preview on success.
+ * Bumps conversation preview on success. Persists tw_message_media join
+ * rows in the given order (ignored on failure — we don't want orphan joins
+ * to a message row that Twilio never accepted).
  * Returns the new tw_message.id.
  */
 export async function recordOutbound(
@@ -235,6 +239,15 @@ export async function recordOutbound(
     )
     RETURNING id
   `);
+  const messageId = (r.rows[0] as { id: string }).id;
+  if (input.send.ok && input.mediaAssetIds?.length) {
+    for (const [ordinal, assetId] of input.mediaAssetIds.slice(0, 10).entries()) {
+      await db.execute(sql`
+        INSERT INTO tw_message_media (message_id, asset_id, ordinal)
+        VALUES (${messageId}, ${assetId}, ${ordinal})
+      `);
+    }
+  }
   if (input.send.ok) {
     await db.execute(sql`
       UPDATE tw_conversation
@@ -244,7 +257,7 @@ export async function recordOutbound(
       WHERE id = ${conversationId}
     `);
   }
-  return (r.rows[0] as { id: string }).id;
+  return messageId;
 }
 
 // ─── Status callback (delivered / failed) ────────────────────────────────
@@ -285,12 +298,21 @@ export async function insertActivityForMessage(
     direction: "inbound" | "outbound";
     channel: TwChannel;
     body: string;
+    /** Number of files attached to this message, if any. */
+    mediaCount?: number;
+    /** MIME types of the attached files (in order). */
+    mediaMimes?: string[];
   },
 ): Promise<void> {
   if (!input.workItemId) return;
   const verb   = input.channel === "whatsapp" ? "WhatsApp" : "SMS";
   const tag    = input.direction === "outbound" ? "you" : "auto";
-  const detail = `${input.direction === "outbound" ? "Sent" : "Received"}: ${input.body}`;
+  const verbPrefix = input.direction === "outbound" ? "Sent" : "Received";
+  const mediaCount = input.mediaCount ?? 0;
+  const mediaTag = mediaCount > 0
+    ? ` [Attachment${mediaCount > 1 ? ` × ${mediaCount}` : ""}]`
+    : "";
+  const detail = `${verbPrefix}:${mediaTag}${input.body ? ` ${input.body}` : ""}`;
   await db.execute(sql`
     INSERT INTO activity (
       tenant_id, work_item_id, party_id,
@@ -301,7 +323,13 @@ export async function insertActivityForMessage(
       current_tenant(), ${input.workItemId}, ${input.partyId},
       ${input.actorType}, ${input.actorPartyId}, ${input.actorName},
       ${verb}, ${detail}, ${tag},
-      ${JSON.stringify({ kind: "twilio_message", channel: input.channel, direction: input.direction })}::jsonb,
+      ${JSON.stringify({
+        kind: "twilio_message",
+        channel: input.channel,
+        direction: input.direction,
+        mediaCount,
+        mediaMimes: input.mediaMimes ?? [],
+      })}::jsonb,
       now()
     )
   `);

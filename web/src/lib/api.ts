@@ -1147,6 +1147,8 @@ export async function sendTwMessageToLead(input: {
   channel: TwChannel;
   to: string;
   body: string;
+  /** Optional file attachments (up to 10). Order is preserved. */
+  mediaAssetIds?: string[];
 }): Promise<SendTwilioResult & { conversationId?: string }> {
   return await post("/twilio/send", input);
 }
@@ -1155,10 +1157,11 @@ export async function sendTwMessageToLead(input: {
 export async function sendTwMessageInThread(
   conversationId: string,
   body: string,
+  mediaAssetIds: string[] = [],
 ): Promise<SendTwilioResult> {
   return await post(
     `/twilio/conversations/${encodeURIComponent(conversationId)}/messages`,
-    { body },
+    { body, mediaAssetIds },
   );
 }
 
@@ -1172,4 +1175,80 @@ export async function assignTwConversation(id: string, userId: string | null): P
 
 export async function promoteTwConversationToLead(id: string): Promise<{ ok: boolean; number: string; alreadyLead: boolean }> {
   return await post(`/twilio/conversations/${encodeURIComponent(id)}/promote-to-lead`, {});
+}
+
+// ── Media library ────────────────────────────────────────────────────────
+
+import type { MediaFolder, MediaAsset } from "./types";
+import { upload as vercelBlobUpload } from "@vercel/blob/client";
+
+export async function listMediaFolders(): Promise<MediaFolder[]> {
+  const { folders } = await get<{ folders: MediaFolder[] }>("/media/folders");
+  return folders;
+}
+
+export async function createMediaFolder(name: string): Promise<MediaFolder> {
+  return await post<MediaFolder>("/media/folders", { name });
+}
+
+export async function renameMediaFolder(id: string, name: string): Promise<void> {
+  await send<void>("PATCH", `/media/folders/${encodeURIComponent(id)}`, { name });
+}
+
+export async function deleteMediaFolder(id: string): Promise<void> {
+  await send<void>("DELETE", `/media/folders/${encodeURIComponent(id)}`);
+}
+
+export interface ListMediaAssetsFilter {
+  folderId?:  string;
+  /** 'library' shows shared library assets; 'mine' shows uploads by current user; 'all' shows both */
+  scope?:     "library" | "mine" | "all";
+}
+
+export async function listMediaAssets(filter: ListMediaAssetsFilter = {}): Promise<MediaAsset[]> {
+  const qs = new URLSearchParams();
+  if (filter.folderId) qs.set("folder_id", filter.folderId);
+  if (filter.scope)    qs.set("scope",     filter.scope);
+  const path = qs.toString() ? `/media/assets?${qs}` : "/media/assets";
+  const { assets } = await get<{ assets: MediaAsset[] }>(path);
+  return assets;
+}
+
+export async function renameMediaAsset(id: string, patch: {
+  filename?: string; folderId?: string | null; isLibrary?: boolean;
+}): Promise<void> {
+  await send<void>("PATCH", `/media/assets/${encodeURIComponent(id)}`, patch);
+}
+
+export async function deleteMediaAsset(id: string): Promise<void> {
+  await send<void>("DELETE", `/media/assets/${encodeURIComponent(id)}`);
+}
+
+/**
+ * Upload a file directly to Vercel Blob and return the newly-created
+ * media_asset row. The bytes go browser → Blob without touching our API,
+ * bypassing the 6MB Express body cap.
+ *
+ * Passes `isLibrary` + `folderId` through Vercel's `clientPayload` — the
+ * API sees them at token-generate time and stores them on the media_asset
+ * row it inserts on the completion callback.
+ */
+export async function uploadMediaAsset(
+  file: File,
+  opts: { isLibrary?: boolean; folderId?: string | null } = {},
+): Promise<{ url: string; pathname: string }> {
+  const clientPayload = JSON.stringify({
+    isLibrary: !!opts.isLibrary,
+    folderId:  opts.folderId ?? null,
+  });
+  const authz = await authHeaders();
+  const result = await vercelBlobUpload(file.name, file, {
+    access: "public",
+    handleUploadUrl: `${API_URL}/media/upload-token`,
+    clientPayload,
+    contentType: file.type,
+    // Prepend our JWT so the API can auth the handleUpload token request.
+    headers: authz,
+  });
+  return { url: result.url, pathname: result.pathname };
 }
