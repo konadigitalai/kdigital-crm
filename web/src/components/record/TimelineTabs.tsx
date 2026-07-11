@@ -96,18 +96,60 @@ export function TimelineTabs({
   const showMessages = hasPhone && !!partyId;
   const visibleTabs = TABS.filter((t) => t.key !== "messages" || showMessages);
   const [tab, setTab] = useState<Tab>("notes");
+  const [query, setQuery] = useState("");
 
   // Filter rows by tab.
   const emails = timeline.filter((t) => t.verb === "Email" || t.verb === "Sent" || t.payload?.kind === "email");
   const notes  = timeline.filter((t) => t.verb === "Note" || t.payload?.kind === "note");
 
+  // Search predicate: match against actor, verb, and detail. Case-insensitive.
+  // Empty query = pass-through. Messages tab does its own search internally.
+  const q = query.trim().toLowerCase();
+  const filterRows = (rows: TimelineRow[]) => {
+    if (!q) return rows;
+    return rows.filter((r) =>
+      (r.actorName ?? "").toLowerCase().includes(q) ||
+      (r.verb     ?? "").toLowerCase().includes(q) ||
+      (r.detail   ?? "").toLowerCase().includes(q),
+    );
+  };
+  const filteredTimeline = filterRows(timeline);
+  const filteredEmails   = filterRows(emails);
+  const filteredNotes    = filterRows(notes);
+
   return (
     <>
+      {/* Search bar — filters the timeline / emails / notes tabs by actor,
+          verb, or detail. Empty query is a no-op. The Messages tab reads
+          from a different data source so it's unaffected — that surface
+          has its own natural conversation filtering (unread etc.). */}
+      <div className="mb-3 flex items-center gap-2 rounded-[10px] border border-rule bg-paper px-3 py-2">
+        <Icon name="search" size={14} strokeWidth={2} className="text-mute" />
+        <input
+          type="text"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder="Search this lead's activity "
+          className="flex-1 bg-transparent text-[13px] text-ink placeholder:text-hint focus:outline-none"
+          aria-label="Search timeline"
+        />
+        {query && (
+          <button
+            type="button"
+            onClick={() => setQuery("")}
+            className="rounded-md p-0.5 text-mute hover:text-ink"
+            aria-label="Clear search"
+          >
+            <Icon name="plus" size={12} strokeWidth={2} className="rotate-45" />
+          </button>
+        )}
+      </div>
+
       <div className="mb-5 flex gap-1 border-b border-rule">
         {visibleTabs.map((t) => {
-          const count = t.key === "timeline" ? timeline.length
-                      : t.key === "emails"   ? emails.length
-                      : t.key === "notes"    ? notes.length
+          const count = t.key === "timeline" ? filteredTimeline.length
+                      : t.key === "emails"   ? filteredEmails.length
+                      : t.key === "notes"    ? filteredNotes.length
                       : 0;
           return (
             <button
@@ -130,9 +172,9 @@ export function TimelineTabs({
       {tab === "messages" && showMessages && partyId && (
         <MessagesTab partyId={partyId} canSend={canSendMessage} />
       )}
-      {tab === "timeline" && <TimelineView rows={timeline} />}
-      {tab === "emails"   && <EmailsView   rows={emails} />}
-      {tab === "notes"    && <NotesView    rows={notes} leadNumber={leadNumber} />}
+      {tab === "timeline" && <TimelineView rows={filteredTimeline} />}
+      {tab === "emails"   && <EmailsView   rows={filteredEmails} />}
+      {tab === "notes"    && <NotesView    rows={filteredNotes} leadNumber={leadNumber} />}
     </>
   );
 }

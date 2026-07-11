@@ -18,6 +18,7 @@ recordsRouter.get("/:idOrNumber", async (req, res, next) => {
               SELECT
                 wi.id              AS id,
                 wi.number          AS number,
+                wi.created_at      AS "createdAt",
                 p.id               AS "partyId",
                 p.name             AS name,
                 p.email            AS "partyEmail",
@@ -65,6 +66,7 @@ recordsRouter.get("/:idOrNumber", async (req, res, next) => {
               SELECT
                 wi.id              AS id,
                 wi.number          AS number,
+                wi.created_at      AS "createdAt",
                 p.id               AS "partyId",
                 p.name             AS name,
                 p.email            AS "partyEmail",
