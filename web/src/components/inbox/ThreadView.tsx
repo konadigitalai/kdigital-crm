@@ -17,8 +17,8 @@ import { ReplyBox } from "./ReplyBox";
 import { MessageMediaGallery } from "@/components/media/MessageMediaGallery";
 import { linkify } from "./linkify";
 import { CHAT_BG_DATA_URL } from "./chatBg";
-import { CallButton } from "@/components/record/CallButton";
 import { NewLeadDialog } from "@/components/leads/NewLeadDialog";
+import { CallButton } from "@/components/record/CallButton";
 
 const DETAIL_POLL_MS = 10_000;
 
