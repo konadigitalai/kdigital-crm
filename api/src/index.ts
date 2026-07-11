@@ -38,6 +38,8 @@ import { partiesRouter } from "./routes/parties.js";
 import { partyConsentRouter } from "./routes/party-consent.js";
 import { twilioRouter } from "./routes/twilio.js";
 import { twilioWebhookRouter } from "./routes/twilio-webhook.js";
+import { exotelRouter } from "./routes/exotel.js";
+import { exotelWebhookRouter } from "./routes/exotel-webhook.js";
 import { templatesRouter } from "./routes/templates.js";
 import { campaignsRouter } from "./routes/campaigns.js";
 import { startCampaignWorker } from "./lib/campaigns/worker.js";
@@ -62,6 +64,19 @@ app.use(
     },
   }),
   twilioWebhookRouter,
+);
+
+// Exotel webhooks — StatusCallback POSTs JSON (we set that on outbound),
+// Passthru inbound POSTs form-urlencoded. Both parsers are mounted here
+// BEFORE the global express.json so the body is object-parsed regardless
+// of Content-Type. Same body-parser-first-body-then-router pattern as
+// Twilio above. No HMAC — Exotel doesn't sign webhooks; the route enforces
+// IP allowlist + 200-on-error to prevent retries.
+app.use(
+  "/webhooks/exotel",
+  express.urlencoded({ extended: false }),
+  express.json(),
+  exotelWebhookRouter,
 );
 
 // 6 MB gives us headroom for base64-encoded receipt images (3 MB source →
@@ -210,6 +225,11 @@ app.use("/party",   partyConsentRouter);
 // Twilio SMS/WhatsApp — inbox reads + outbound send. Per-handler perms
 // (messaging.read / messaging.send / leads.write for promote-to-lead).
 app.use("/twilio", twilioRouter);
+
+// Exotel — click-to-call. Only one endpoint (POST /exotel/call) so we mount
+// the whole router here. Voice threads then appear as channel='voice' rows
+// in the same tw_conversation table Twilio uses; nothing else to wire.
+app.use("/exotel", exotelRouter);
 
 // WhatsApp templates (Twilio Content Builder cache + approval status).
 app.use("/templates", templatesRouter);

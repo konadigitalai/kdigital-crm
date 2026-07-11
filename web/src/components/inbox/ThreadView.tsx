@@ -17,6 +17,7 @@ import { ReplyBox } from "./ReplyBox";
 import { MessageMediaGallery } from "@/components/media/MessageMediaGallery";
 import { linkify } from "./linkify";
 import { CHAT_BG_DATA_URL } from "./chatBg";
+import { CallButton } from "@/components/record/CallButton";
 
 const DETAIL_POLL_MS = 10_000;
 
@@ -87,7 +88,9 @@ export function ThreadView({
         <span
           className={cn(
             "flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-full text-[12px] font-bold text-white",
-            summary.channel === "whatsapp" ? "bg-state-ok" : "bg-brand-blue",
+            summary.channel === "whatsapp" ? "bg-state-ok" :
+            summary.channel === "voice"    ? "bg-brand-violet" :
+            "bg-brand-blue",
           )}
         >
           {initials(summary.partyName)}
@@ -96,7 +99,9 @@ export function ThreadView({
           <div className="flex items-center gap-2">
             <h2 className="truncate text-[16px] font-bold tracking-[-.005em]">{summary.partyName}</h2>
             <span className="mono-cap rounded-full bg-warm2 px-2 py-0.5 text-[9px] font-semibold tracking-[.08em] text-mute">
-              {summary.channel === "whatsapp" ? "WhatsApp" : "SMS"}
+              {summary.channel === "whatsapp" ? "WhatsApp"
+                : summary.channel === "voice"    ? "Voice"
+                : "SMS"}
             </span>
             {summary.leadNumber && (
               <Link
@@ -119,6 +124,11 @@ export function ThreadView({
             {busyPromote ? "Promoting…" : "Promote to lead"}
           </button>
         )}
+        {/* Voice threads get a "Call again" affordance in the header so
+            you don't need to bounce to the record page to redial. */}
+        {summary.channel === "voice" && canSend && summary.leadNumber && summary.partyPhone && (
+          <CallButton leadNumber={summary.leadNumber} leadPhone={summary.partyPhone} />
+        )}
       </div>
 
       {/* Messages — WhatsApp-style chat scroll. Light theme + subtle
@@ -140,9 +150,20 @@ export function ThreadView({
         <MessageList messages={messages} />
       </div>
 
-      {/* Reply */}
+      {/* Reply — text on SMS/WA, Call button on voice. */}
       <div className="border-t border-rule bg-[#f0ece5] p-2.5">
-        {canSend ? (
+        {!canSend ? (
+          <div className="rounded-md border border-dashed border-rule px-3 py-2 text-center text-[12px] text-mute">
+            Read-only — you don&apos;t have the <code>messaging.send</code> permission.
+          </div>
+        ) : summary.channel === "voice" ? (
+          <div className="flex items-center justify-center gap-2 py-2 text-[12.5px] text-mute">
+            <span>Voice thread — no text replies.</span>
+            {summary.leadNumber && summary.partyPhone && (
+              <CallButton leadNumber={summary.leadNumber} leadPhone={summary.partyPhone} />
+            )}
+          </div>
+        ) : (
           <ReplyBox
             conversationId={threadId}
             channel={summary.channel}
@@ -150,10 +171,6 @@ export function ThreadView({
             canAddToLibrary={canAddToLibrary}
             onSent={() => { void fetchDetail(); onRefreshList(); }}
           />
-        ) : (
-          <div className="rounded-md border border-dashed border-rule px-3 py-2 text-center text-[12px] text-mute">
-            Read-only — you don&apos;t have the <code>messaging.send</code> permission.
-          </div>
         )}
       </div>
     </div>
@@ -245,7 +262,10 @@ function MessageBubble({ msg, attachTail }: { msg: TwMessage; attachTail: boolea
             : "bg-white text-ink",
         )}
       >
-        {msg.body ? (
+        {msg.channel === "voice" ? (
+          // Voice bubble: verb line + optional inline recording player.
+          <VoiceBubbleBody msg={msg} outbound={outbound} />
+        ) : msg.body ? (
           <p className="whitespace-pre-wrap break-words px-1">
             {linkify(msg.body, outbound)}
           </p>
@@ -254,7 +274,10 @@ function MessageBubble({ msg, attachTail }: { msg: TwMessage; attachTail: boolea
           // it from the cached template types + resolved variables.
           <TemplateBubbleBody msg={msg} outbound={outbound} />
         ) : null}
-        {hasMedia && (
+        {/* Non-voice media renders via the existing gallery. Voice recordings
+            are handled inside VoiceBubbleBody so the audio player anchors
+            correctly under the call-verb line. */}
+        {hasMedia && msg.channel !== "voice" && (
           <div className={cn(msg.body ? "mt-1.5" : "")}>
             <MessageMediaGallery media={msg.media!} outbound={outbound} />
           </div>
@@ -291,6 +314,32 @@ function MessageBubble({ msg, attachTail }: { msg: TwMessage; attachTail: boolea
           )}
         </div>
       </div>
+    </div>
+  );
+}
+
+/** Voice bubble body — inbound = "Call from customer", outbound = "You
+ *  called". Duration comes from the `body` field (we stashed a compact
+ *  "Call · 2m 34s" string there on activity insert; if the row was created
+ *  before that convention we fall back to a plain label). Recording plays
+ *  via the /media/proxy endpoint which handles Exotel Basic-auth for us. */
+function VoiceBubbleBody({ msg, outbound }: { msg: TwMessage; outbound: boolean }) {
+  const label = msg.body?.trim() || (outbound ? "Outbound call" : "Inbound call");
+  const audio = (msg.media ?? []).find((m) => (m.contentType ?? "").startsWith("audio/"));
+  return (
+    <div className="px-1">
+      <div className="flex items-center gap-2">
+        <Icon name="phone" size={13} strokeWidth={2.2} className={outbound ? "text-brand-violet" : "text-mute"} />
+        <span className="text-[13px] font-semibold">{label}</span>
+      </div>
+      {audio?.fetchUrl && (
+        <audio
+          controls
+          preload="none"
+          src={audio.fetchUrl}
+          className="mt-2 w-full min-w-[240px]"
+        />
+      )}
     </div>
   );
 }

@@ -16,7 +16,9 @@ export type IconName =
   // Sidebar-friendly nav glyphs (added so labels and shapes match)
   | "message-square" | "user-plus" | "graduation-cap" | "pipeline"
   | "life-ring" | "calendar" | "tag" | "robot"
-  | "batches";
+  | "batches"
+  // Voice / Exotel
+  | "phone";
 
 export function Icon({ name, size = 16, strokeWidth = 1.7, className, ...rest }: IconProps) {
   const props = {
@@ -41,6 +43,10 @@ export function Icon({ name, size = 16, strokeWidth = 1.7, className, ...rest }:
       return (<svg {...props}><path d="M22 2L11 13M22 2l-7 20-4-9-9-4z" /></svg>);
     case "clock":
       return (<svg {...props}><circle cx="12" cy="12" r="9" /><path d="M12 7v5l3 2" /></svg>);
+    case "phone":
+      // Handset glyph — Lucide's "phone" path. Slight rotation so the
+      // handset reads as "off-hook" (active) rather than "hung up".
+      return (<svg {...props}><path d="M22 16.92v3a2 2 0 01-2.18 2 19.79 19.79 0 01-8.63-3.07 19.5 19.5 0 01-6-6 19.79 19.79 0 01-3.07-8.67A2 2 0 014.11 2h3a2 2 0 012 1.72c.13.96.37 1.9.72 2.81a2 2 0 01-.45 2.11L8.09 9.91a16 16 0 006 6l1.27-1.27a2 2 0 012.11-.45c.91.35 1.85.59 2.81.72A2 2 0 0122 16.92z" /></svg>);
     case "inbox":
       return (<svg {...props}><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z" /></svg>);
     case "bars":

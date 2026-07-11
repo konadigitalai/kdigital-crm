@@ -11,6 +11,7 @@ import { DeleteLeadButton } from "@/components/record/DeleteLeadButton";
 import { EditLeadButton, type LeadEditable } from "@/components/record/EditLeadDialog";
 import { ShareToSlackButton } from "@/components/share/ShareToSlackButton";
 import { SendMessageButton } from "@/components/record/SendMessageButton";
+import { CallButton } from "@/components/record/CallButton";
 import { TimelineTabs } from "@/components/record/TimelineTabs";
 import { AgentActions } from "@/components/record/AgentActions";
 import { ApprovalCard } from "@/components/record/ApprovalCard";
@@ -228,6 +229,12 @@ export default async function RecordPage({
                   leadPhone={composeE164(attrs.phoneCountryCode ?? null, attrs.phone ?? null)}
                   canUpload={canUploadMedia}
                   canAddToLibrary={canManageMedia}
+                />
+              )}
+              {!isConverted && canSendMessage && (
+                <CallButton
+                  leadNumber={lead.number}
+                  leadPhone={composeE164(attrs.phoneCountryCode ?? null, attrs.phone ?? null)}
                 />
               )}
               {!isConverted && canDeleteLead && (

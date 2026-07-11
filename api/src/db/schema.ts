@@ -1323,7 +1323,7 @@ export const twConversation = pgTable(
     tenantChannelIdx: index("tw_conversation_tenant_channel_idx")
       .on(t.tenantId, t.channel, t.lastMessageAt),
     channelCheck: check("tw_conversation_channel_check",
-      sql`${t.channel} IN ('sms','whatsapp')`),
+      sql`${t.channel} IN ('sms','whatsapp','voice')`),
     statusCheck: check("tw_conversation_status_check",
       sql`${t.status} IN ('open','closed')`),
   }),
@@ -1365,7 +1365,7 @@ export const twMessage = pgTable(
     directionCheck: check("tw_message_direction_check",
       sql`${t.direction} IN ('inbound','outbound')`),
     channelCheck: check("tw_message_channel_check",
-      sql`${t.channel} IN ('sms','whatsapp')`),
+      sql`${t.channel} IN ('sms','whatsapp','voice')`),
     statusCheck: check("tw_message_status_check",
       sql`${t.status} IN ('queued','sent','delivered','read','failed','received')`),
   }),
@@ -1553,7 +1553,7 @@ export const mediaAsset = pgTable(
     tenantUploaderIdx: index("media_asset_tenant_uploader_idx")
       .on(t.tenantId, t.uploadedBy, t.createdAt),
     sourceCheck: check("media_asset_source_check",
-      sql`${t.source} IN ('user_upload','twilio_inbound')`),
+      sql`${t.source} IN ('user_upload','twilio_inbound','exotel_recording')`),
   }),
 );
 
@@ -1569,6 +1569,31 @@ export const twMessageMedia = pgTable(
   (t) => ({
     pk:         uniqueIndex("tw_message_media_pk").on(t.messageId, t.ordinal),
     assetIdx:   index("tw_message_media_asset_idx").on(t.assetId),
+  }),
+);
+
+// ─── Exotel voice call events ────────────────────────────────────────────
+// One row per callback fired by Exotel StatusCallback + Passthru webhooks.
+// Ties into the same tw_message row that click-to-call inserted; unique
+// on (tw_message_id, event_type) so Exotel retries are idempotent.
+export const twCallEvent = pgTable(
+  "tw_call_event",
+  {
+    id:              uuid("id").primaryKey().defaultRandom(),
+    tenantId:        uuid("tenant_id").notNull().references(() => tenant.id),
+    twMessageId:     uuid("tw_message_id").notNull().references(() => twMessage.id, { onDelete: "cascade" }),
+    callSid:         text("call_sid").notNull(),
+    eventType:       text("event_type").notNull(),
+    status:          text("status"),
+    durationSeconds: integer("duration_seconds"),
+    recordingUrl:    text("recording_url"),
+    legs:            jsonb("legs"),
+    raw:             jsonb("raw").notNull(),
+    receivedAt:      timestamp("received_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    msgEvtKey: uniqueIndex("tw_call_event_msg_evt_key").on(t.twMessageId, t.eventType),
+    callSidIdx: index("tw_call_event_call_sid_idx").on(t.callSid, t.receivedAt),
   }),
 );
 
@@ -1596,6 +1621,7 @@ export type Campaign = typeof campaign.$inferSelect;
 export type CampaignRecipient = typeof campaignRecipient.$inferSelect;
 export type CampaignTrigger = typeof campaignTrigger.$inferSelect;
 export type CampaignTriggerFire = typeof campaignTriggerFire.$inferSelect;
+export type TwCallEvent = typeof twCallEvent.$inferSelect;
 export type SlackRule = typeof slackRule.$inferSelect;
 export type SlackDeliveryLog = typeof slackDeliveryLog.$inferSelect;
 export type SlackWorkspace = typeof slackWorkspace.$inferSelect;

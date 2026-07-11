@@ -27,6 +27,7 @@ import {
   MAX_UPLOAD_BYTES,
 } from "../lib/twilio/media.js";
 import { readTwilioAuthToken, readTwilioConfig } from "../lib/twilio/client.js";
+import { readExotelBasicAuth } from "../lib/exotel/client.js";
 import type { DbExec } from "../lib/twilio/inbox.js";
 
 export const mediaRouter = Router();
@@ -401,27 +402,37 @@ mediaRouter.get("/proxy/:id", requirePermission("media.read"), async (req, res, 
       const r = await db.execute(sql`
         SELECT filename, content_type AS "contentType",
                blob_url AS "blobUrl",
-               provider_hosted AS "providerHosted"
+               provider_hosted AS "providerHosted",
+               source
         FROM media_asset WHERE id = ${id} LIMIT 1
       `);
       return r.rows[0] as
-        | { filename: string; contentType: string; blobUrl: string; providerHosted: boolean }
+        | { filename: string; contentType: string; blobUrl: string; providerHosted: boolean; source: string }
         | undefined;
     });
     if (!meta) return res.status(404).json({ error: "Not found" });
 
     const headers: Record<string, string> = {};
     if (meta.providerHosted) {
-      // Twilio URLs need Basic auth. Pull creds via the client helper.
-      try {
-        const cfg = readTwilioConfig();
-        const basic = Buffer.from(`${cfg.sid}:${cfg.token}`, "utf8").toString("base64");
-        headers.Authorization = `Basic ${basic}`;
-      } catch {
-        // If Twilio env isn't set we still can't fetch — return 502.
-        return res.status(502).json({ error: "Twilio not configured; cannot proxy inbound media" });
+      // Provider-hosted URLs need Basic auth. Which credentials depends on
+      // which provider hosts the asset — the `source` column is our
+      // discriminator. Falling through to no-auth is fatal for these URLs.
+      if (meta.source === "twilio_inbound") {
+        try {
+          const cfg = readTwilioConfig();
+          headers.Authorization = `Basic ${Buffer.from(`${cfg.sid}:${cfg.token}`, "utf8").toString("base64")}`;
+        } catch {
+          return res.status(502).json({ error: "Twilio not configured; cannot proxy inbound media" });
+        }
+        void readTwilioAuthToken();
+      } else if (meta.source === "exotel_recording") {
+        const auth = readExotelBasicAuth();
+        if (!auth) return res.status(502).json({ error: "Exotel not configured; cannot proxy recording" });
+        headers.Authorization = `Basic ${Buffer.from(`${auth.user}:${auth.pass}`, "utf8").toString("base64")}`;
+      } else {
+        // Unknown provider — we don't know what auth to send.
+        return res.status(500).json({ error: `Unknown provider source: ${meta.source}` });
       }
-      void readTwilioAuthToken();
     }
 
     const upstream = await fetch(meta.blobUrl, { headers });

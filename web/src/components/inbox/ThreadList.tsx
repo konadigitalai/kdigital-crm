@@ -42,7 +42,11 @@ function ThreadRow({
   active: boolean;
   onClick: () => void;
 }) {
-  const isWA = thread.channel === "whatsapp";
+  const chanLabel  = thread.channel === "whatsapp" ? "WhatsApp" : thread.channel === "voice" ? "Voice call" : "SMS";
+  const chanBadge  = thread.channel === "whatsapp" ? "WA"       : thread.channel === "voice" ? "Call"       : "SMS";
+  const chanColor  = thread.channel === "whatsapp" ? "bg-state-ok"
+                    : thread.channel === "voice"    ? "bg-brand-violet"
+                    : "bg-brand-blue";
   return (
     <button
       type="button"
@@ -55,9 +59,9 @@ function ThreadRow({
       <span
         className={cn(
           "mt-0.5 flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-full text-[11px] font-bold text-white",
-          isWA ? "bg-state-ok" : "bg-brand-blue",
+          chanColor,
         )}
-        title={isWA ? "WhatsApp" : "SMS"}
+        title={chanLabel}
       >
         {initials(thread.partyName)}
       </span>
@@ -65,7 +69,7 @@ function ThreadRow({
         <div className="flex items-center gap-2">
           <span className="truncate text-[13px] font-semibold text-ink">{thread.partyName}</span>
           <span className="mono-cap flex-shrink-0 rounded-full bg-warm2 px-1.5 py-0.5 text-[8.5px] font-semibold tracking-[.08em] text-mute">
-            {isWA ? "WA" : "SMS"}
+            {chanBadge}
           </span>
           {thread.leadNumber && (
             <span className="mono-cap flex-shrink-0 rounded-full bg-brand-violet/10 px-1.5 py-0.5 text-[8.5px] font-semibold tracking-[.08em] text-brand-violet">

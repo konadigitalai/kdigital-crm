@@ -1,8 +1,11 @@
 "use client";
 
-// The lead-record "Messages" tab. Renders the lead's SMS + WhatsApp threads
-// with Twilio inline. Users can pick between the two channels (each is its
-// own tw_conversation) and reply from here without leaving the record page.
+// The lead-record "Inbox" tab. Renders the lead's WhatsApp + voice-call
+// threads inline. Users pick between the two channels (each is its own
+// tw_conversation) and reply / dial from here without leaving the record
+// page. Text replies work only for WhatsApp; the Calls tab is read-only
+// (calls are placed via the header's Call button which opens the Exotel
+// click-to-call dialog).
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Icon } from "@/components/ui/Icon";
@@ -105,8 +108,8 @@ export function MessagesTab({
   return (
     <div className="rounded-[14px] border border-rule bg-paper">
       <div className="flex items-center gap-1 border-b border-rule px-3 py-2">
-        <ChannelPill active={channel === "whatsapp"} onClick={() => setChannel("whatsapp")}>WhatsApp</ChannelPill>
-        <ChannelPill active={channel === "sms"}      onClick={() => setChannel("sms")}>SMS</ChannelPill>
+        <ChannelPill active={channel === "whatsapp"} onClick={() => setChannel("whatsapp")} icon="message-square">WhatsApp</ChannelPill>
+        <ChannelPill active={channel === "voice"}    onClick={() => setChannel("voice")}    icon="phone"         >Calls</ChannelPill>
         <span className="ml-auto text-[11px] text-mute">
           {loadingList ? "Loading…" : activeThread ? "" : "No conversation yet"}
         </span>
@@ -126,15 +129,25 @@ export function MessagesTab({
         ) : (
           <div className="py-8 text-center text-[12.5px] text-mute">
             {canSend ? (
-              <>Send your first {channel === "whatsapp" ? "WhatsApp" : "SMS"} message below to start a thread.</>
+              channel === "voice"
+                ? <>No calls with this contact yet. Use the <b>Call</b> button in the header to place the first one.</>
+                : <>Send your first WhatsApp message below to start a thread.</>
             ) : (
-              <>No {channel === "whatsapp" ? "WhatsApp" : "SMS"} conversation with this contact yet.</>
+              channel === "voice"
+                ? <>No calls with this contact yet.</>
+                : <>No WhatsApp conversation with this contact yet.</>
             )}
           </div>
         )}
       </div>
 
-      {canSend ? (
+      {/* Reply area — text composer for WhatsApp; hidden for voice (calls
+          are placed from the record page's Call button, not from here). */}
+      {channel === "voice" ? (
+        <div className="border-t border-rule px-3 py-2 text-center text-[11.5px] text-mute">
+          Voice threads are read-only here. Use the <b>Call</b> button in the header to place or return a call.
+        </div>
+      ) : canSend ? (
         <div className="border-t border-rule p-3">
           <div className="flex items-end gap-2 rounded-[10px] border border-rule bg-warm/40 px-2.5 py-2 focus-within:border-brand-violet focus-within:ring-2 focus-within:ring-brand-violet/20">
             <textarea
@@ -187,10 +200,11 @@ export function MessagesTab({
 }
 
 function ChannelPill({
-  active, onClick, children,
+  active, onClick, icon, children,
 }: {
   active: boolean;
   onClick: () => void;
+  icon?: "message-square" | "phone";
   children: React.ReactNode;
 }) {
   return (
@@ -198,10 +212,11 @@ function ChannelPill({
       type="button"
       onClick={onClick}
       className={cn(
-        "rounded-full px-3 py-1 text-[12px] font-semibold transition",
+        "inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-[12px] font-semibold transition",
         active ? "bg-ink text-white" : "text-ink2 hover:bg-warm",
       )}
     >
+      {icon && <Icon name={icon} size={11} strokeWidth={2.2} />}
       {children}
     </button>
   );
@@ -210,6 +225,8 @@ function ChannelPill({
 function MiniBubble({ msg }: { msg: TwMessage }) {
   const outbound = msg.direction === "outbound";
   const failed   = msg.status === "failed";
+  const isVoice  = msg.channel === "voice";
+  const audio    = isVoice ? (msg.media ?? []).find((m) => (m.contentType ?? "").startsWith("audio/")) : null;
   return (
     <div className={cn("flex", outbound ? "justify-end" : "justify-start")}>
       <div
@@ -222,9 +239,25 @@ function MiniBubble({ msg }: { msg: TwMessage }) {
             : "bg-paper text-ink2 ring-1 ring-rule",
         )}
       >
-        {msg.body && <p className="whitespace-pre-wrap">{msg.body}</p>}
-        {msg.media && msg.media.length > 0 && (
-          <MessageMediaGallery media={msg.media} outbound={outbound} />
+        {isVoice ? (
+          <div>
+            <div className="flex items-center gap-1.5">
+              <Icon name="phone" size={12} strokeWidth={2.2} className={outbound && !failed ? "text-white" : "text-brand-violet"} />
+              <span className="font-semibold">
+                {msg.body?.trim() || (outbound ? "Outbound call" : "Inbound call")}
+              </span>
+            </div>
+            {audio?.fetchUrl && (
+              <audio controls preload="none" src={audio.fetchUrl} className="mt-2 w-full min-w-[220px]" />
+            )}
+          </div>
+        ) : (
+          <>
+            {msg.body && <p className="whitespace-pre-wrap">{msg.body}</p>}
+            {msg.media && msg.media.length > 0 && (
+              <MessageMediaGallery media={msg.media} outbound={outbound} />
+            )}
+          </>
         )}
         <div className={cn(
           "mt-1 font-mono text-[9.5px]",

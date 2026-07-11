@@ -9,7 +9,7 @@
 // out. That way `contact_point.value` always stores plain E.164 regardless
 // of channel, matching how the rest of the CRM stores phone numbers.
 
-export type TwChannel = "sms" | "whatsapp";
+export type TwChannel = "sms" | "whatsapp" | "voice";
 
 /** Strip non-digit characters. Handy for comparing phones with mixed formats. */
 export function digitsOnly(s: string | null | undefined): string {

@@ -67,6 +67,11 @@ const CAPS: Record<TwChannel, Partial<Record<MimeFamily, MediaCap>>> = {
     // Everything else on SMS/MMS varies by carrier and is unreliable —
     // block on the CRM side rather than surprise the user with a failed send.
   },
+  voice: {
+    // Voice channel doesn't accept runtime media — recordings are managed
+    // by Exotel post-call, not attached at send time. Empty caps map means
+    // any validateMediaForChannel("voice", ...) call rejects.
+  },
 };
 
 // WhatsApp Business API accepts a strict MIME allowlist. Files outside this

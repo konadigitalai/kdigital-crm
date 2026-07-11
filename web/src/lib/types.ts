@@ -2,7 +2,7 @@
 
 // ── Twilio messaging (SMS + WhatsApp) ────────────────────────────────────
 
-export type TwChannel = "sms" | "whatsapp";
+export type TwChannel = "sms" | "whatsapp" | "voice";
 export type TwMessageDirection = "inbound" | "outbound";
 export type TwMessageStatus = "queued" | "sent" | "delivered" | "read" | "failed" | "received";
 export type TwConversationStatus = "open" | "closed";

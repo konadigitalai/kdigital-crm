@@ -100,6 +100,10 @@ const CAPS: Record<TwChannel, Partial<Record<MimeFamily, { bytes: number; label:
   sms: {
     image:    { bytes: 5 * MB, label: "5 MB" },
   },
+  voice: {
+    // Voice channel doesn't accept runtime media — recordings are managed
+    // by Exotel post-call. Empty caps map = validate rejects any attach.
+  },
 };
 
 /** Icon glyph for each MIME family (Lucide-style Icon names our Icon component knows). */

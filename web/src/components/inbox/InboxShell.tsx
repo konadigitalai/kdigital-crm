@@ -9,7 +9,7 @@ import { Icon } from "@/components/ui/Icon";
 import { cn } from "@/lib/cn";
 import { getTwConversations } from "@/lib/api";
 import type { TwChannel, TwConversationListItem } from "@/lib/types";
-import { ThreadList, type ChannelFilter, type AssigneeFilter } from "./ThreadList";
+import { ThreadList } from "./ThreadList";
 import { ThreadView } from "./ThreadView";
 
 const LIST_POLL_MS = 30_000;
@@ -29,18 +29,20 @@ export function InboxShell({
 }) {
   const [threads, setThreads] = useState(initialConversations);
   const [activeId, setActiveId] = useState<string | null>(initialConversations[0]?.id ?? null);
-  const [channel, setChannel] = useState<ChannelFilter>("all");
-  const [assignee, setAssignee] = useState<AssigneeFilter>("all");
+  // Inbox is now a two-tab surface — WhatsApp OR Voice calls. SMS traffic is
+  // still supported by the API but not surfaced here (the FE stopped showing
+  // an SMS tab after Twilio SMS was deprioritised in favour of WA templates).
+  // Assignee filtering is gone too — operators wanted a simpler view.
+  const [channel, setChannel] = useState<TwChannel>("whatsapp");
   const [q, setQ] = useState("");
 
   const refresh = useCallback(async () => {
     const filter: Parameters<typeof getTwConversations>[0] = {};
-    if (channel !== "all")  filter.channel  = channel as TwChannel;
-    if (assignee !== "all") filter.assignee = assignee;
-    if (q.trim())           filter.q        = q.trim();
+    filter.channel = channel;
+    if (q.trim()) filter.q = q.trim();
     const rows = await getTwConversations(filter).catch(() => null);
     if (rows) setThreads(rows);
-  }, [channel, assignee, q]);
+  }, [channel, q]);
 
   // Refresh whenever the filter changes.
   useEffect(() => { void refresh(); }, [refresh]);
@@ -63,23 +65,33 @@ export function InboxShell({
     <div className="grid h-[calc(100vh-140px)] grid-cols-[360px_1fr] gap-4">
       <div className="flex flex-col overflow-hidden rounded-2xl border border-rule bg-paper">
         <div className="border-b border-rule p-3">
-          <div className="mb-2 flex items-center gap-2 rounded-[10px] border border-rule bg-warm/40 px-2.5 py-1.5">
+          {/* Two-tab channel switch — WhatsApp | Voice calls. A single row of
+              equal-width segments so it reads as a mode toggle, not a chip
+              filter you can accidentally deselect. */}
+          <div className="mb-2 grid grid-cols-2 gap-1 rounded-full border border-rule bg-warm/40 p-1">
+            <ChannelTab
+              active={channel === "whatsapp"}
+              onClick={() => setChannel("whatsapp")}
+              icon="message-square"
+              label="WhatsApp"
+              activeClass="bg-state-ok text-white"
+            />
+            <ChannelTab
+              active={channel === "voice"}
+              onClick={() => setChannel("voice")}
+              icon="phone"
+              label="Calls"
+              activeClass="bg-brand-violet text-white"
+            />
+          </div>
+          <div className="flex items-center gap-2 rounded-[10px] border border-rule bg-warm/40 px-2.5 py-1.5">
             <Icon name="search" size={12} strokeWidth={2} className="text-mute" />
             <input
               value={q}
               onChange={(e) => setQ(e.target.value)}
-              placeholder="Search name, phone, message…"
+              placeholder={channel === "whatsapp" ? "Search WhatsApp threads…" : "Search call threads…"}
               className="min-w-0 flex-1 bg-transparent text-[12.5px] text-ink placeholder:text-hint outline-none"
             />
-          </div>
-          <div className="flex flex-wrap gap-1">
-            <FilterChip active={channel === "all"}      onClick={() => setChannel("all")}     >All</FilterChip>
-            <FilterChip active={channel === "sms"}      onClick={() => setChannel("sms")}     >SMS</FilterChip>
-            <FilterChip active={channel === "whatsapp"} onClick={() => setChannel("whatsapp")}>WhatsApp</FilterChip>
-            <span className="mx-1 w-px self-stretch bg-rule" />
-            <FilterChip active={assignee === "all"}        onClick={() => setAssignee("all")}       >Any owner</FilterChip>
-            <FilterChip active={assignee === "me"}         onClick={() => setAssignee("me")}        >Mine</FilterChip>
-            <FilterChip active={assignee === "unassigned"} onClick={() => setAssignee("unassigned")}>Unassigned</FilterChip>
           </div>
         </div>
         <ThreadList
@@ -114,25 +126,29 @@ export function InboxShell({
   );
 }
 
-function FilterChip({
-  active, onClick, children,
+/** Segmented tab in the channel switch. Active tab uses a full-colour fill
+ *  (green for WhatsApp, violet for Calls) to match the thread-list styling.
+ *  Inactive tabs stay transparent inside the rounded track. */
+function ChannelTab({
+  active, onClick, icon, label, activeClass,
 }: {
   active: boolean;
   onClick: () => void;
-  children: React.ReactNode;
+  icon: "message-square" | "phone";
+  label: string;
+  activeClass: string;
 }) {
   return (
     <button
       type="button"
       onClick={onClick}
       className={cn(
-        "rounded-full border px-2.5 py-1 text-[11px] font-semibold transition",
-        active
-          ? "border-brand-violet bg-brand-violet/10 text-brand-violet"
-          : "border-rule bg-paper text-ink2 hover:border-rule2",
+        "inline-flex items-center justify-center gap-1.5 rounded-full px-3 py-1.5 text-[12px] font-semibold transition",
+        active ? activeClass : "text-mute hover:text-ink",
       )}
     >
-      {children}
+      <Icon name={icon} size={12} strokeWidth={2.2} />
+      {label}
     </button>
   );
 }

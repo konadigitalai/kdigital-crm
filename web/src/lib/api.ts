@@ -1390,6 +1390,30 @@ export async function promoteTwConversationToLead(id: string): Promise<{ ok: boo
   return await post(`/twilio/conversations/${encodeURIComponent(id)}/promote-to-lead`, {});
 }
 
+// ── Exotel click-to-call ─────────────────────────────────────────────────
+
+export interface InitiateCallResponse {
+  kind:            "ok";
+  conversationId:  string;
+  messageId:       string;
+  callSid:         string | null;
+  exotelOk:        boolean;
+  errorCode:       string | null;
+  errorMessage:    string | null;
+  /** When true, the call was routed through EXOTEL_FALLBACK_AGENT_NUMBER
+   *  because the advisor had no phone on file. Surface this in the UI so
+   *  the advisor knows why their own phone didn't ring. */
+  usingFallback:   boolean;
+}
+
+/** Fire a click-to-call. `to` may be `+91…` E.164 or a `LEAD-XXXX` number.
+ *  Advisor's phone (from app_user.phone) rings first; on pickup, Exotel
+ *  bridges the customer. Returns a `code`-tagged error on 4xx so the FE
+ *  can render targeted messages (no phone, no consent, etc.). */
+export async function initiateExotelCall(to: string): Promise<InitiateCallResponse> {
+  return await post<InitiateCallResponse>("/exotel/call", { to });
+}
+
 // ── Media library ────────────────────────────────────────────────────────
 
 import type { MediaFolder, MediaAsset } from "./types";

@@ -8,11 +8,11 @@ import { addLeadNote, updateLeadNote } from "@/lib/api";
 import type { TimelineRow } from "@/lib/types";
 import { MessagesTab } from "./MessagesTab";
 
-type Tab = "notes" | "messages" | "timeline" | "emails";
+type Tab = "notes" | "inbox" | "timeline" | "emails";
 
 const TABS: { key: Tab; label: string }[] = [
   { key: "notes",    label: "Notes" },
-  { key: "messages", label: "Messages" },
+  { key: "inbox",    label: "Inbox" },
   { key: "timeline", label: "Timeline" },
   { key: "emails",   label: "Emails" },
 ];
@@ -93,8 +93,8 @@ export function TimelineTabs({
   /** From current user's `messaging.send` — gates the reply box. */
   canSendMessage?: boolean;
 }) {
-  const showMessages = hasPhone && !!partyId;
-  const visibleTabs = TABS.filter((t) => t.key !== "messages" || showMessages);
+  const showInbox = hasPhone && !!partyId;
+  const visibleTabs = TABS.filter((t) => t.key !== "inbox" || showInbox);
   const [tab, setTab] = useState<Tab>("notes");
   const [query, setQuery] = useState("");
 
@@ -169,7 +169,7 @@ export function TimelineTabs({
         })}
       </div>
 
-      {tab === "messages" && showMessages && partyId && (
+      {tab === "inbox" && showInbox && partyId && (
         <MessagesTab partyId={partyId} canSend={canSendMessage} />
       )}
       {tab === "timeline" && <TimelineView rows={filteredTimeline} />}
