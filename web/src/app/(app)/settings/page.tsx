@@ -66,6 +66,15 @@ const ALL_CARDS: SettingsCard[] = [
   { section: "Channels", href: "/admin/media",                 icon: "doc",            title: "Media library",
     blurb: "Shared brochures, invoices, and other files reusable across Twilio sends.",
     requires: "media.read" },
+  { section: "Channels", href: "/campaigns",                   icon: "send",           title: "Campaigns",
+    blurb: "Bulk WhatsApp template sends with audience filters and per-recipient delivery tracking.",
+    requires: "messaging.send" },
+  { section: "Channels", href: "/templates",                   icon: "doc",            title: "WhatsApp templates",
+    blurb: "Draft new templates, submit for Meta approval, and sync approved ones from Twilio.",
+    requires: "messaging.send" },
+  { section: "Channels", href: "/campaigns/triggers",          icon: "spark",          title: "Auto-send triggers",
+    blurb: "Auto-fire an approved template when a lead's stage or rating changes, or on lead creation.",
+    requires: "messaging.send" },
 
   // Data — destructive / archival
   { section: "Data", href: "/admin/leads/deleted", icon: "inbox", title: "Deleted leads",

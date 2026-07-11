@@ -51,16 +51,40 @@ const CHANNELS: TwChannel[] = ["sms", "whatsapp"];
 
 twilioRouter.post("/send", requirePermission("messaging.send"), async (req, res, next) => {
   try {
-    const body = req.body as { channel?: string; to?: string; body?: string; mediaAssetIds?: string[] };
+    const body = req.body as {
+      channel?: string;
+      to?: string;
+      body?: string;
+      mediaAssetIds?: string[];
+      contentSid?: string;
+      contentVariables?: Record<string, string>;
+    };
     const channel = body.channel as TwChannel;
     if (!CHANNELS.includes(channel)) return res.status(400).json({ error: "channel must be 'sms' or 'whatsapp'" });
     const text = String(body.body ?? "").trim();
     const to   = String(body.to ?? "").trim();
     if (!to)   return res.status(400).json({ error: "to is required" });
     const mediaAssetIds = Array.isArray(body.mediaAssetIds) ? body.mediaAssetIds.slice(0, 10) : [];
-    // Twilio requires SOMETHING to send — either body or at least one media.
-    if (!text && mediaAssetIds.length === 0) {
-      return res.status(400).json({ error: "body or mediaAssetIds is required" });
+    const contentSid = typeof body.contentSid === "string" ? body.contentSid.trim() : "";
+    const contentVariables = (body.contentVariables && typeof body.contentVariables === "object")
+      ? body.contentVariables
+      : undefined;
+
+    // Template mode short-circuits the freeform requirements. Template sends
+    // MUST be on WhatsApp (SMS templates aren't a thing — SMS has no session
+    // window) and CAN'T carry runtime media (template media is baked in).
+    if (contentSid) {
+      if (channel !== "whatsapp") {
+        return res.status(400).json({ error: "templates are WhatsApp-only" });
+      }
+      if (mediaAssetIds.length > 0) {
+        return res.status(400).json({ error: "template sends can't carry runtime media" });
+      }
+    } else {
+      // Freeform path: Twilio requires SOMETHING — body or at least one media.
+      if (!text && mediaAssetIds.length === 0) {
+        return res.status(400).json({ error: "body, mediaAssetIds, or contentSid is required" });
+      }
     }
 
     // Ensure Twilio is configured before we ever touch the DB.
@@ -76,6 +100,25 @@ twilioRouter.post("/send", requirePermission("messaging.send"), async (req, res,
       if (!partyPhone) return { kind: "no-phone" as const };
 
       const actorPartyId = await resolveActorPartyId(db, req.tenantId!, req.userId);
+
+      // Template mode: verify the template exists AND is approved for
+      // WhatsApp. Rejecting non-approved templates here is a hard gate —
+      // Twilio itself would reject the send otherwise with a cryptic 63016.
+      if (contentSid) {
+        const tplRow = await db.execute(sql`
+          SELECT friendly_name AS "friendlyName", approval_status AS "approvalStatus"
+          FROM wa_template
+          WHERE content_sid = ${contentSid}
+          LIMIT 1
+        `);
+        const tpl = tplRow.rows[0] as { friendlyName: string; approvalStatus: string } | undefined;
+        if (!tpl) {
+          return { kind: "bad-template" as const, reason: `Unknown template ${contentSid}. Run POST /templates/sync?` };
+        }
+        if (tpl.approvalStatus !== "approved") {
+          return { kind: "bad-template" as const, reason: `Template ${tpl.friendlyName} is ${tpl.approvalStatus}, not approved.` };
+        }
+      }
 
       // Resolve media assets: must be owned by the actor OR in the library.
       // Enforce per-channel caps server-side. Collect blob URLs in order.
@@ -113,7 +156,9 @@ twilioRouter.post("/send", requirePermission("messaging.send"), async (req, res,
         }
       }
 
-      const send = await sendMessage(channel, partyPhone, text, cfg, mediaUrls);
+      const send = contentSid
+        ? await sendMessage(channel, partyPhone, "", cfg, { contentSid, contentVariables })
+        : await sendMessage(channel, partyPhone, text, cfg, { mediaUrls });
 
       const conv = await upsertConversation(db, partyId, channel, workItemId == null);
       const msgId = await recordOutbound(db, conv.id, {
@@ -123,8 +168,22 @@ twilioRouter.post("/send", requirePermission("messaging.send"), async (req, res,
         body:     text,
         senderUserPartyId: actorPartyId,
         mediaAssetIds,
+        contentSid: contentSid || null,
+        contentVariables: contentVariables ?? null,
         send,
       });
+      // For template sends we don't have the resolved body server-side —
+      // we only shipped Twilio the SID + variables. Best we can do is a
+      // "template: <friendlyName>" marker in the timeline. Look up the
+      // friendly name we already validated above.
+      let activityBody = text;
+      if (contentSid) {
+        const tR = await db.execute(sql`
+          SELECT friendly_name AS "friendlyName" FROM wa_template WHERE content_sid = ${contentSid} LIMIT 1
+        `);
+        const fn = (tR.rows[0] as { friendlyName?: string } | undefined)?.friendlyName ?? contentSid;
+        activityBody = `[template: ${fn}]`;
+      }
       await insertActivityForMessage(db, {
         workItemId,
         partyId,
@@ -133,7 +192,7 @@ twilioRouter.post("/send", requirePermission("messaging.send"), async (req, res,
         actorName:    req.user?.name ?? "You",
         direction:    "outbound",
         channel,
-        body:         text,
+        body:         activityBody,
         mediaCount:   mediaAssetIds.length,
         mediaMimes,
       });
@@ -153,6 +212,9 @@ twilioRouter.post("/send", requirePermission("messaging.send"), async (req, res,
       return res.status(400).json({ error: `No phone number for ${to}` });
     }
     if (result.kind === "bad-media") {
+      return res.status(400).json({ error: result.reason });
+    }
+    if (result.kind === "bad-template") {
       return res.status(400).json({ error: result.reason });
     }
     return res.json(result);

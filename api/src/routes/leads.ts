@@ -4,6 +4,7 @@ import { withTenant } from "../db/app.js";
 import { emitEvent } from "../lib/events.js";
 import { requirePermission } from "../middleware/require.js";
 import { partyIdFromAppUserId, resolveActorPartyId, resolveSentinelPartyId } from "../lib/party/resolve.js";
+import { evaluateTriggers } from "../lib/campaigns/triggers.js";
 
 export const leadsRouter = Router();
 
@@ -900,6 +901,46 @@ leadsRouter.patch("/:idOrNumber", async (req, res, next) => {
                   ${JSON.stringify({ when: "Just now", quote: null, fields: summaryFields, changes, byUserId: actorId })}::jsonb,
                   NOW())
         `);
+      }
+
+      // Campaign triggers: fire any enabled triggers matching the changes
+      // that just happened. The whole PATCH runs inside a single txn
+      // (see withTenant). A raw JS try/catch alone would swallow the
+      // error but Postgres already marks the txn "aborted", so the next
+      // SQL (the re-fetch below) crashes with 25P02. SAVEPOINT lets us
+      // roll back JUST the trigger sub-work and keep the outer txn alive.
+      const stageChange  = changes.find((c) => c.field === "stage");
+      const ratingChange = changes.find((c) => c.field === "rating");
+      if (stageChange || ratingChange) {
+        try {
+          await db.execute(sql`SAVEPOINT trg_sp`);
+          try {
+            if (stageChange) {
+              await evaluateTriggers(db, {
+                type: "lead.stage_changed",
+                partyId,
+                workItemId: wiId,
+                from: stageChange.from == null ? null : String(stageChange.from),
+                to:   stageChange.to   == null ? null : String(stageChange.to),
+              });
+            }
+            if (ratingChange) {
+              await evaluateTriggers(db, {
+                type: "lead.rating_changed",
+                partyId,
+                workItemId: wiId,
+                from: ratingChange.from == null ? null : String(ratingChange.from),
+                to:   ratingChange.to   == null ? null : String(ratingChange.to),
+              });
+            }
+            await db.execute(sql`RELEASE SAVEPOINT trg_sp`);
+          } catch (inner) {
+            await db.execute(sql`ROLLBACK TO SAVEPOINT trg_sp`);
+            throw inner;
+          }
+        } catch (e) {
+          console.error("[triggers] leads PATCH:", (e as Error).message);
+        }
       }
 
       // Re-fetch the lead in the same shape /leads returns

@@ -1149,8 +1149,221 @@ export async function sendTwMessageToLead(input: {
   body: string;
   /** Optional file attachments (up to 10). Order is preserved. */
   mediaAssetIds?: string[];
+  /** WhatsApp template mode — takes precedence over body/mediaAssetIds. */
+  contentSid?: string;
+  contentVariables?: Record<string, string>;
 }): Promise<SendTwilioResult & { conversationId?: string }> {
   return await post("/twilio/send", input);
+}
+
+// ─── WhatsApp templates ───────────────────────────────────────────────────
+
+export interface WaTemplate {
+  id:             string;
+  contentSid:     string;
+  friendlyName:   string;
+  language:       string | null;
+  category:       string | null;
+  variables:      { names: string[]; samples: Record<string, string> };
+  types:          Record<string, unknown>;
+  approvalStatus: "draft" | "pending" | "approved" | "rejected" | "unknown" | "paused";
+  approvalNote:   string | null;
+  syncedAt:       string;
+}
+
+export async function listWaTemplates(opts?: { onlyApproved?: boolean; refresh?: boolean }): Promise<WaTemplate[]> {
+  const q = new URLSearchParams();
+  if (opts?.onlyApproved) q.set("status", "approved");
+  if (opts?.refresh)      q.set("refresh", "1");
+  const suffix = q.toString() ? `?${q}` : "";
+  const r = await get<{ templates: WaTemplate[] }>(`/templates${suffix}`);
+  return r.templates;
+}
+
+export async function getWaTemplate(contentSid: string): Promise<WaTemplate> {
+  const r = await get<{ template: WaTemplate }>(`/templates/${encodeURIComponent(contentSid)}`);
+  return r.template;
+}
+
+export async function syncWaTemplates(): Promise<{ count: number; errors: number }> {
+  return await post<{ count: number; errors: number }>("/templates/sync", {});
+}
+
+export async function createWaTemplate(input: {
+  friendlyName: string;
+  language: string;
+  types: Record<string, unknown>;
+  variables?: Record<string, string>;
+}): Promise<WaTemplate> {
+  const r = await post<{ template: WaTemplate }>("/templates", input);
+  return r.template;
+}
+
+export async function submitWaTemplateForApproval(
+  contentSid: string,
+  category: "MARKETING" | "UTILITY" | "AUTHENTICATION",
+  name: string,
+): Promise<{ template: WaTemplate; approval: unknown }> {
+  return await post(`/templates/${encodeURIComponent(contentSid)}/submit`, { category, name });
+}
+
+// ─── Campaigns ────────────────────────────────────────────────────────────
+
+export interface FilterRule {
+  id?:       string;
+  fieldKey:  string;
+  operator:  string;
+  value:     unknown;
+}
+export interface FilterState {
+  combinator: "and" | "or";
+  rules: FilterRule[];
+}
+
+export interface CampaignSummary {
+  id:                string;
+  name:              string;
+  channel:           string;
+  contentSid:        string;
+  templateName:      string | null;
+  status:            string;
+  scheduledAt:       string | null;
+  sendRatePerSec:    number;
+  dailyCap:          number | null;
+  createdAt:         string;
+  startedAt:         string | null;
+  completedAt:       string | null;
+  totalRecipients:   number;
+  sentCount:         number;
+  deliveredCount:    number;
+  failedCount:       number;
+  pendingCount:      number;
+  skippedCount:      number;
+}
+
+export interface CampaignDetail extends Omit<CampaignSummary,
+  "totalRecipients"|"sentCount"|"deliveredCount"|"failedCount"|"pendingCount"|"skippedCount"> {
+  contentVariableBindings: Record<string, string>;
+  audience:                FilterState;
+  templateVariables:       { names: string[]; samples: Record<string, string> } | null;
+}
+
+export interface CampaignRecipient {
+  id:                string;
+  status:            string;
+  errorCode:         string | null;
+  errorMessage:      string | null;
+  sentAt:            string | null;
+  deliveredAt:       string | null;
+  queuedAt:          string;
+  resolvedVariables: Record<string, string> | null;
+  partyName:         string | null;
+  partyPhone:        string | null;
+  leadNumber:        string | null;
+}
+
+export interface AudiencePreview {
+  count: number;
+  sample: Array<{
+    partyId: string; workItemId: string; leadNumber: string;
+    name: string | null; phone: string | null; program: string | null; stage: string | null;
+  }>;
+}
+
+export async function getAudienceFields(): Promise<string[]> {
+  const r = await get<{ fields: string[] }>("/campaigns/audience-fields");
+  return r.fields;
+}
+export async function previewCampaignAudience(audience: FilterState): Promise<AudiencePreview> {
+  return await post<AudiencePreview>("/campaigns/preview", { audience });
+}
+export async function createCampaign(input: {
+  name: string;
+  contentSid: string;
+  contentVariableBindings: Record<string, string>;
+  audience: FilterState;
+  sendRatePerSec?: number;
+  dailyCap?: number | null;
+  scheduledAt?: string | null;
+}): Promise<{ id: string; name: string; status: string; scheduledAt: string | null }> {
+  return await post("/campaigns", input);
+}
+export async function scheduleCampaign(id: string): Promise<{ inserted: number; matched: number }> {
+  return await post(`/campaigns/${encodeURIComponent(id)}/schedule`, {});
+}
+export async function pauseCampaign(id: string): Promise<{ id: string; status: string }> {
+  return await post(`/campaigns/${encodeURIComponent(id)}/pause`, {});
+}
+export async function resumeCampaign(id: string): Promise<{ id: string; status: string }> {
+  return await post(`/campaigns/${encodeURIComponent(id)}/resume`, {});
+}
+export async function cancelCampaign(id: string): Promise<{ id: string; status: string }> {
+  return await post(`/campaigns/${encodeURIComponent(id)}/cancel`, {});
+}
+export async function listCampaigns(): Promise<CampaignSummary[]> {
+  const r = await get<{ campaigns: CampaignSummary[] }>("/campaigns");
+  return r.campaigns;
+}
+export async function getCampaign(id: string): Promise<CampaignDetail> {
+  const r = await get<{ campaign: CampaignDetail }>(`/campaigns/${encodeURIComponent(id)}`);
+  return r.campaign;
+}
+// ─── Triggers ─────────────────────────────────────────────────────────────
+
+export interface CampaignTrigger {
+  id:               string;
+  name:             string;
+  eventType:        string;
+  condition:        Record<string, unknown>;
+  contentSid:       string;
+  templateName:     string | null;
+  variableBindings: Record<string, string>;
+  cooldownHours:    number;
+  enabled:          boolean;
+  autoCampaignId:   string | null;
+  createdAt:        string;
+  totalFires:       number;
+}
+
+export async function listCampaignTriggers(): Promise<CampaignTrigger[]> {
+  const r = await get<{ triggers: CampaignTrigger[] }>("/campaigns/triggers/list");
+  return r.triggers;
+}
+export async function createCampaignTrigger(input: {
+  name: string;
+  eventType: string;
+  condition: Record<string, unknown>;
+  contentSid: string;
+  variableBindings: Record<string, string>;
+  cooldownHours?: number;
+  enabled?: boolean;
+}): Promise<{ id: string; name: string; eventType: string; enabled: boolean }> {
+  return await post("/campaigns/triggers", input);
+}
+export async function updateCampaignTrigger(id: string, patch: Partial<{
+  name: string;
+  condition: Record<string, unknown>;
+  variableBindings: Record<string, string>;
+  cooldownHours: number;
+  enabled: boolean;
+}>): Promise<{ id: string; name: string; eventType: string; enabled: boolean }> {
+  return await send("PATCH", `/campaigns/triggers/${encodeURIComponent(id)}`, patch);
+}
+export async function deleteCampaignTrigger(id: string): Promise<{ ok: true }> {
+  return await send("DELETE", `/campaigns/triggers/${encodeURIComponent(id)}`);
+}
+
+export async function getCampaignRecipients(
+  id: string, opts?: { status?: string; limit?: number },
+): Promise<CampaignRecipient[]> {
+  const q = new URLSearchParams();
+  if (opts?.status) q.set("status", opts.status);
+  if (opts?.limit)  q.set("limit", String(opts.limit));
+  const suffix = q.toString() ? `?${q}` : "";
+  const r = await get<{ recipients: CampaignRecipient[] }>(
+    `/campaigns/${encodeURIComponent(id)}/recipients${suffix}`,
+  );
+  return r.recipients;
 }
 
 /** Send within an existing thread. Channel is inferred from the thread. */

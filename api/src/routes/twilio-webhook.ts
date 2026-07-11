@@ -23,7 +23,8 @@ import { Router } from "express";
 import { sql } from "drizzle-orm";
 import { appPool, withTenant } from "../db/app.js";
 import { readTwilioAuthToken, readTwilioConfig, TwilioNotConfigured } from "../lib/twilio/client.js";
-import { parseTwilioWebhook, verifyTwilioSignature } from "../lib/twilio/webhook.js";
+import { parseTwilioWebhook, verifyTwilioSignature, isOptOutMessage, isOptInMessage } from "../lib/twilio/webhook.js";
+import { setConsent, type Channel as ConsentChannel } from "../lib/party/consent.js";
 import {
   matchOrCreatePartyByPhone,
   upsertConversation,
@@ -175,11 +176,71 @@ twilioWebhookRouter.post("/", async (req, res) => {
           mediaMimes: parsed.media.map((m) => m.contentType),
         });
         console.log(`[twilio-webhook] ← activity inserted (media=${parsed.media.length}), done.`);
+
+        // STOP / UNSUBSCRIBE / CANCEL etc. → flip party_consent to false.
+        // Meta-side WhatsApp will also auto-block on STOP, but we own our
+        // side of the record so future campaigns skip this party.
+        //
+        // SAVEPOINT-guarded — a setConsent failure must NOT abort the
+        // transaction the inbound insert already committed to. If we
+        // skipped this guard, the JS catch would silently succeed while
+        // Postgres flags the txn aborted and the outer commit fails.
+        const optOut = parsed.body ? isOptOutMessage(parsed.body) : false;
+        const optIn  = parsed.body && !optOut ? isOptInMessage(parsed.body) : false;
+        if (optOut || (optIn && parsed.channel === "sms")) {
+          try {
+            await db.execute(sql`SAVEPOINT consent_sp`);
+            try {
+              if (optOut) {
+                await setConsent(
+                  db, lookup.partyId, parsed.channel as ConsentChannel,
+                  false, "inbound_stop_keyword", null,
+                );
+                console.log(`[twilio-webhook] opt-out recorded party=${lookup.partyId} channel=${parsed.channel}`);
+              } else {
+                await setConsent(
+                  db, lookup.partyId, "sms",
+                  true, "inbound_start_keyword", null,
+                );
+              }
+              await db.execute(sql`RELEASE SAVEPOINT consent_sp`);
+            } catch (inner) {
+              await db.execute(sql`ROLLBACK TO SAVEPOINT consent_sp`);
+              throw inner;
+            }
+          } catch (e) {
+            console.error("[twilio-webhook] setConsent failed:", (e as Error).message);
+          }
+        }
       });
     } else {
       await withTenant(tenantId, async (db) => {
         const applied = await applyStatusUpdate(db, parsed);
         console.log(`[twilio-webhook] status update applied=${applied} sid=${parsed.providerMessageId} status=${parsed.status}`);
+
+        // Mirror the delivery lifecycle onto campaign_recipient if this
+        // Twilio message came from a campaign.
+        if (parsed.status === "delivered" || parsed.status === "read") {
+          await db.execute(sql`
+            UPDATE campaign_recipient cr
+            SET status = ${parsed.status},
+                delivered_at = CASE WHEN cr.delivered_at IS NULL THEN NOW() ELSE cr.delivered_at END
+            FROM tw_message m
+            WHERE cr.tw_message_id = m.id
+              AND m.provider_message_id = ${parsed.providerMessageId}
+              AND cr.status IN ('sent','delivered')
+          `);
+        } else if (parsed.status === "failed") {
+          await db.execute(sql`
+            UPDATE campaign_recipient cr
+            SET status = 'failed',
+                error_code    = COALESCE(${parsed.errorCode},   cr.error_code),
+                error_message = COALESCE(${parsed.errorMessage}, cr.error_message)
+            FROM tw_message m
+            WHERE cr.tw_message_id = m.id
+              AND m.provider_message_id = ${parsed.providerMessageId}
+          `);
+        }
       });
     }
   } catch (err) {

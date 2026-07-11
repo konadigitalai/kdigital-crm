@@ -1,17 +1,27 @@
 "use client";
 
 // Quick-send modal for a lead. Header button on the record page.
-// Channel toggle (SMS / WhatsApp), phone pre-filled from the lead, textarea, Send.
+// Two send modes:
+//   1. Free-form — SMS or WhatsApp inside the 24h session window.
+//   2. Template — WhatsApp only, pick a Meta-approved template and fill in
+//      any placeholders. Required for outbound outside the WhatsApp session.
 // Shares no state with the Inbox — this fires a one-off /twilio/send.
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Icon } from "@/components/ui/Icon";
 import { cn } from "@/lib/cn";
-import { sendTwMessageToLead } from "@/lib/api";
+import {
+  sendTwMessageToLead,
+  listWaTemplates,
+  syncWaTemplates,
+  type WaTemplate,
+} from "@/lib/api";
 import type { MediaAsset, TwChannel } from "@/lib/types";
 import { AttachmentPicker } from "@/components/media/AttachmentPicker";
 import { StagedStrip } from "@/components/media/StagedStrip";
+
+type SendMode = "freeform" | "template";
 
 export function SendMessageButton({
   leadNumber,
@@ -22,9 +32,7 @@ export function SendMessageButton({
 }: {
   leadNumber: string;
   leadPhone: string | null | undefined;
-  /** Gate the Attach button on media.upload */
   canUpload?: boolean;
-  /** Gate the "Add to library" toggle on media.manage */
   canAddToLibrary?: boolean;
   className?: string;
 }) {
@@ -71,6 +79,7 @@ function SendMessageDialog({
 }) {
   const router = useRouter();
   const [channel, setChannel] = useState<TwChannel>("whatsapp");
+  const [mode, setMode] = useState<SendMode>("freeform");
   const [body, setBody] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -78,23 +87,97 @@ function SendMessageDialog({
   const [staged, setStaged] = useState<MediaAsset[]>([]);
   const [pickerOpen, setPickerOpen] = useState(false);
 
+  // Template state
+  const [templates, setTemplates] = useState<WaTemplate[] | null>(null);
+  const [templatesErr, setTemplatesErr] = useState<string | null>(null);
+  const [selectedTpl, setSelectedTpl] = useState<WaTemplate | null>(null);
+  const [tplVars, setTplVars] = useState<Record<string, string>>({});
+  const [syncing, setSyncing] = useState(false);
+
+  // Templates are WhatsApp-only. If the user flips to SMS while in template
+  // mode, snap them back to freeform.
+  useEffect(() => {
+    if (channel === "sms" && mode === "template") setMode("freeform");
+  }, [channel, mode]);
+
+  // Load templates lazily — only when Template mode is chosen.
+  useEffect(() => {
+    if (mode !== "template" || templates !== null) return;
+    (async () => {
+      try {
+        const list = await listWaTemplates({ onlyApproved: true });
+        setTemplates(list);
+      } catch (err) {
+        setTemplatesErr((err as Error).message);
+      }
+    })();
+  }, [mode, templates]);
+
+  async function refreshTemplates() {
+    if (syncing) return;
+    setSyncing(true);
+    setTemplatesErr(null);
+    try {
+      await syncWaTemplates();
+      const list = await listWaTemplates({ onlyApproved: true });
+      setTemplates(list);
+    } catch (err) {
+      setTemplatesErr((err as Error).message);
+    } finally {
+      setSyncing(false);
+    }
+  }
+
+  function pickTemplate(tpl: WaTemplate) {
+    setSelectedTpl(tpl);
+    // Seed the variable map from Twilio's sample values so the preview
+    // doesn't render empty placeholders on first load.
+    const seed: Record<string, string> = {};
+    for (const name of tpl.variables.names) {
+      seed[name] = tpl.variables.samples?.[name] ?? "";
+    }
+    setTplVars(seed);
+  }
+
   async function submit() {
-    const text = body.trim();
-    if ((!text && staged.length === 0) || busy) return;
+    if (busy) return;
+    if (mode === "template") {
+      if (!selectedTpl) { setError("Pick a template first"); return; }
+      // Every declared variable must have a value — Twilio errors on
+      // undefined placeholders with a cryptic template rejection.
+      const missing = selectedTpl.variables.names.filter((n) => !tplVars[n]?.trim());
+      if (missing.length > 0) {
+        setError(`Fill in: ${missing.join(", ")}`);
+        return;
+      }
+    } else {
+      const text = body.trim();
+      if (!text && staged.length === 0) return;
+    }
     setBusy(true);
     setError(null);
     try {
-      const r = await sendTwMessageToLead({
-        channel,
-        to: leadNumber,
-        body: text,
-        mediaAssetIds: staged.map((a) => a.id),
-      });
+      const r = await sendTwMessageToLead(
+        mode === "template" && selectedTpl
+          ? {
+              channel: "whatsapp",
+              to: leadNumber,
+              body: "",
+              contentSid: selectedTpl.contentSid,
+              contentVariables: tplVars,
+            }
+          : {
+              channel,
+              to: leadNumber,
+              body: body.trim(),
+              mediaAssetIds: staged.map((a) => a.id),
+            },
+      );
       if (!r.ok) {
         setError(r.errorMessage ?? `Send failed${r.errorCode ? ` (${r.errorCode})` : ""}`);
         return;
       }
-      setDone({ channel, providerMessageId: r.providerMessageId });
+      setDone({ channel: mode === "template" ? "whatsapp" : channel, providerMessageId: r.providerMessageId });
       router.refresh();
     } catch (err) {
       setError((err as Error).message);
@@ -102,6 +185,19 @@ function SendMessageDialog({
       setBusy(false);
     }
   }
+
+  // Preview: render the first available type block with placeholders swapped.
+  function templatePreview(tpl: WaTemplate, vars: Record<string, string>): string {
+    const firstBody = extractTemplateBody(tpl);
+    if (!firstBody) return "";
+    return firstBody.replace(/\{\{\s*([^}]+?)\s*\}\}/g, (_m, k) => vars[k.trim()] || `{{${k.trim()}}}`);
+  }
+
+  const canSubmit =
+    !busy &&
+    (mode === "template"
+      ? !!selectedTpl && selectedTpl.variables.names.every((n) => (tplVars[n] ?? "").trim().length > 0)
+      : body.trim().length > 0 || staged.length > 0);
 
   return (
     <div
@@ -142,48 +238,72 @@ function SendMessageDialog({
           </div>
         ) : (
           <>
-            <div className="mb-4 inline-flex rounded-full border border-rule bg-paper p-1 text-[12.5px]">
-              <ChannelToggle active={channel === "whatsapp"} onClick={() => setChannel("whatsapp")}>WhatsApp</ChannelToggle>
-              <ChannelToggle active={channel === "sms"}      onClick={() => setChannel("sms")}>SMS</ChannelToggle>
+            <div className="mb-4 flex flex-wrap items-center gap-3">
+              <div className="inline-flex rounded-full border border-rule bg-paper p-1 text-[12.5px]">
+                <ChannelToggle active={channel === "whatsapp"} onClick={() => setChannel("whatsapp")}>WhatsApp</ChannelToggle>
+                <ChannelToggle active={channel === "sms"}      onClick={() => setChannel("sms")}>SMS</ChannelToggle>
+              </div>
+              {channel === "whatsapp" && (
+                <div className="inline-flex rounded-full border border-rule bg-paper p-1 text-[12.5px]">
+                  <ChannelToggle active={mode === "freeform"} onClick={() => setMode("freeform")}>Free-form</ChannelToggle>
+                  <ChannelToggle active={mode === "template"} onClick={() => setMode("template")}>Template</ChannelToggle>
+                </div>
+              )}
             </div>
 
-            <textarea
-              autoFocus
-              value={body}
-              onChange={(e) => setBody(e.target.value)}
-              rows={4}
-              placeholder={channel === "whatsapp"
-                ? "Hi — following up on your enquiry. Do you have 5 minutes for a quick call?"
-                : "Hi — following up on your enquiry."}
-              className="w-full resize-y rounded-[10px] border border-rule bg-warm/40 p-3 text-[13.5px] text-ink placeholder:text-hint focus:border-brand-violet focus:outline-none focus:ring-2 focus:ring-brand-violet/20"
-            />
-            <p className="mono-cap mt-1 text-[10px] tracking-[.04em] text-hint">
-              {channel === "whatsapp"
-                ? "Freeform WhatsApp messages only work inside a 24h window from the customer's last reply. Outside that, Twilio returns error 63016 — templates arrive in a later version."
-                : "Standard SMS. Character limits and cost per segment apply on the Twilio side."}
-            </p>
+            {mode === "freeform" ? (
+              <>
+                <textarea
+                  autoFocus
+                  value={body}
+                  onChange={(e) => setBody(e.target.value)}
+                  rows={4}
+                  placeholder={channel === "whatsapp"
+                    ? "Hi — following up on your enquiry. Do you have 5 minutes for a quick call?"
+                    : "Hi — following up on your enquiry."}
+                  className="w-full resize-y rounded-[10px] border border-rule bg-warm/40 p-3 text-[13.5px] text-ink placeholder:text-hint focus:border-brand-violet focus:outline-none focus:ring-2 focus:ring-brand-violet/20"
+                />
+                <p className="mono-cap mt-1 text-[10px] tracking-[.04em] text-hint">
+                  {channel === "whatsapp"
+                    ? "Free-form only works inside a 24h window from the customer's last reply. Outside that, use a template."
+                    : "Standard SMS. Character limits and cost per segment apply on the Twilio side."}
+                </p>
 
-            {staged.length > 0 && (
-              <StagedStrip
-                assets={staged}
-                onRemove={(id) => setStaged((prev) => prev.filter((a) => a.id !== id))}
-                className="mt-3"
+                {staged.length > 0 && (
+                  <StagedStrip
+                    assets={staged}
+                    onRemove={(id) => setStaged((prev) => prev.filter((a) => a.id !== id))}
+                    className="mt-3"
+                  />
+                )}
+
+                <div className="mt-3 flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setPickerOpen(true)}
+                    className="inline-flex items-center gap-1.5 rounded-md border border-rule bg-paper px-2.5 py-1.5 text-[12px] font-semibold text-ink2 transition hover:border-brand-violet hover:text-brand-violet"
+                  >
+                    <Icon name="plus" size={12} strokeWidth={2.2} />
+                    Attach file
+                  </button>
+                  <span className="mono-cap text-[10px] tracking-[.04em] text-hint">
+                    Up to 10 attachments per message.
+                  </span>
+                </div>
+              </>
+            ) : (
+              <TemplateEditor
+                templates={templates}
+                templatesErr={templatesErr}
+                selected={selectedTpl}
+                onPick={pickTemplate}
+                vars={tplVars}
+                onVarsChange={setTplVars}
+                onRefresh={refreshTemplates}
+                syncing={syncing}
+                previewFor={templatePreview}
               />
             )}
-
-            <div className="mt-3 flex items-center gap-2">
-              <button
-                type="button"
-                onClick={() => setPickerOpen(true)}
-                className="inline-flex items-center gap-1.5 rounded-md border border-rule bg-paper px-2.5 py-1.5 text-[12px] font-semibold text-ink2 transition hover:border-brand-violet hover:text-brand-violet"
-              >
-                <Icon name="plus" size={12} strokeWidth={2.2} />
-                Attach file
-              </button>
-              <span className="mono-cap text-[10px] tracking-[.04em] text-hint">
-                Up to 10 attachments per message.
-              </span>
-            </div>
 
             {error && (
               <div className="mt-3 rounded-lg border border-state-warn/30 bg-state-warn/10 px-3 py-2 text-[12.5px] text-state-warn">
@@ -196,10 +316,14 @@ function SendMessageDialog({
               <button
                 type="button"
                 onClick={submit}
-                disabled={busy || (!body.trim() && staged.length === 0)}
+                disabled={!canSubmit}
                 className="btn-grad disabled:opacity-60"
               >
-                {busy ? "Sending…" : `Send ${channel === "whatsapp" ? "WhatsApp" : "SMS"}`}
+                {busy
+                  ? "Sending…"
+                  : mode === "template"
+                    ? "Send template"
+                    : `Send ${channel === "whatsapp" ? "WhatsApp" : "SMS"}`}
               </button>
             </div>
           </>
@@ -225,6 +349,104 @@ function SendMessageDialog({
   );
 }
 
+function TemplateEditor({
+  templates, templatesErr, selected, onPick, vars, onVarsChange, onRefresh, syncing, previewFor,
+}: {
+  templates: WaTemplate[] | null;
+  templatesErr: string | null;
+  selected: WaTemplate | null;
+  onPick: (tpl: WaTemplate) => void;
+  vars: Record<string, string>;
+  onVarsChange: (next: Record<string, string>) => void;
+  onRefresh: () => void;
+  syncing: boolean;
+  previewFor: (tpl: WaTemplate, vars: Record<string, string>) => string;
+}) {
+  if (templatesErr) {
+    return (
+      <div className="rounded-lg border border-state-warn/30 bg-state-warn/10 px-3 py-2 text-[12.5px] text-state-warn">
+        Couldn't load templates: {templatesErr}
+        <button type="button" onClick={onRefresh} className="ml-2 underline">Retry</button>
+      </div>
+    );
+  }
+  if (templates === null) {
+    return <div className="text-[12.5px] text-mute">Loading templates…</div>;
+  }
+  if (templates.length === 0) {
+    return (
+      <div className="rounded-lg border border-rule bg-warm/40 p-3 text-[12.5px] text-mute">
+        No approved templates on the account yet.{" "}
+        <button type="button" onClick={onRefresh} disabled={syncing} className="underline">
+          {syncing ? "Syncing…" : "Refresh from Twilio"}
+        </button>
+      </div>
+    );
+  }
+  return (
+    <div className="space-y-3">
+      <div>
+        <label className="mono-cap block text-[10px] tracking-[.04em] text-hint">Template</label>
+        <div className="mt-1 flex items-center gap-2">
+          <select
+            value={selected?.contentSid ?? ""}
+            onChange={(e) => {
+              const tpl = templates.find((t) => t.contentSid === e.target.value);
+              if (tpl) onPick(tpl);
+            }}
+            className="w-full rounded-[10px] border border-rule bg-paper px-3 py-2 text-[13px] text-ink focus:border-brand-violet focus:outline-none focus:ring-2 focus:ring-brand-violet/20"
+          >
+            <option value="" disabled>Pick a template…</option>
+            {templates.map((t) => (
+              <option key={t.contentSid} value={t.contentSid}>
+                {t.friendlyName} {t.language ? `· ${t.language}` : ""}
+              </option>
+            ))}
+          </select>
+          <button
+            type="button"
+            onClick={onRefresh}
+            disabled={syncing}
+            title="Re-sync from Twilio Content Builder"
+            className="inline-flex items-center gap-1 rounded-md border border-rule bg-paper px-2 py-1.5 text-[11px] font-semibold text-ink2 hover:border-brand-violet hover:text-brand-violet disabled:opacity-50"
+          >
+            {syncing ? "…" : "Sync"}
+          </button>
+        </div>
+      </div>
+
+      {selected && selected.variables.names.length > 0 && (
+        <div>
+          <label className="mono-cap block text-[10px] tracking-[.04em] text-hint">Variables</label>
+          <div className="mt-1 space-y-1.5">
+            {selected.variables.names.map((name) => (
+              <div key={name} className="flex items-center gap-2">
+                <span className="mono-cap w-28 shrink-0 truncate text-[11px] text-mute" title={name}>{name}</span>
+                <input
+                  type="text"
+                  value={vars[name] ?? ""}
+                  onChange={(e) => onVarsChange({ ...vars, [name]: e.target.value })}
+                  placeholder={selected.variables.samples?.[name] ?? ""}
+                  className="flex-1 rounded-md border border-rule bg-warm/40 px-2 py-1.5 text-[12.5px] text-ink placeholder:text-hint focus:border-brand-violet focus:outline-none"
+                />
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {selected && (
+        <div>
+          <label className="mono-cap block text-[10px] tracking-[.04em] text-hint">Preview</label>
+          <div className="mt-1 whitespace-pre-wrap rounded-[10px] border border-rule bg-warm/40 p-3 text-[13px] text-ink">
+            {previewFor(selected, vars) || <span className="text-mute">(no body)</span>}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function ChannelToggle({
   active, onClick, children,
 }: {
@@ -244,4 +466,17 @@ function ChannelToggle({
       {children}
     </button>
   );
+}
+
+/** Best-effort body extractor for the small number of template shapes we
+ *  actually surface. Falls back to empty string if the type doesn't have a
+ *  clear "body" — Meta's own approval UI is the canonical preview anyway. */
+function extractTemplateBody(tpl: WaTemplate): string {
+  const types = tpl.types ?? {};
+  for (const t of Object.values(types)) {
+    if (t && typeof t === "object" && "body" in t && typeof (t as { body?: unknown }).body === "string") {
+      return String((t as { body: string }).body);
+    }
+  }
+  return "";
 }

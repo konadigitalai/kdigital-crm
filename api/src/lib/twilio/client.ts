@@ -59,9 +59,29 @@ export interface SendResult {
   response:           string;
 }
 
+/** Options for the extended send call — the two paths we support today are
+ *  freeform (Body + optional media) and template (ContentSid + variables).
+ *  Providing both is an error at the caller layer; here we prefer template. */
+export interface SendMessageOptions {
+  /** WhatsApp templates only. Meta-approved ContentSid (starts "HX"). */
+  contentSid?:        string;
+  /** Values for the template placeholders. Keys match the template's
+   *  `{{placeholder}}` names OR positional numbers (Twilio accepts both). */
+  contentVariables?:  Record<string, string>;
+  /** Public HTTPS URLs Twilio should download and attach. Ignored when
+   *  contentSid is present — template media is baked into the template. */
+  mediaUrls?:         string[];
+}
+
 /**
  * POST /2010-04-01/Accounts/{SID}/Messages.json with Basic auth.
  * Body is form-encoded per the Twilio API convention.
+ *
+ * Two send modes:
+ *   1. Freeform: pass `body` (and optionally `mediaUrls`). Only works inside
+ *      the WhatsApp 24-hour session window; SMS has no session limit.
+ *   2. Template: pass `opts.contentSid` + `opts.contentVariables`. The
+ *      template must be Meta-approved. `body` is ignored in this path.
  *
  * `mediaUrls` — up to 10 public HTTPS URLs. Twilio downloads each and
  * attaches it to the message. WhatsApp accepts richer types; SMS/MMS
@@ -72,8 +92,14 @@ export async function sendMessage(
   toE164Addr: string,
   body: string,
   cfg: TwilioConfig = readTwilioConfig(),
-  mediaUrls: string[] = [],
+  mediaUrlsOrOpts: string[] | SendMessageOptions = [],
 ): Promise<SendResult> {
+  // Back-compat: legacy callers passed `mediaUrls: string[]` as the 5th arg.
+  // Newer callers pass a SendMessageOptions object. Normalize.
+  const opts: SendMessageOptions = Array.isArray(mediaUrlsOrOpts)
+    ? { mediaUrls: mediaUrlsOrOpts }
+    : mediaUrlsOrOpts;
+
   const url = `https://api.twilio.com/2010-04-01/Accounts/${encodeURIComponent(cfg.sid)}/Messages.json`;
   const from = channel === "whatsapp" ? formatTwilioAddr("whatsapp", cfg.waFrom) : cfg.smsFrom;
   const to   = formatTwilioAddr(channel, toE164Addr);
@@ -87,9 +113,17 @@ export async function sendMessage(
   const form = new URLSearchParams();
   form.set("From", from);
   form.set("To",   to);
-  if (body) form.set("Body", body);
-  // Twilio accepts repeated MediaUrl fields; cap at 10 to match their limit.
-  for (const url of mediaUrls.slice(0, 10)) form.append("MediaUrl", url);
+  if (opts.contentSid) {
+    // Template send. Twilio ignores Body when ContentSid is present.
+    form.set("ContentSid", opts.contentSid);
+    if (opts.contentVariables && Object.keys(opts.contentVariables).length > 0) {
+      form.set("ContentVariables", JSON.stringify(opts.contentVariables));
+    }
+  } else {
+    if (body) form.set("Body", body);
+    // Twilio accepts repeated MediaUrl fields; cap at 10 to match their limit.
+    for (const mUrl of (opts.mediaUrls ?? []).slice(0, 10)) form.append("MediaUrl", mUrl);
+  }
 
   const basic = Buffer.from(`${cfg.sid}:${cfg.token}`, "utf8").toString("base64");
   const ctrl  = new AbortController();

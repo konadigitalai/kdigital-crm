@@ -200,6 +200,12 @@ export interface OutboundInput {
   senderUserPartyId:  string | null;
   /** Media assets attached in send order (0..9). Rows persisted to tw_message_media on success. */
   mediaAssetIds?:     string[];
+  /** Twilio Content Builder SID used, when this was a template send. */
+  contentSid?:        string | null;
+  /** Resolved variables sent alongside contentSid. */
+  contentVariables?:  Record<string, string> | null;
+  /** Campaign this send belongs to (Phase 2). Nullable for one-off sends. */
+  campaignId?:        string | null;
   send: {
     ok:                boolean;
     providerMessageId: string | null;
@@ -222,12 +228,16 @@ export async function recordOutbound(
   input: OutboundInput,
 ): Promise<string> {
   const status = input.send.ok ? "sent" : "failed";
+  const contentVarsJson = input.contentVariables
+    ? JSON.stringify(input.contentVariables)
+    : null;
   const r = await db.execute(sql`
     INSERT INTO tw_message (
       tenant_id, conversation_id, direction, channel,
       from_number, to_number, body,
       provider_message_id, status, error_code, error_message,
-      sender_user_id, sent_at, raw_payload
+      sender_user_id, sent_at, raw_payload,
+      content_sid, content_variables, campaign_id
     )
     VALUES (
       current_tenant(), ${conversationId}, 'outbound', ${input.channel},
@@ -235,7 +245,10 @@ export async function recordOutbound(
       ${input.send.providerMessageId}, ${status},
       ${input.send.errorCode}, ${input.send.errorMessage},
       ${input.senderUserPartyId}, now(),
-      ${JSON.stringify({ raw: input.send.response.slice(0, 4000) })}::jsonb
+      ${JSON.stringify({ raw: input.send.response.slice(0, 4000) })}::jsonb,
+      ${input.contentSid ?? null},
+      ${contentVarsJson}::jsonb,
+      ${input.campaignId ?? null}
     )
     RETURNING id
   `);
@@ -249,9 +262,14 @@ export async function recordOutbound(
     }
   }
   if (input.send.ok) {
+    // Template sends have no runtime body — surface a compact placeholder
+    // in the conversation preview so the inbox still lists something usable.
+    const previewText = input.body && input.body.trim()
+      ? input.body
+      : (input.contentSid ? "[template]" : "");
     await db.execute(sql`
       UPDATE tw_conversation
-      SET last_message_text = ${input.body},
+      SET last_message_text = ${previewText},
           last_message_at   = now(),
           updated_at        = now()
       WHERE id = ${conversationId}

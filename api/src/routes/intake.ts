@@ -26,6 +26,7 @@ import { withTenant } from "../db/app.js";
 import { appPool } from "../db/app.js";
 import { resolveSentinelPartyId } from "../lib/party/resolve.js";
 import { emitEvent } from "../lib/events.js";
+import { evaluateTriggers } from "../lib/campaigns/triggers.js";
 
 export const intakeRouter = Router();
 
@@ -236,7 +237,29 @@ intakeRouter.post("/", async (req, res) => {
         )
       `);
 
-      return { workItemId, number };
+      // Fire lead.created triggers. Isolated in a SAVEPOINT — the whole
+      // intake runs in one withTenant txn, so a raw JS catch here wouldn't
+      // rescue us from the "aborted transaction" state a failed SQL query
+      // inside evaluateTriggers would put us in.
+      try {
+        await db.execute(sql`SAVEPOINT trg_sp`);
+        try {
+          await evaluateTriggers(db, {
+            type: "lead.created",
+            partyId,
+            workItemId,
+            source: source ?? null,
+          });
+          await db.execute(sql`RELEASE SAVEPOINT trg_sp`);
+        } catch (inner) {
+          await db.execute(sql`ROLLBACK TO SAVEPOINT trg_sp`);
+          throw inner;
+        }
+      } catch (e) {
+        console.error("[triggers] intake lead.created:", (e as Error).message);
+      }
+
+      return { workItemId, number, partyId };
     });
 
     // Fire the domain event (Slack, WA automations, etc.). Never throws.

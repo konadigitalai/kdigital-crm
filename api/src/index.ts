@@ -38,6 +38,9 @@ import { partiesRouter } from "./routes/parties.js";
 import { partyConsentRouter } from "./routes/party-consent.js";
 import { twilioRouter } from "./routes/twilio.js";
 import { twilioWebhookRouter } from "./routes/twilio-webhook.js";
+import { templatesRouter } from "./routes/templates.js";
+import { campaignsRouter } from "./routes/campaigns.js";
+import { startCampaignWorker } from "./lib/campaigns/worker.js";
 import { mediaRouter, mediaFetchRouter } from "./routes/media.js";
 import { startDedupWorker } from "./lib/party/dedup-worker.js";
 import { ensureCheckpointerSetup } from "./agents/runtime.js";
@@ -208,6 +211,12 @@ app.use("/party",   partyConsentRouter);
 // (messaging.read / messaging.send / leads.write for promote-to-lead).
 app.use("/twilio", twilioRouter);
 
+// WhatsApp templates (Twilio Content Builder cache + approval status).
+app.use("/templates", templatesRouter);
+
+// Campaign engine — bulk template sends with per-recipient state.
+app.use("/campaigns", campaignsRouter);
+
 // Media library + file uploads for Twilio attachments. Per-handler perms
 // (media.read / media.upload / media.manage). Uploads flow client→Vercel
 // Blob directly; the API only mints short-lived tokens.
@@ -223,6 +232,7 @@ const port = Number(process.env.PORT ?? 4000);
 app.listen(port, async () => {
   console.log(`api listening on http://localhost:${port}`);
   startDedupWorker();
+  startCampaignWorker();
   // Idempotent: creates the LangGraph checkpoint tables on first boot.
   try {
     await ensureCheckpointerSetup();

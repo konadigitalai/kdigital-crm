@@ -120,3 +120,27 @@ export function parseTwilioWebhook(form: Record<string, string>): ParsedTwilioWe
 
   return { kind: "ignore" };
 }
+
+/** Normalize the inbound body and check for a WhatsApp / SMS opt-out
+ *  keyword. Case-insensitive. Trims surrounding whitespace + punctuation. */
+export function isOptOutMessage(body: string): boolean {
+  const norm = body.trim().toLowerCase().replace(/[.!?,]+$/g, "");
+  return OPT_OUT_KEYWORDS.has(norm);
+}
+
+/** Mirror-image: START/YES resubscribes on some carriers. Not enabled by
+ *  default (Meta requires explicit re-opt-in for WhatsApp), but exposed
+ *  so callers can decide their policy. */
+export function isOptInMessage(body: string): boolean {
+  const norm = body.trim().toLowerCase().replace(/[.!?,]+$/g, "");
+  return OPT_IN_KEYWORDS.has(norm);
+}
+
+const OPT_OUT_KEYWORDS = new Set([
+  "stop", "stop all", "stopall",
+  "unsubscribe", "cancel", "end", "quit",
+]);
+const OPT_IN_KEYWORDS = new Set([
+  "start", "yes", "unstop", "resubscribe",
+]);
+

@@ -1349,6 +1349,9 @@ export const twMessage = pgTable(
     sentAt:              timestamp("sent_at", { withTimezone: true }).notNull().defaultNow(),
     deliveredAt:         timestamp("delivered_at", { withTimezone: true }),
     rawPayload:          jsonb("raw_payload"),
+    contentSid:          text("content_sid"),
+    contentVariables:    jsonb("content_variables"),
+    campaignId:          uuid("campaign_id"),
   },
   (t) => ({
     conversationSentIdx: index("tw_message_conversation_sent_idx")
@@ -1357,12 +1360,153 @@ export const twMessage = pgTable(
       .on(t.tenantId, t.sentAt),
     providerMessageIdKey: uniqueIndex("tw_message_provider_message_id_key")
       .on(t.providerMessageId),
+    campaignIdx: index("tw_message_campaign_idx")
+      .on(t.campaignId, t.sentAt),
     directionCheck: check("tw_message_direction_check",
       sql`${t.direction} IN ('inbound','outbound')`),
     channelCheck: check("tw_message_channel_check",
       sql`${t.channel} IN ('sms','whatsapp')`),
     statusCheck: check("tw_message_status_check",
       sql`${t.status} IN ('queued','sent','delivered','read','failed','received')`),
+  }),
+);
+
+// ─── WhatsApp templates (Twilio Content Builder cache) ────────────────────
+// See post-0068-templates.sql for DDL + RLS.
+
+export const waTemplate = pgTable(
+  "wa_template",
+  {
+    id:              uuid("id").primaryKey().defaultRandom(),
+    tenantId:        uuid("tenant_id").notNull().references(() => tenant.id),
+    contentSid:      text("content_sid").notNull(),
+    friendlyName:    text("friendly_name").notNull(),
+    language:        text("language"),
+    category:        text("category"),
+    variables:       jsonb("variables").notNull().default(sql`'{}'::jsonb`),
+    types:           jsonb("types").notNull().default(sql`'{}'::jsonb`),
+    approvalStatus:  text("approval_status").notNull().default("unknown"),
+    approvalNote:    text("approval_note"),
+    syncedAt:        timestamp("synced_at", { withTimezone: true }).notNull().defaultNow(),
+    createdAt:       timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    tenantContentSidKey: uniqueIndex("wa_template_tenant_content_sid_key")
+      .on(t.tenantId, t.contentSid),
+    tenantApprovalIdx: index("wa_template_tenant_approval_idx")
+      .on(t.tenantId, t.approvalStatus),
+    approvalStatusCheck: check("wa_template_approval_status_check",
+      sql`${t.approvalStatus} IN ('draft','pending','approved','rejected','unknown','paused')`),
+  }),
+);
+
+// ─── Campaigns ────────────────────────────────────────────────────────────
+// See post-0069-campaigns.sql for DDL + RLS.
+
+export const campaign = pgTable(
+  "campaign",
+  {
+    id:                       uuid("id").primaryKey().defaultRandom(),
+    tenantId:                 uuid("tenant_id").notNull().references(() => tenant.id),
+    name:                     text("name").notNull(),
+    createdBy:                uuid("created_by").references(() => party.id, { onDelete: "set null" }),
+    channel:                  text("channel").notNull().default("whatsapp"),
+    contentSid:               text("content_sid").notNull(),
+    contentVariableBindings:  jsonb("content_variable_bindings").notNull().default(sql`'{}'::jsonb`),
+    audience:                 jsonb("audience").notNull().default(sql`'{}'::jsonb`),
+    status:                   text("status").notNull().default("draft"),
+    scheduledAt:              timestamp("scheduled_at", { withTimezone: true }),
+    sendRatePerSec:           integer("send_rate_per_sec").notNull().default(5),
+    dailyCap:                 integer("daily_cap"),
+    createdAt:                timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    startedAt:                timestamp("started_at", { withTimezone: true }),
+    completedAt:              timestamp("completed_at", { withTimezone: true }),
+  },
+  (t) => ({
+    tenantStatusIdx: index("campaign_tenant_status_idx")
+      .on(t.tenantId, t.status, t.scheduledAt),
+    statusCheck: check("campaign_status_check",
+      sql`${t.status} IN ('draft','scheduled','running','paused','completed','cancelled')`),
+    channelCheck: check("campaign_channel_check",
+      sql`${t.channel} IN ('whatsapp','sms')`),
+    sendRateCheck: check("campaign_send_rate_check",
+      sql`${t.sendRatePerSec} BETWEEN 1 AND 100`),
+  }),
+);
+
+export const campaignRecipient = pgTable(
+  "campaign_recipient",
+  {
+    id:                  uuid("id").primaryKey().defaultRandom(),
+    tenantId:            uuid("tenant_id").notNull().references(() => tenant.id),
+    campaignId:          uuid("campaign_id").notNull().references(() => campaign.id, { onDelete: "cascade" }),
+    partyId:             uuid("party_id").notNull().references(() => party.id, { onDelete: "cascade" }),
+    workItemId:          uuid("work_item_id").references(() => workItem.id, { onDelete: "set null" }),
+    status:              text("status").notNull().default("pending"),
+    errorCode:           text("error_code"),
+    errorMessage:        text("error_message"),
+    twMessageId:         uuid("tw_message_id").references(() => twMessage.id, { onDelete: "set null" }),
+    resolvedVariables:   jsonb("resolved_variables"),
+    queuedAt:            timestamp("queued_at", { withTimezone: true }).notNull().defaultNow(),
+    sentAt:              timestamp("sent_at", { withTimezone: true }),
+    deliveredAt:         timestamp("delivered_at", { withTimezone: true }),
+  },
+  (t) => ({
+    campaignPartyKey: uniqueIndex("campaign_recipient_campaign_party_key")
+      .on(t.campaignId, t.partyId),
+    campaignStatusIdx: index("campaign_recipient_campaign_status_idx")
+      .on(t.campaignId, t.status),
+    twMessageIdx: index("campaign_recipient_tw_message_idx")
+      .on(t.twMessageId),
+    statusCheck: check("campaign_recipient_status_check",
+      sql`${t.status} IN ('pending','sending','sent','delivered','read',
+                          'failed','skipped_optout','skipped_no_phone','skipped_dup')`),
+  }),
+);
+
+// ─── Campaign triggers (event-driven auto-sends) ─────────────────────────
+// See post-0070-campaign-triggers.sql for DDL + RLS.
+
+export const campaignTrigger = pgTable(
+  "campaign_trigger",
+  {
+    id:                uuid("id").primaryKey().defaultRandom(),
+    tenantId:          uuid("tenant_id").notNull().references(() => tenant.id),
+    name:              text("name").notNull(),
+    contentSid:        text("content_sid").notNull(),
+    variableBindings:  jsonb("variable_bindings").notNull().default(sql`'{}'::jsonb`),
+    eventType:         text("event_type").notNull(),
+    condition:         jsonb("condition").notNull().default(sql`'{}'::jsonb`),
+    cooldownHours:     integer("cooldown_hours").notNull().default(24),
+    enabled:           boolean("enabled").notNull().default(false),
+    autoCampaignId:    uuid("auto_campaign_id").references(() => campaign.id, { onDelete: "set null" }),
+    createdBy:         uuid("created_by").references(() => party.id, { onDelete: "set null" }),
+    createdAt:         timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt:         timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    tenantEventEnabledIdx: index("campaign_trigger_tenant_event_enabled_idx")
+      .on(t.tenantId, t.eventType, t.enabled),
+    eventCheck: check("campaign_trigger_event_check",
+      sql`${t.eventType} IN ('lead.stage_changed','lead.created','lead.rating_changed')`),
+  }),
+);
+
+export const campaignTriggerFire = pgTable(
+  "campaign_trigger_fire",
+  {
+    id:           uuid("id").primaryKey().defaultRandom(),
+    tenantId:     uuid("tenant_id").notNull().references(() => tenant.id),
+    triggerId:    uuid("trigger_id").notNull().references(() => campaignTrigger.id, { onDelete: "cascade" }),
+    partyId:      uuid("party_id").notNull().references(() => party.id, { onDelete: "cascade" }),
+    workItemId:   uuid("work_item_id").references(() => workItem.id, { onDelete: "set null" }),
+    firedAt:      timestamp("fired_at", { withTimezone: true }).notNull().defaultNow(),
+    recipientId:  uuid("recipient_id").references(() => campaignRecipient.id, { onDelete: "set null" }),
+    outcome:      text("outcome").notNull().default("queued"),
+  },
+  (t) => ({
+    triggerPartyIdx: index("campaign_trigger_fire_trigger_party_idx")
+      .on(t.triggerId, t.partyId, t.firedAt),
   }),
 );
 
@@ -1447,6 +1591,11 @@ export type Activity = typeof activity.$inferSelect;
 export type AgentRun = typeof agentRun.$inferSelect;
 export type SupportCase = typeof supportCase.$inferSelect;
 export type SavedView = typeof savedView.$inferSelect;
+export type WaTemplate = typeof waTemplate.$inferSelect;
+export type Campaign = typeof campaign.$inferSelect;
+export type CampaignRecipient = typeof campaignRecipient.$inferSelect;
+export type CampaignTrigger = typeof campaignTrigger.$inferSelect;
+export type CampaignTriggerFire = typeof campaignTriggerFire.$inferSelect;
 export type SlackRule = typeof slackRule.$inferSelect;
 export type SlackDeliveryLog = typeof slackDeliveryLog.$inferSelect;
 export type SlackWorkspace = typeof slackWorkspace.$inferSelect;
