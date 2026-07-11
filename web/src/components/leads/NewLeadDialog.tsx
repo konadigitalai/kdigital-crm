@@ -36,28 +36,63 @@ export function NewLeadButton({
         {variant === "primary" && <Icon name="plus" size={14} strokeWidth={2.2} />}
         {label ?? (variant === "primary" ? "New lead" : "+ Add lead")}
       </button>
-      {open && <Dialog defaultRating={defaultRating} onClose={() => setOpen(false)} />}
+      {open && <NewLeadDialog defaultRating={defaultRating} onClose={() => setOpen(false)} />}
     </>
   );
 }
 
-function Dialog({ defaultRating, onClose }: { defaultRating?: LeadRating; onClose: () => void }) {
+/** Everything the dialog sends when the user hits submit — same shape as
+ *  createLead's argument. Exposed so callers that override `submit` can
+ *  reuse the exact same field set. */
+export type DialogSubmitPayload = Parameters<typeof createLead>[0];
+
+/** Prefill values for the New Lead dialog — e.g. when promoting an inbox
+ *  conversation, we already know the phone (and sometimes the party name). */
+export interface NewLeadDefaults {
+  name?: string;
+  phone?: string;              // local digits only, no cc
+  phoneCountryCode?: string;   // "+91"
+  source?: string;             // catalog key; defaults to "web"
+  rating?: LeadRating;
+}
+
+/** Standalone dialog. Renders as-is when open; parent controls open state.
+ *  When `submit` is provided it REPLACES the default `createLead` call —
+ *  useful for the inbox Promote flow which routes through the twilio
+ *  conversation endpoint instead of the leads endpoint. */
+export function NewLeadDialog({
+  defaults,
+  defaultRating,
+  onClose,
+  submit: submitOverride,
+  submitLabel,
+  title,
+  subtitle,
+}: {
+  defaults?: NewLeadDefaults;
+  defaultRating?: LeadRating;
+  onClose: () => void;
+  submit?: (payload: DialogSubmitPayload) => Promise<{ number: string }>;
+  submitLabel?: string;
+  title?: string;
+  subtitle?: string;
+}) {
   const router = useRouter();
   const dialogRef = useRef<HTMLDivElement>(null);
   const [catalog, setCatalog] = useState<CatalogResponse | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // Form state
-  const [name, setName] = useState("");
+  // Form state — seeded from `defaults` when the caller pre-fills.
+  const [name, setName] = useState(defaults?.name ?? "");
   const [email, setEmail] = useState("");
-  const [phoneCountryCode, setPhoneCountryCode] = useState("+91");
-  const [phone, setPhone] = useState("");
+  const [phoneCountryCode, setPhoneCountryCode] = useState(defaults?.phoneCountryCode ?? "+91");
+  const [phone, setPhone] = useState(defaults?.phone ?? "");
   const [city, setCity] = useState("");
   const [program, setProgram] = useState("");
   const [value, setValue] = useState("");
-  const [source, setSource] = useState("web");
-  const [rating, setRating] = useState<LeadRating>(defaultRating ?? "new lead");
+  const [source, setSource] = useState(defaults?.source ?? "web");
+  const [rating, setRating] = useState<LeadRating>(defaults?.rating ?? defaultRating ?? "new lead");
   const [leadStatus, setLeadStatus] = useState<string>("");
   const [description, setDescription] = useState("");
   const [score, setScore] = useState(50);
@@ -102,7 +137,7 @@ function Dialog({ defaultRating, onClose }: { defaultRating?: LeadRating; onClos
     setError(null);
     try {
       const sourceObj = catalog?.sources.find((s) => s.key === source);
-      const created = await createLead({
+      const payload: DialogSubmitPayload = {
         name: name.trim(),
         email: email.trim() || undefined,
         phone: localDigits,
@@ -112,8 +147,6 @@ function Dialog({ defaultRating, onClose }: { defaultRating?: LeadRating; onClos
         value: value.trim() || undefined,
         source,
         sourceLabel: sourceObj?.label,
-        // legacy stage column still required by the create endpoint until
-        // it is migrated; default to 'new' for any new lead.
         stage: "new",
         score,
         rating,
@@ -124,7 +157,10 @@ function Dialog({ defaultRating, onClose }: { defaultRating?: LeadRating; onClos
         nextFollowupAt: nextFollowupAt || undefined,
         visitingDate:   visitingDate   || undefined,
         deliveryMode:   deliveryMode   || undefined,
-      });
+      };
+      const created = submitOverride
+        ? await submitOverride(payload)
+        : await createLead(payload);
       emitCrmMutation("lead.created");
       router.refresh();
       router.push(`/records/${created.number}`);
@@ -151,9 +187,9 @@ function Dialog({ defaultRating, onClose }: { defaultRating?: LeadRating; onClos
         <div className="flex-none border-b border-rule px-7 pt-6 pb-5">
           <div className="flex items-start justify-between gap-4">
             <div>
-              <h2 className="font-serif text-[28px] font-normal leading-tight tracking-[-.01em]">New lead</h2>
+              <h2 className="font-serif text-[28px] font-normal leading-tight tracking-[-.01em]">{title ?? "New lead"}</h2>
               <p className="mt-1 text-[13px] text-mute">
-                Agents will pick this up the moment it lands — score, draft outreach, and book a demo.
+                {subtitle ?? "Agents will pick this up the moment it lands — score, draft outreach, and book a demo."}
               </p>
             </div>
             <button onClick={onClose} className="text-mute hover:text-ink" aria-label="Close">
@@ -390,7 +426,7 @@ function Dialog({ defaultRating, onClose }: { defaultRating?: LeadRating; onClos
             <div className="flex items-center justify-end gap-3">
               <button type="button" onClick={onClose} className="btn">Cancel</button>
               <button type="submit" disabled={submitting} className="btn-grad disabled:opacity-60">
-                {submitting ? "Creating…" : "Create lead"}
+                {submitting ? "Creating…" : (submitLabel ?? "Create lead")}
               </button>
             </div>
           </div>

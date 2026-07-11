@@ -1386,8 +1386,11 @@ export async function assignTwConversation(id: string, userId: string | null): P
   await post<void>(`/twilio/conversations/${encodeURIComponent(id)}/assign`, { userId });
 }
 
-export async function promoteTwConversationToLead(id: string): Promise<{ ok: boolean; number: string; alreadyLead: boolean }> {
-  return await post(`/twilio/conversations/${encodeURIComponent(id)}/promote-to-lead`, {});
+export async function promoteTwConversationToLead(
+  id: string,
+  form?: CreateLeadInput,
+): Promise<{ ok: boolean; number: string; alreadyLead: boolean }> {
+  return await post(`/twilio/conversations/${encodeURIComponent(id)}/promote-to-lead`, form ?? {});
 }
 
 // ── Exotel click-to-call ─────────────────────────────────────────────────

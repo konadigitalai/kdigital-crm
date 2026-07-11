@@ -18,6 +18,7 @@ import { MessageMediaGallery } from "@/components/media/MessageMediaGallery";
 import { linkify } from "./linkify";
 import { CHAT_BG_DATA_URL } from "./chatBg";
 import { CallButton } from "@/components/record/CallButton";
+import { NewLeadDialog } from "@/components/leads/NewLeadDialog";
 
 const DETAIL_POLL_MS = 10_000;
 
@@ -34,7 +35,7 @@ export function ThreadView({
 }) {
   const [detail, setDetail] = useState<TwConversationDetail | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
-  const [busyPromote, setBusyPromote] = useState(false);
+  const [promoteOpen, setPromoteOpen] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
 
   const fetchDetail = useCallback(async () => {
@@ -67,16 +68,20 @@ export function ThreadView({
     if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
   }, [detail?.messages.length]);
 
-  async function promote() {
-    if (!canPromote) return;
-    setBusyPromote(true);
-    try {
-      await promoteTwConversationToLead(threadId);
-      await fetchDetail();
-      onRefreshList();
-    } finally {
-      setBusyPromote(false);
+  // Split the summary's E.164 partyPhone into (cc, local) so we can seed
+  // the New Lead dialog's split inputs. Falls back to sensible defaults
+  // if the phone shape is unexpected.
+  function splitPhone(e164: string | null | undefined): { cc: string; local: string } {
+    const s = (e164 ?? "").trim();
+    if (!s.startsWith("+")) return { cc: "+91", local: s.replace(/\D/g, "") };
+    // Longest-match against the country codes the form knows about.
+    const KNOWN = ["+971","+974","+966","+91","+65","+61","+49","+44","+33","+1"];
+    for (const cc of KNOWN) {
+      if (s.startsWith(cc)) return { cc, local: s.slice(cc.length).replace(/\D/g, "") };
     }
+    // Unknown country: assume 1–3 digit code, take digits after "+".
+    const digits = s.slice(1).replace(/\D/g, "");
+    return { cc: `+${digits.slice(0, 2)}`, local: digits.slice(2) };
   }
 
   const messages = detail?.messages ?? [];
@@ -117,11 +122,10 @@ export function ThreadView({
         {summary.isUnlinked && canPromote && (
           <button
             type="button"
-            disabled={busyPromote}
-            onClick={promote}
-            className="rounded-md border border-brand-violet bg-brand-violet px-3 py-1.5 text-[12px] font-semibold text-white transition hover:bg-brand-violet/90 disabled:opacity-60"
+            onClick={() => setPromoteOpen(true)}
+            className="rounded-md border border-brand-violet bg-brand-violet px-3 py-1.5 text-[12px] font-semibold text-white transition hover:bg-brand-violet/90"
           >
-            {busyPromote ? "Promoting…" : "Promote to lead"}
+            Promote to lead
           </button>
         )}
         {/* Voice threads get a "Call again" affordance in the header so
@@ -173,6 +177,33 @@ export function ThreadView({
           />
         )}
       </div>
+
+      {promoteOpen && (() => {
+        const split = splitPhone(summary.partyPhone);
+        // Party names created by the webhook start with "Unknown " — don't
+        // pre-fill that; make the operator type a real name.
+        const seedName = summary.partyName?.startsWith("Unknown") ? "" : summary.partyName ?? "";
+        return (
+          <NewLeadDialog
+            title="Promote to lead"
+            subtitle="Fill in the details — we'll link this conversation to the new lead."
+            submitLabel="Promote"
+            defaults={{
+              name: seedName,
+              phoneCountryCode: split.cc,
+              phone: split.local,
+              source: "inbound_message",
+            }}
+            onClose={() => setPromoteOpen(false)}
+            submit={async (payload) => {
+              const r = await promoteTwConversationToLead(threadId, payload);
+              await fetchDetail();
+              onRefreshList();
+              return { number: r.number };
+            }}
+          />
+        );
+      })()}
     </div>
   );
 }

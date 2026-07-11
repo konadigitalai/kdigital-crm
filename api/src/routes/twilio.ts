@@ -532,13 +532,41 @@ twilioRouter.post("/conversations/:id/assign", requirePermission("messaging.read
 twilioRouter.post("/conversations/:id/promote-to-lead", requirePermission("leads.write"), async (req, res, next) => {
   try {
     const id = String(req.params.id);
+    // Optional form payload — same fields as the New Lead dialog. When
+    // absent, we promote silently with sensible defaults (legacy behaviour).
+    // When present, we rename the existing inbox-created party, set its
+    // email/city/country-code, and fill the richer lead fields.
+    const b = (req.body ?? {}) as {
+      name?: string;
+      email?: string;
+      city?: string;
+      phone?: string;
+      phoneCountryCode?: string;
+      program?: string;
+      programId?: string;
+      value?: string;
+      source?: string;
+      sourceLabel?: string;
+      rating?: string;
+      leadStatus?: string;
+      description?: string;
+      advisorId?: string;
+      nbaLabel?: string;
+      nextFollowupAt?: string;
+      visitingDate?: string;
+      deliveryMode?: string;
+    };
+    const hasForm = Object.values(b).some((v) => v != null && v !== "");
+
     const out = await withTenant(req.tenantId!, async (db) => {
       const cR = await db.execute(sql`
-        SELECT c.id, c.party_id AS "partyId", p.name, p.phone
+        SELECT c.id, c.party_id AS "partyId", p.name, p.phone, p.phone_country_code AS "phoneCountryCode"
         FROM tw_conversation c JOIN party p ON p.id = c.party_id
         WHERE c.id = ${id}
       `);
-      const conv = cR.rows[0] as { id: string; partyId: string; name: string; phone: string | null } | undefined;
+      const conv = cR.rows[0] as {
+        id: string; partyId: string; name: string; phone: string | null; phoneCountryCode: string | null;
+      } | undefined;
       if (!conv) return { kind: "not-found" as const };
 
       const existing = await db.execute(sql`
@@ -550,24 +578,105 @@ twilioRouter.post("/conversations/:id/promote-to-lead", requirePermission("leads
         return { kind: "ok" as const, number: already.number, alreadyLead: true };
       }
 
+      // ─ Party update (when form data present) ─────────────────────────
+      const nextName = typeof b.name === "string" ? b.name.trim() : "";
+      if (nextName && conv.name.startsWith("Unknown")) {
+        // Only auto-rename if the party still has the placeholder name.
+        // Once an operator has renamed it manually, respect that.
+        await db.execute(sql`UPDATE party SET name = ${nextName} WHERE id = ${conv.partyId}`);
+      }
+      const nextEmail = typeof b.email === "string" ? b.email.trim() : "";
+      if (nextEmail) {
+        await db.execute(sql`UPDATE party SET email = ${nextEmail} WHERE id = ${conv.partyId}`);
+        await db.execute(sql`
+          INSERT INTO contact_point (tenant_id, party_id, kind, value, label, is_primary)
+          VALUES (current_tenant(), ${conv.partyId}, 'email', ${nextEmail}, 'primary', true)
+          ON CONFLICT (tenant_id, party_id, kind) WHERE is_primary
+          DO UPDATE SET value = EXCLUDED.value, updated_at = now()
+        `);
+      }
+      const nextCity = typeof b.city === "string" ? b.city.trim() : "";
+      if (nextCity) {
+        await db.execute(sql`UPDATE party SET city = ${nextCity} WHERE id = ${conv.partyId}`);
+      }
+      const nextCc = typeof b.phoneCountryCode === "string"
+        ? (b.phoneCountryCode.trim().match(/^\+?(\d{1,4})$/)?.[0]?.startsWith("+")
+            ? b.phoneCountryCode.trim()
+            : b.phoneCountryCode.trim().match(/^\+?(\d{1,4})$/)
+              ? `+${b.phoneCountryCode.trim().replace(/\D/g, "")}`
+              : null)
+        : null;
+      if (nextCc) {
+        await db.execute(sql`UPDATE party SET phone_country_code = ${nextCc} WHERE id = ${conv.partyId}`);
+      }
+
+      // ─ Lead field pre-computation ────────────────────────────────────
+      const source      = typeof b.source === "string" && b.source.trim()      ? b.source.trim()      : "inbound_message";
+      const sourceLabel = typeof b.sourceLabel === "string" && b.sourceLabel.trim() ? b.sourceLabel.trim() : "Inbound message";
+      const rating      = typeof b.rating === "string" && b.rating.trim()      ? b.rating.trim()      : "new lead";
+      const leadStatus  = typeof b.leadStatus === "string" && b.leadStatus.trim() ? b.leadStatus.trim() : null;
+      const description = typeof b.description === "string" && b.description.trim() ? b.description.trim() : "Promoted from inbox";
+      const nbaLabel    = typeof b.nbaLabel === "string" && b.nbaLabel.trim()   ? b.nbaLabel.trim()    : "Reach out today";
+      const valueStr    = typeof b.value === "string" && b.value.trim() && /^\d+(\.\d+)?$/.test(b.value.trim())
+                            ? b.value.trim() : null;
+      const isDate = (v: unknown) => typeof v === "string" && /^\d{4}-\d{2}-\d{2}$/.test(v.trim());
+      const nextFollowupAt = isDate(b.nextFollowupAt) ? String(b.nextFollowupAt).trim() : null;
+      const visitingDate   = isDate(b.visitingDate)   ? String(b.visitingDate).trim()   : null;
+      const rawMode = typeof b.deliveryMode === "string" ? b.deliveryMode.trim().toLowerCase() : "";
+      const deliveryMode = ["online","classroom","hybrid"].includes(rawMode) ? rawMode : null;
+
+      // Resolve program by explicit id or by name
+      let resolvedProgramId: string | null = null;
+      let resolvedProgramName: string | null = null;
+      if (typeof b.programId === "string" && b.programId.trim()) {
+        const pR = await db.execute(sql`SELECT id, name FROM program WHERE id = ${b.programId.trim()} LIMIT 1`);
+        const r = pR.rows[0] as { id: string; name: string } | undefined;
+        if (r) { resolvedProgramId = r.id; resolvedProgramName = r.name; }
+      } else if (typeof b.program === "string" && b.program.trim()) {
+        const pR = await db.execute(sql`SELECT id, name FROM program WHERE LOWER(name) = LOWER(${b.program.trim()}) LIMIT 1`);
+        const r = pR.rows[0] as { id: string; name: string } | undefined;
+        if (r) { resolvedProgramId = r.id; resolvedProgramName = r.name; }
+        else resolvedProgramName = b.program.trim(); // free-text fallback
+      }
+
+      // Resolve advisor: app_user.id → party.id
+      let resolvedAdvisorId: string | null = null;
+      if (typeof b.advisorId === "string" && b.advisorId.trim()) {
+        const aR = await db.execute(sql`SELECT party_id FROM app_user WHERE id = ${b.advisorId.trim()} LIMIT 1`);
+        resolvedAdvisorId = (aR.rows[0] as { party_id: string } | undefined)?.party_id ?? null;
+      }
+
+      // ─ Lead + work_item ─────────────────────────────────────────────
       const numR = await db.execute(sql`SELECT nextval('seq_lead')::text AS n`);
       const number = `LEAD-${(numR.rows[0] as { n: string }).n}`;
       const wiR = await db.execute(sql`
-        INSERT INTO work_item (tenant_id, number, type, party_id, state, priority, attributes)
-        VALUES (current_tenant(), ${number}, 'lead', ${conv.partyId}, 'open', 3,
-                ${JSON.stringify({ source: "inbound_message", sourceLabel: "Inbound message" })}::jsonb)
+        INSERT INTO work_item (tenant_id, number, type, party_id, assignee_id, state, priority, attributes)
+        VALUES (current_tenant(), ${number}, 'lead', ${conv.partyId}, ${resolvedAdvisorId}, 'open', 3,
+                ${JSON.stringify({ source, sourceLabel })}::jsonb)
         RETURNING id
       `);
       const wiId = (wiR.rows[0] as { id: string }).id;
+      const finalName = nextName || conv.name;
       await db.execute(sql`
         INSERT INTO lead (
-          work_item_id, tenant_id, source, source_label, score, rating, stage, stage_label,
-          heat, avatar, initials, description, nba_label, nba_icon
+          work_item_id, tenant_id,
+          source, source_label,
+          score, rating, stage, stage_label,
+          heat, advisor_id, avatar, initials,
+          description, program, program_id, value,
+          lead_status,
+          nba_label, nba_icon,
+          next_followup_at, visiting_date, delivery_mode
         )
         VALUES (
-          ${wiId}, current_tenant(), 'inbound_message', 'Inbound message', 50, 'new lead',
-          'new', 'New inbound', 'warm', 'blue', ${initialsOf(conv.name)},
-          'Promoted from inbox', 'Reach out today', 'send'
+          ${wiId}, current_tenant(),
+          ${source}, ${sourceLabel},
+          50, ${rating}, 'new', 'New inbound',
+          'warm', ${resolvedAdvisorId}, 'blue', ${initialsOf(finalName)},
+          ${description}, ${resolvedProgramName}, ${resolvedProgramId}, ${valueStr},
+          ${leadStatus},
+          ${nbaLabel}, 'send',
+          ${nextFollowupAt}, ${visitingDate}, ${deliveryMode}
         )
       `);
       await db.execute(sql`
@@ -579,6 +688,8 @@ twilioRouter.post("/conversations/:id/promote-to-lead", requirePermission("leads
       // definition of opt-in, so we can grant with a strong source string.
       await bootstrapConsent(db, conv.partyId, ["whatsapp", "sms"], "inbound_reply");
       await db.execute(sql`UPDATE tw_conversation SET is_unlinked = false, updated_at = now() WHERE id = ${id}`);
+      // Silence the compiler about the placeholder rename hint.
+      void hasForm;
       return { kind: "ok" as const, number, alreadyLead: false };
     });
 
