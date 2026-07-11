@@ -199,12 +199,16 @@ async function transitionCampaign(
     return;
   }
   const okRow = await withTenant(req.tenantId!, async (db) => {
+    // Passing a JS string[] to Drizzle serializes to a record (`(a,b,c)`),
+    // not a text array — so `ANY($::text[])` bombs with
+    // `cannot cast type record to text[]`. Build an IN list instead.
+    const fromList = sql.join(from.map((s) => sql`${s}`), sql`, `);
     const r = await db.execute(sql`
       UPDATE campaign
       SET status = ${to},
           completed_at = CASE WHEN ${to} = 'cancelled' THEN NOW() ELSE completed_at END
       WHERE id = ${campaignId}
-        AND status = ANY(${from as unknown as string[]}::text[])
+        AND status IN (${fromList})
       RETURNING id, status
     `);
     return r.rows[0] as { id: string; status: string } | undefined;
