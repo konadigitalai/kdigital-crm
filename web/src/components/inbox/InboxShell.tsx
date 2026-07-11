@@ -5,6 +5,7 @@
 // is hidden). Open thread polls every 10s inside <ThreadView>.
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { Icon } from "@/components/ui/Icon";
 import { cn } from "@/lib/cn";
 import { getTwConversations } from "@/lib/api";
@@ -13,6 +14,13 @@ import { ThreadList } from "./ThreadList";
 import { ThreadView } from "./ThreadView";
 
 const LIST_POLL_MS = 30_000;
+
+// Persist the active channel tab in `?channel=voice` so a hard-refresh
+// restores what the user was looking at. Same-origin `whatsapp` is the
+// default and is omitted from the URL to keep it clean.
+function channelFromParam(v: string | null): TwChannel {
+  return v === "voice" ? "voice" : "whatsapp";
+}
 
 export function InboxShell({
   initialConversations,
@@ -27,21 +35,59 @@ export function InboxShell({
   canUpload?: boolean;
   canAddToLibrary?: boolean;
 }) {
+  const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
+
   const [threads, setThreads] = useState(initialConversations);
-  const [activeId, setActiveId] = useState<string | null>(initialConversations[0]?.id ?? null);
+  // Seed the selected thread from `?t=<id>` when present; otherwise open
+  // the first thread the list returns. If the URL id no longer exists in
+  // the current channel's threads, `activeThread` below falls through to
+  // "No thread selected" — better than silently opening the wrong one.
+  const [activeId, setActiveId] = useState<string | null>(() => {
+    const fromUrl = searchParams.get("t");
+    if (fromUrl && initialConversations.some((t) => t.id === fromUrl)) return fromUrl;
+    return initialConversations[0]?.id ?? null;
+  });
   // Inbox is now a two-tab surface — WhatsApp OR Voice calls. SMS traffic is
   // still supported by the API but not surfaced here (the FE stopped showing
   // an SMS tab after Twilio SMS was deprioritised in favour of WA templates).
   // Assignee filtering is gone too — operators wanted a simpler view.
-  const [channel, setChannel] = useState<TwChannel>("whatsapp");
+  //
+  // Seed from `?channel=` so a hard-refresh on Calls comes back to Calls.
+  const [channel, setChannel] = useState<TwChannel>(() =>
+    channelFromParam(searchParams.get("channel")),
+  );
   const [q, setQ] = useState("");
+
+  // Push the current channel + active thread into the URL. `whatsapp` is
+  // the default channel so it's omitted from the URL; `t` is omitted when
+  // no thread is selected. Use `replace` so tab / thread clicks don't fill
+  // the browser history with junk entries.
+  useEffect(() => {
+    const currentChannel = searchParams.get("channel");
+    const currentT       = searchParams.get("t");
+    const desiredChannel = channel === "whatsapp" ? null : channel;
+    const desiredT       = activeId;
+    if (currentChannel === desiredChannel && currentT === desiredT) return;
+    const next = new URLSearchParams(searchParams.toString());
+    if (desiredChannel) next.set("channel", desiredChannel); else next.delete("channel");
+    if (desiredT)       next.set("t",       desiredT);       else next.delete("t");
+    const qs = next.toString();
+    router.replace(qs ? `${pathname}?${qs}` : pathname, { scroll: false });
+  }, [channel, activeId, pathname, router, searchParams]);
 
   const refresh = useCallback(async () => {
     const filter: Parameters<typeof getTwConversations>[0] = {};
     filter.channel = channel;
     if (q.trim()) filter.q = q.trim();
     const rows = await getTwConversations(filter).catch(() => null);
-    if (rows) setThreads(rows);
+    if (!rows) return;
+    setThreads(rows);
+    // If the current selection isn't in the freshly-filtered list (e.g.
+    // user switched channel, or the thread was deleted), fall back to the
+    // top thread. Preserves selection whenever the id still shows up.
+    setActiveId((prev) => (prev && rows.some((r) => r.id === prev) ? prev : rows[0]?.id ?? null));
   }, [channel, q]);
 
   // Refresh whenever the filter changes.

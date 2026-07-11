@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { useRouter } from "next/navigation";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { Icon } from "@/components/ui/Icon";
 import { cn } from "@/lib/cn";
 import { addLeadNote, updateLeadNote } from "@/lib/api";
@@ -16,6 +16,11 @@ const TABS: { key: Tab; label: string }[] = [
   { key: "timeline", label: "Timeline" },
   { key: "emails",   label: "Emails" },
 ];
+
+const TAB_KEYS: Tab[] = ["notes", "inbox", "timeline", "emails"];
+function tabFromParam(v: string | null): Tab | null {
+  return v && (TAB_KEYS as string[]).includes(v) ? (v as Tab) : null;
+}
 
 // Deterministic absolute label. Fixed to en-GB so SSR and client agree —
 // the browser's locale would otherwise render "7/9/2026" on the server (en-US
@@ -93,10 +98,37 @@ export function TimelineTabs({
   /** From current user's `messaging.send` — gates the reply box. */
   canSendMessage?: boolean;
 }) {
+  const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
+
   const showInbox = hasPhone && !!partyId;
   const visibleTabs = TABS.filter((t) => t.key !== "inbox" || showInbox);
-  const [tab, setTab] = useState<Tab>("notes");
+  // Seed the active tab from `?tab=inbox` so a hard-refresh keeps the
+  // user where they were. If the URL asks for `inbox` but this lead has
+  // no phone, fall through to notes (the default) — the tab wouldn't
+  // even render otherwise.
+  const [tab, setTab] = useState<Tab>(() => {
+    const fromUrl = tabFromParam(searchParams.get("tab"));
+    if (!fromUrl) return "notes";
+    if (fromUrl === "inbox" && !showInbox) return "notes";
+    return fromUrl;
+  });
   const [query, setQuery] = useState("");
+
+  // Mirror the tab in the URL. `notes` is the default so it's kept out
+  // of the URL; anything else appears as `?tab=…`. Replace, not push,
+  // so tab-clicks don't fill the browser history.
+  useEffect(() => {
+    const current = searchParams.get("tab");
+    const desired = tab === "notes" ? null : tab;
+    if (current === desired) return;
+    const next = new URLSearchParams(searchParams.toString());
+    if (desired) next.set("tab", desired);
+    else next.delete("tab");
+    const qs = next.toString();
+    router.replace(qs ? `${pathname}?${qs}` : pathname, { scroll: false });
+  }, [tab, pathname, router, searchParams]);
 
   // Filter rows by tab.
   const emails = timeline.filter((t) => t.verb === "Email" || t.verb === "Sent" || t.payload?.kind === "email");

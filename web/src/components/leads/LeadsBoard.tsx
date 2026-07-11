@@ -6,7 +6,7 @@
 // shows up on both surfaces).
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useRouter } from "next/navigation";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { PipelineListView, PIPELINE_LIST_COLUMNS, PIPELINE_LIST_DEFAULT_COLUMNS } from "@/components/pipeline/PipelineListView";
 import { DEFAULT_VIEW_ID, ViewTabs } from "@/components/pipeline/ViewTabs";
 import { FilterBar } from "@/components/filter/FilterBar";
@@ -125,6 +125,8 @@ export function LeadsBoard({
   headerSlot?: React.ReactNode;
 }) {
   const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
 
   // Local copy for optimistic edit/delete. Re-sync from props when the
   // server returns fresh data (router.refresh after a mutation), but only
@@ -244,9 +246,32 @@ export function LeadsBoard({
   const [filtered, filterState, setFilterState] = useFilter(localLeads, fields);
 
   // ── saved views (shared scope: pipeline_list) ─────────────────────────
+  //
+  // The active view is mirrored into `?view=<id>` so a hard-refresh (or a
+  // link the user pastes to a teammate) reopens the same tab. `__all__`
+  // is the default and stays out of the URL to keep it clean.
   const [views, setViews] = useState<SavedView[]>(initialViews);
-  const [activeViewId, setActiveViewId] = useState<string>(DEFAULT_VIEW_ID);
+  const [activeViewId, setActiveViewId] = useState<string>(() => {
+    const fromUrl = searchParams.get("view");
+    if (!fromUrl) return DEFAULT_VIEW_ID;
+    if (fromUrl === DEFAULT_VIEW_ID) return DEFAULT_VIEW_ID;
+    return initialViews.some((v) => v.id === fromUrl) ? fromUrl : DEFAULT_VIEW_ID;
+  });
   const [liveColumns, setLiveColumns] = useState<string[] | null>(null);
+
+  // Keep the URL in sync when the active view changes (tab click, or a
+  // view was deleted and we fell back to the default). If a URL param
+  // references a view that no longer exists, drop it.
+  useEffect(() => {
+    const current = searchParams.get("view");
+    const desired = activeViewId === DEFAULT_VIEW_ID ? null : activeViewId;
+    if (current === desired) return;
+    const next = new URLSearchParams(searchParams.toString());
+    if (desired) next.set("view", desired);
+    else next.delete("view");
+    const qs = next.toString();
+    router.replace(qs ? `${pathname}?${qs}` : pathname, { scroll: false });
+  }, [activeViewId, pathname, router, searchParams]);
 
   const activeView = activeViewId === DEFAULT_VIEW_ID
     ? null
@@ -295,6 +320,17 @@ export function LeadsBoard({
     };
     setFilterState(next);
   }
+
+  // On mount, if we hydrated `activeViewId` from `?view=…`, actually apply
+  // that view's filter to the grid. Without this the URL says "Today Leads"
+  // but the table would show all leads until the user clicks the tab.
+  const hydratedOnceRef = useRef(false);
+  useEffect(() => {
+    if (hydratedOnceRef.current) return;
+    hydratedOnceRef.current = true;
+    if (activeViewId !== DEFAULT_VIEW_ID) selectView(activeViewId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // ── per-tab lead counts ───────────────────────────────────────────────
   // Compute the count of leads that would match each saved view's filter,

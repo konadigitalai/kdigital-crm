@@ -8,6 +8,7 @@
 // click-to-call dialog).
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { Icon } from "@/components/ui/Icon";
 import { cn } from "@/lib/cn";
 import {
@@ -29,13 +30,36 @@ export function MessagesTab({
   partyId: string;
   canSend: boolean;
 }) {
+  const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
+
   const [threads, setThreads] = useState<TwConversationListItem[]>([]);
   const [loadingList, setLoadingList] = useState(true);
-  const [channel, setChannel] = useState<TwChannel>("whatsapp");
+  // Seed the sub-channel from `?ic=voice` (record-page Inbox sub-Channel)
+  // so a hard-refresh on the Calls pill lands back on Calls. Using a
+  // distinct param name (`ic`) avoids colliding with the /inbox page's
+  // `?channel=` when someone deep-links across surfaces.
+  const [channel, setChannel] = useState<TwChannel>(() =>
+    searchParams.get("ic") === "voice" ? "voice" : "whatsapp",
+  );
   const [detail, setDetail] = useState<TwConversationDetail | null>(null);
   const [text, setText] = useState("");
   const [sendBusy, setSendBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // Mirror the sub-channel into the URL. Only pushes when it changes;
+  // omits the param for the default (`whatsapp`) so the URL stays clean.
+  useEffect(() => {
+    const current = searchParams.get("ic");
+    const desired = channel === "whatsapp" ? null : channel;
+    if (current === desired) return;
+    const next = new URLSearchParams(searchParams.toString());
+    if (desired) next.set("ic", desired);
+    else next.delete("ic");
+    const qs = next.toString();
+    router.replace(qs ? `${pathname}?${qs}` : pathname, { scroll: false });
+  }, [channel, pathname, router, searchParams]);
 
   // Load the two possible threads for this party (one per channel).
   const refreshList = useCallback(async () => {
