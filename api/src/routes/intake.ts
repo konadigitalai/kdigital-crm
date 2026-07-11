@@ -28,6 +28,7 @@ import { resolveSentinelPartyId } from "../lib/party/resolve.js";
 import { emitEvent } from "../lib/events.js";
 import { evaluateTriggers } from "../lib/campaigns/triggers.js";
 import { bootstrapConsent } from "../lib/party/consent.js";
+import { composeFullE164 } from "../lib/twilio/phone.js";
 
 export const intakeRouter = Router();
 
@@ -222,10 +223,13 @@ intakeRouter.post("/", async (req, res) => {
           ON CONFLICT DO NOTHING
         `);
       }
-      if (phone) {
+      // Store the composed E.164 (not the bare local number) so twilio-webhook
+      // can find this party by exact contact_point.value match on inbound.
+      const composedPhone = composeFullE164(phoneCountryCode, phone);
+      if (composedPhone) {
         await db.execute(sql`
           INSERT INTO contact_point (tenant_id, party_id, kind, value, is_primary)
-          VALUES (current_tenant(), ${partyId}, 'phone', ${phone}, true)
+          VALUES (current_tenant(), ${partyId}, 'phone', ${composedPhone}, true)
           ON CONFLICT DO NOTHING
         `);
       }

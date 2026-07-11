@@ -6,6 +6,7 @@ import { requirePermission } from "../middleware/require.js";
 import { partyIdFromAppUserId, resolveActorPartyId, resolveSentinelPartyId } from "../lib/party/resolve.js";
 import { evaluateTriggers } from "../lib/campaigns/triggers.js";
 import { bootstrapConsent } from "../lib/party/consent.js";
+import { composeFullE164 } from "../lib/twilio/phone.js";
 
 export const leadsRouter = Router();
 
@@ -174,6 +175,7 @@ leadsRouter.post("/", async (req, res, next) => {
     if (!name) errors.push("name is required");
     const email   = b.email   ? String(b.email).trim()   : null;
     const phone   = b.phone   ? String(b.phone).trim()   : null;
+    const phoneCountryCode = b.phoneCountryCode ? String(b.phoneCountryCode).trim() : null;
     const city    = b.city    ? String(b.city).trim()    : null;
     const programName = b.program ? String(b.program).trim() : null;
     const programId   = b.programId ? String(b.programId).trim() : null;
@@ -236,11 +238,19 @@ leadsRouter.post("/", async (req, res, next) => {
       const numR = await db.execute(sql`SELECT nextval('seq_lead')::text AS n`);
       const number = `LEAD-${(numR.rows[0] as { n: string }).n}`;
 
+      // Canonicalise the phone before we write anything. composeFullE164
+      // merges (cc, phone) into a routable "+919..." — that's what we
+      // store in contact_point so the twilio-webhook match-by-exact-value
+      // finds this party on inbound replies. `party.phone` keeps the
+      // subscriber-number-only shape the CRM UI expects (paired with
+      // party.phone_country_code) for display.
+      const composedPhone = composeFullE164(phoneCountryCode, phone);
+
       // 1. party
       const partyR = await db.execute(sql`
-        INSERT INTO party (tenant_id, kind, name, email, phone, city, identifiers, attributes)
+        INSERT INTO party (tenant_id, kind, name, email, phone, phone_country_code, city, identifiers, attributes)
         VALUES (
-          current_tenant(), 'person', ${name}, ${email}, ${phone}, ${city},
+          current_tenant(), 'person', ${name}, ${email}, ${phone}, ${phoneCountryCode}, ${city},
           ${JSON.stringify({ source })}::jsonb,
           ${JSON.stringify({ initials: initialsOf(name) })}::jsonb
         )
@@ -259,10 +269,10 @@ leadsRouter.post("/", async (req, res, next) => {
           VALUES (current_tenant(), ${partyId}, 'email', ${email}, 'primary', true)
         `);
       }
-      if (phone) {
+      if (composedPhone) {
         await db.execute(sql`
           INSERT INTO contact_point (tenant_id, party_id, kind, value, label, is_primary)
-          VALUES (current_tenant(), ${partyId}, 'phone', ${phone}, 'primary', true)
+          VALUES (current_tenant(), ${partyId}, 'phone', ${composedPhone}, 'primary', true)
         `);
       }
 
@@ -611,13 +621,34 @@ leadsRouter.patch("/:idOrNumber", async (req, res, next) => {
           `);
         }
       }
-      if (b.phone !== undefined) {
-        const v = norm(b.phone);
-        await db.execute(sql`UPDATE party SET phone = ${v} WHERE id = ${partyId}`);
-        if (v) {
+      // Phone + country code are treated as a single logical field for the
+      // contact_point mirror. Update party's split columns as before, then
+      // resolve the final (cc, phone) pair from the DB and rewrite the
+      // primary phone contact_point with the composed E.164.
+      const phoneChanged = b.phone !== undefined;
+      const ccChanged    = b.phoneCountryCode !== undefined;
+      if (phoneChanged) {
+        await db.execute(sql`UPDATE party SET phone = ${norm(b.phone)} WHERE id = ${partyId}`);
+      }
+      if (ccChanged) {
+        const cc = b.phoneCountryCode == null || b.phoneCountryCode === ""
+          ? null
+          : (() => {
+              const m = String(b.phoneCountryCode).trim().match(/^\+?(\d{1,4})$/);
+              return m ? `+${m[1]}` : null;
+            })();
+        await db.execute(sql`UPDATE party SET phone_country_code = ${cc} WHERE id = ${partyId}`);
+      }
+      if (phoneChanged || ccChanged) {
+        const cur = await db.execute(sql`
+          SELECT phone, phone_country_code AS cc FROM party WHERE id = ${partyId}
+        `);
+        const row = cur.rows[0] as { phone: string | null; cc: string | null } | undefined;
+        const composed = composeFullE164(row?.cc ?? null, row?.phone ?? null);
+        if (composed) {
           await db.execute(sql`
             INSERT INTO contact_point (tenant_id, party_id, kind, value, label, is_primary)
-            VALUES (current_tenant(), ${partyId}, 'phone', ${v}, 'primary', true)
+            VALUES (current_tenant(), ${partyId}, 'phone', ${composed}, 'primary', true)
             ON CONFLICT (tenant_id, party_id, kind) WHERE is_primary
             DO UPDATE SET value = EXCLUDED.value, updated_at = now()
           `);
@@ -628,16 +659,6 @@ leadsRouter.patch("/:idOrNumber", async (req, res, next) => {
               AND kind = 'phone' AND is_primary = true
           `);
         }
-      }
-      if (b.phoneCountryCode !== undefined) {
-        // Normalize: keep only "+digits" (e.g. "+91"). Empty/invalid → null.
-        const cc = b.phoneCountryCode == null || b.phoneCountryCode === ""
-          ? null
-          : (() => {
-              const m = String(b.phoneCountryCode).trim().match(/^\+?(\d{1,4})$/);
-              return m ? `+${m[1]}` : null;
-            })();
-        await db.execute(sql`UPDATE party SET phone_country_code = ${cc} WHERE id = ${partyId}`);
       }
       if (b.city !== undefined) {
         // Phase 3: city lives on party only (lead.city denorm dropped).

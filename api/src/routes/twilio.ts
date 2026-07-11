@@ -312,6 +312,11 @@ twilioRouter.get("/conversations/:id", requirePermission("messaging.read"), asyn
           m.from_number  AS "fromNumber",
           m.to_number    AS "toNumber",
           m.body,
+          m.content_sid  AS "contentSid",
+          m.content_variables AS "contentVariables",
+          m.campaign_id  AS "campaignId",
+          wt.friendly_name AS "templateName",
+          wt.types         AS "templateTypes",
           m.provider_message_id AS "providerMessageId",
           m.status, m.error_code AS "errorCode", m.error_message AS "errorMessage",
           m.sender_user_id AS "senderUserId",
@@ -336,6 +341,7 @@ twilioRouter.get("/conversations/:id", requirePermission("messaging.read"), asyn
             '[]'::jsonb
           ) AS "media"
         FROM tw_message m
+        LEFT JOIN wa_template wt ON wt.content_sid = m.content_sid
         WHERE m.conversation_id = ${id}
         ORDER BY m.sent_at ASC
         LIMIT 500

@@ -245,11 +245,15 @@ function MessageBubble({ msg, attachTail }: { msg: TwMessage; attachTail: boolea
             : "bg-white text-ink",
         )}
       >
-        {msg.body && (
+        {msg.body ? (
           <p className="whitespace-pre-wrap break-words px-1">
             {linkify(msg.body, outbound)}
           </p>
-        )}
+        ) : msg.contentSid ? (
+          // Outbound template send — we didn't store the body; reconstruct
+          // it from the cached template types + resolved variables.
+          <TemplateBubbleBody msg={msg} outbound={outbound} />
+        ) : null}
         {hasMedia && (
           <div className={cn(msg.body ? "mt-1.5" : "")}>
             <MessageMediaGallery media={msg.media!} outbound={outbound} />
@@ -289,6 +293,49 @@ function MessageBubble({ msg, attachTail }: { msg: TwMessage; attachTail: boolea
       </div>
     </div>
   );
+}
+
+/** Render an outbound template message when tw_message.body is empty.
+ *  Reconstructs the text from wa_template.types (cached from Twilio Content
+ *  Builder) with content_variables substituted. Falls back to a compact
+ *  "[template]" label if we can't derive the body — that keeps the bubble
+ *  from appearing empty in the WhatsApp-style thread. */
+function TemplateBubbleBody({ msg, outbound }: { msg: TwMessage; outbound: boolean }) {
+  const rendered = renderTemplateBody(msg.templateTypes, msg.contentVariables ?? {});
+  return (
+    <div className="px-1">
+      <div className="mono-cap mb-1 text-[9.5px] tracking-[.06em] text-mute">
+        Template{msg.templateName ? ` · ${msg.templateName}` : ""}
+      </div>
+      {rendered ? (
+        <p className="whitespace-pre-wrap break-words">{linkify(rendered, outbound)}</p>
+      ) : (
+        <p className="italic text-mute">(template body unavailable — sync from Twilio to refresh)</p>
+      )}
+    </div>
+  );
+}
+
+/** Walk the twilio/* type block to find the first string field that looks
+ *  like a body, then substitute {{placeholder}} tokens using the resolved
+ *  variables. Twilio stores placeholders as either {{name}} or {{1}}. */
+function renderTemplateBody(
+  types: Record<string, unknown> | null | undefined,
+  vars: Record<string, string>,
+): string {
+  if (!types) return "";
+  for (const block of Object.values(types)) {
+    if (block && typeof block === "object" && "body" in block) {
+      const raw = (block as { body?: unknown }).body;
+      if (typeof raw === "string" && raw.trim()) {
+        return raw.replace(/\{\{\s*([^}]+?)\s*\}\}/g, (_m, key) => {
+          const v = vars[String(key).trim()];
+          return v && v.length > 0 ? v : `{{${key}}}`;
+        });
+      }
+    }
+  }
+  return "";
 }
 
 /** Simple WhatsApp-style check marks. `doubleCheck` = both ticks visible;

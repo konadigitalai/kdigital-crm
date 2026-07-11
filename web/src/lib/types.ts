@@ -40,6 +40,14 @@ export interface TwMessage {
   deliveredAt: string | null;
   /** File attachments in send/receive order. Empty array when none. */
   media?: TwMessageMedia[];
+  /** Present on outbound template sends. Body is null in that case —
+   *  the template text lives on Twilio/Meta, not in our DB. */
+  contentSid?: string | null;
+  contentVariables?: Record<string, string> | null;
+  campaignId?: string | null;
+  /** Joined from wa_template — friendly name + type block for local render. */
+  templateName?: string | null;
+  templateTypes?: Record<string, unknown> | null;
 }
 
 export interface TwMessageMedia {

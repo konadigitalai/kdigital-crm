@@ -23,6 +23,41 @@ export function toE164(phone: string | null | undefined): string {
 }
 
 /**
+ * Combine (phone_country_code, phone) into full E.164. Handles all four
+ * storage shapes we've seen in the wild:
+ *   (a) cc='+91', phone='9876543210'      → '+919876543210'
+ *   (b) cc=null,  phone='+919876543210'    → '+919876543210'
+ *   (c) cc=null,  phone='9876543210' (10d, Indian mobile-shape [6-9])
+ *                                          → '+919876543210' (assumed India)
+ *   (d) neither present or too short       → null
+ *
+ * The (c) fallback is India-specific because that's this CRM's operating
+ * region — anything else falls through to null so callers can skip rather
+ * than send a Twilio 63024 to garbage.
+ *
+ * Mirror of composeE164() in lib/campaigns/worker.ts and composePartyPhone()
+ * in routes/twilio.ts — extracted here so writes into contact_point can
+ * canonicalise before insert.
+ */
+export function composeFullE164(
+  cc: string | null | undefined,
+  phone: string | null | undefined,
+): string | null {
+  const rawPhone = (phone ?? "").trim();
+  if (!rawPhone) return null;
+  const phoneDigits = rawPhone.replace(/\D/g, "");
+  if (rawPhone.startsWith("+") && phoneDigits.length > 10) {
+    return `+${phoneDigits}`;
+  }
+  const ccDigits = (cc ?? "").replace(/\D/g, "");
+  if (ccDigits) return `+${ccDigits}${phoneDigits}`;
+  if (phoneDigits.length === 10 && /^[6-9]/.test(phoneDigits)) {
+    return `+91${phoneDigits}`;
+  }
+  return null;
+}
+
+/**
  * Parse a Twilio-style address into channel + E.164 pair.
  * Examples:
  *   "whatsapp:+919876543210" → { channel: "whatsapp", e164: "+919876543210" }
