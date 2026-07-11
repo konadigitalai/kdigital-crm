@@ -69,7 +69,15 @@ async function resolveDefaultTenantId(): Promise<string | null> {
 // ─── Shared entry ────────────────────────────────────────────────────────
 async function handle(req: import("express").Request, res: import("express").Response): Promise<void> {
   const ip = clientIp(req);
-  console.log(`[exotel-webhook] hit ip=${ip} path=${req.path} bodyKeys=${Object.keys(req.body ?? {}).join(",")}`);
+  // Exotel's Passthru applet sends params via query string on GET, not a
+  // POST body — despite what their docs suggest. StatusCallback on outbound
+  // Connect API calls DOES send JSON POST though. Read from wherever the
+  // data actually is: query first, body second.
+  const params: Record<string, unknown> = {
+    ...(req.query ?? {}) as Record<string, unknown>,
+    ...(req.body ?? {}) as Record<string, unknown>,
+  };
+  console.log(`[exotel-webhook] hit ip=${ip} method=${req.method} path=${req.path} keys=${Object.keys(params).join(",")}`);
 
   if (!rateLimit(ip)) {
     console.warn(`[exotel-webhook] rate-limited ip=${ip}`);
@@ -91,7 +99,7 @@ async function handle(req: import("express").Request, res: import("express").Res
     return;
   }
 
-  const parsed = parseExotelCallback(req.body);
+  const parsed = parseExotelCallback(params);
   if (parsed.kind === "ignore") {
     console.warn(`[exotel-webhook] unparseable body`);
     res.status(200).type("text/plain").send("");
@@ -301,7 +309,13 @@ async function handleTerminal(
 }
 
 // ─── Routes ──────────────────────────────────────────────────────────────
-exotelWebhookRouter.post("/status", (req, res) => { void handle(req, res); });
+// Exotel Passthru applets fire GET (query-string params). Exotel StatusCallback
+// on outbound Connect API calls fires POST (JSON body when we set it, or
+// form-urlencoded). Accept both on both paths so operators can point either
+// applet type at either URL without a routing gotcha.
+exotelWebhookRouter.get ("/status",  (req, res) => { void handle(req, res); });
+exotelWebhookRouter.post("/status",  (req, res) => { void handle(req, res); });
+exotelWebhookRouter.get ("/inbound", (req, res) => { void handle(req, res); });
 exotelWebhookRouter.post("/inbound", (req, res) => { void handle(req, res); });
 
 // ─── helpers ─────────────────────────────────────────────────────────────

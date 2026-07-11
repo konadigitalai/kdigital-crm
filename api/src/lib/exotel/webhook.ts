@@ -24,7 +24,6 @@
 //      Docs don't fully enumerate — we read what's known and stash the
 //      full body in `raw` so we can widen later.
 
-import { toE164 } from "../twilio/phone.js";
 
 export type ExotelParsedKind =
   | "answered"          // outbound: agent picked up
@@ -72,25 +71,68 @@ function n(v: unknown): number | null {
   return Number.isFinite(num) ? num : null;
 }
 
+/** Normalize Exotel's phone shapes to E.164. Exotel Passthru webhooks
+ *  ship Indian numbers as "07032770627" (leading 0, no country code) or
+ *  sometimes "0919963039919" (leading 0 + country code). Sometimes an
+ *  already-E.164 "+919…" arrives. Handle all three so downstream party
+ *  matching gets a canonical +91… string.
+ *
+ *  Rules (India-first, since this is an Indian account):
+ *   - Already starts with '+': trust it, just strip non-digits after.
+ *   - Starts with '0' followed by 12 digits (0 + 91 + 10-digit mobile):
+ *     drop the leading '0' → +91… .
+ *   - Starts with '0' followed by 10 digits (0 + local subscriber):
+ *     drop the leading '0' and prefix +91 → +91…10.
+ *   - 10 digits, first is 6-9 (Indian mobile shape): prefix +91.
+ *   - Anything else: fall back to bare toE164 (may still be wrong, but
+ *     matchOrCreatePartyByPhone will fall through and log nothing rather
+ *     than corrupt data).
+ */
+function normalizeExotelPhone(raw: string | null): string | null {
+  if (!raw) return null;
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+  if (trimmed.startsWith("+")) {
+    const d = trimmed.replace(/\D/g, "");
+    return d ? `+${d}` : null;
+  }
+  const digits = trimmed.replace(/\D/g, "");
+  if (!digits) return null;
+  // 0 + 91 + 10 = 13 digits, starting with '091' after strip → +91…
+  if (digits.length === 13 && digits.startsWith("091")) return `+${digits.slice(1)}`;
+  // 0 + 10 digits → assume India, drop leading 0, prefix +91
+  if (digits.length === 11 && digits.startsWith("0") && /^[6-9]/.test(digits[1] ?? "")) {
+    return `+91${digits.slice(1)}`;
+  }
+  // 10 digits, Indian-mobile-shape starts 6-9 → +91
+  if (digits.length === 10 && /^[6-9]/.test(digits)) return `+91${digits}`;
+  // Fallback: assume it's already-E.164-ish digits, just prefix +
+  return `+${digits}`;
+}
+
 /** Parse either a StatusCallback (outbound) or a Passthru (inbound). The
  *  distinguishing field is `EventType` (present on StatusCallback) vs
  *  `CallFrom`/`CallTo` (present on Passthru). */
 export function parseExotelCallback(body: unknown): ExotelParsedResult {
   const b = coerceFormBody(body);
 
-  // StatusCallback shape — outbound-api. EventType is either 'terminal' or 'answered'.
-  const eventType = s(b.EventType);
+  // StatusCallback (outbound-api) uses `EventType`. Exotel v1 docs show
+  // 'terminal' / 'answered', but the actual Passthru at the applet level
+  // also fires a 'Terminal' event with the same fields plus DialWhomNumber
+  // and RecordingAvailableBy — treat both flavours as terminal.
+  const eventTypeRaw = s(b.EventType);
+  const eventTypeLc  = eventTypeRaw?.toLowerCase() ?? null;
   const callSid   = s(b.CallSid);
-  if (eventType && callSid) {
-    const kind: ExotelParsedKind = eventType === "answered" ? "answered" : "terminal";
+  if (eventTypeLc && callSid) {
+    const kind: ExotelParsedKind = eventTypeLc === "answered" ? "answered" : "terminal";
     return {
       kind,
       callSid,
       direction:       s(b.Direction),
-      fromE164:        toE164(String(b.From ?? "")) || null,
-      toE164:          toE164(String(b.To   ?? "")) || null,
-      status:          s(b.Status),
-      durationSeconds: n(b.ConversationDuration),
+      fromE164:        normalizeExotelPhone(s(b.From ?? b.CallFrom)),
+      toE164:          normalizeExotelPhone(s(b.To   ?? b.CallTo)),
+      status:          s(b.Status ?? b.DialCallStatus),
+      durationSeconds: n(b.ConversationDuration ?? b.DialCallDuration),
       recordingUrl:    s(b.RecordingUrl),
       customField:     s(b.CustomField),
       legs:            b.Legs ?? null,
@@ -98,8 +140,8 @@ export function parseExotelCallback(body: unknown): ExotelParsedResult {
     };
   }
 
-  // Passthru shape — inbound. Fields are CamelCase-Underscore per Exotel
-  // legacy convention: CallFrom, CallTo, DialCallStatus, DialCallDuration.
+  // Passthru (inbound) — no EventType. Fields: CallFrom, CallTo,
+  // DialCallStatus, DialCallDuration, sometimes RecordingUrl.
   const callFrom = s(b.CallFrom ?? b.From);
   const callTo   = s(b.CallTo   ?? b.To);
   if (callSid && (callFrom || callTo)) {
@@ -107,8 +149,8 @@ export function parseExotelCallback(body: unknown): ExotelParsedResult {
       kind:            "inbound_missed",
       callSid,
       direction:       s(b.Direction) ?? "inbound",
-      fromE164:        toE164(callFrom ?? "") || null,
-      toE164:          toE164(callTo   ?? "") || null,
+      fromE164:        normalizeExotelPhone(callFrom),
+      toE164:          normalizeExotelPhone(callTo),
       status:          s(b.DialCallStatus ?? b.Status),
       durationSeconds: n(b.DialCallDuration ?? b.ConversationDuration),
       recordingUrl:    s(b.RecordingUrl),
