@@ -65,6 +65,60 @@ export function readExotelBasicAuth(): { user: string; pass: string } | null {
   return user && pass ? { user, pass } : null;
 }
 
+// ─── fetchCallDetails ────────────────────────────────────────────────────
+
+/** Result shape of GET /v1/Accounts/<sid>/Calls/<CallSid>.json. Only the
+ *  fields we actually consume are typed. */
+export interface CallDetails {
+  callSid:          string;
+  status:           string | null;
+  duration:         number | null;   // seconds
+  recordingUrl:     string | null;
+  from:             string | null;
+  to:               string | null;
+  startTime:        string | null;
+  endTime:          string | null;
+}
+
+/**
+ * Fetch a single call's details from Exotel. Used by the Passthru terminal
+ * event handler to attach the recording URL, since Passthru itself fires
+ * before Exotel finishes processing the recording — the URL only appears
+ * on the Call Details endpoint (typically 3-10 minutes after call end).
+ */
+export async function fetchCallDetails(
+  callSid: string,
+  cfg: ExotelConfig = readExotelConfig(),
+): Promise<CallDetails | null> {
+  const url = `https://${cfg.subdomain}/v1/Accounts/${encodeURIComponent(cfg.sid)}/Calls/${encodeURIComponent(callSid)}.json`;
+  const basic = Buffer.from(`${cfg.apiKey}:${cfg.apiToken}`, "utf8").toString("base64");
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 5_000);
+  try {
+    const r = await fetch(url, {
+      headers: { Authorization: `Basic ${basic}`, Accept: "application/json" },
+      signal: ctrl.signal,
+    });
+    if (r.status === 404) return null;
+    if (!r.ok) return null;
+    const text = await r.text().catch(() => "");
+    const j = JSON.parse(text) as { Call?: Record<string, unknown> };
+    const c = j.Call ?? {};
+    const rec = String(c.RecordingUrl ?? "").trim();
+    return {
+      callSid,
+      status:       c.Status       ? String(c.Status)       : null,
+      duration:     c.Duration     ? Number(c.Duration)     : null,
+      recordingUrl: rec && rec.toLowerCase() !== "null" ? rec : null,
+      from:         c.From         ? String(c.From)         : null,
+      to:           c.To           ? String(c.To)           : null,
+      startTime:    c.StartTime    ? String(c.StartTime)    : null,
+      endTime:      c.EndTime      ? String(c.EndTime)      : null,
+    };
+  } catch { return null; }
+  finally { clearTimeout(timer); }
+}
+
 // ─── initiateCall ────────────────────────────────────────────────────────
 
 export interface InitiateCallInput {

@@ -63,7 +63,14 @@ export function coerceFormBody(body: unknown): Record<string, unknown> {
 function s(v: unknown): string | null {
   if (v == null) return null;
   const t = String(v).trim();
-  return t || null;
+  if (!t) return null;
+  // Exotel's Passthru query-string ships the literal token "null" (or "N/A")
+  // for fields that don't have a value yet — RecordingUrl mid-call is the
+  // classic example. Treat those as JS null so downstream code doesn't
+  // create garbage rows like blob_url='null'.
+  const lower = t.toLowerCase();
+  if (lower === "null" || lower === "n/a" || lower === "undefined") return null;
+  return t;
 }
 function n(v: unknown): number | null {
   if (v == null || v === "") return null;
