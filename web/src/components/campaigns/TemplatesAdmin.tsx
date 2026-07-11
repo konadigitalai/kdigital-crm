@@ -140,7 +140,11 @@ function SubmitForm({
   busy: boolean;
 }) {
   const [category, setCategory] = useState<"MARKETING" | "UTILITY" | "AUTHENTICATION">("UTILITY");
-  const [displayName, setDisplayName] = useState(friendlyName);
+  // Meta rules: lowercase letters, digits, underscore only. Seed from the
+  // draft's friendly name but normalize on the way in so operators don't
+  // hit Twilio's 400 for "Greetings message" style input.
+  const [displayName, setDisplayName] = useState(normalizeMetaName(friendlyName));
+  const nameValid = /^[a-z0-9_]+$/.test(displayName) && displayName.length > 0 && displayName.length <= 25;
   return (
     <div className="flex flex-wrap items-end gap-3">
       <div>
@@ -156,19 +160,36 @@ function SubmitForm({
         </select>
       </div>
       <div className="flex-1 min-w-[240px]">
-        <label className="mono-cap block text-[10px] text-hint">Display name (max 25 chars)</label>
+        <label className="mono-cap block text-[10px] text-hint">
+          Display name — lowercase letters, digits, underscores only (max 25)
+        </label>
         <input
           maxLength={25}
-          value={displayName} onChange={(e) => setDisplayName(e.target.value)}
-          className="mt-1 w-full rounded-md border border-rule bg-warm/40 px-2 py-1.5 text-[12.5px]"
+          value={displayName}
+          onChange={(e) => setDisplayName(e.target.value.toLowerCase().replace(/[^a-z0-9_]/g, "_"))}
+          className="mt-1 w-full rounded-md border border-rule bg-warm/40 px-2 py-1.5 text-[12.5px] font-mono"
         />
+        {!nameValid && displayName.length > 0 && (
+          <div className="mt-1 text-[10.5px] text-state-warn">Only a–z, 0–9, and _ allowed. Meta rejects anything else.</div>
+        )}
       </div>
       <button onClick={onCancel} disabled={busy} className="btn">Cancel</button>
-      <button onClick={() => onSubmit(category, displayName)} disabled={busy || !displayName.trim()} className="btn-grad">
+      <button onClick={() => onSubmit(category, displayName)} disabled={busy || !nameValid} className="btn-grad">
         {busy ? "Submitting…" : "Submit"}
       </button>
     </div>
   );
+}
+
+/** Meta template names: lowercase alphanumeric + underscore, ≤25 chars.
+ *  Best-effort autoconvert from a human friendly name so the seed doesn't
+ *  come in pre-broken. */
+function normalizeMetaName(input: string): string {
+  return input
+    .toLowerCase()
+    .replace(/[^a-z0-9_]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .slice(0, 25);
 }
 
 function NewTemplateDialog({
