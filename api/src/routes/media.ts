@@ -502,10 +502,12 @@ mediaFetchRouter.get("/:id", async (req, res) => {
     const { appPool } = await import("../db/app.js");
     const q = await appPool.query<{
       filename: string; contentType: string; blobUrl: string; providerHosted: boolean;
+      source: string;
     }>(
       `SELECT filename, content_type AS "contentType",
               blob_url AS "blobUrl",
-              provider_hosted AS "providerHosted"
+              provider_hosted AS "providerHosted",
+              source
        FROM media_asset WHERE id = $1 AND deleted_at IS NULL LIMIT 1`,
       [id],
     );
@@ -514,12 +516,26 @@ mediaFetchRouter.get("/:id", async (req, res) => {
 
     const headers: Record<string, string> = {};
     if (meta.providerHosted) {
-      try {
-        const cfg = readTwilioConfig();
-        const basic = Buffer.from(`${cfg.sid}:${cfg.token}`, "utf8").toString("base64");
-        headers.Authorization = `Basic ${basic}`;
-      } catch {
-        return res.status(502).type("text/plain").send("twilio not configured");
+      // Provider-hosted URLs need Basic auth. The `source` column tells us
+      // which provider — Twilio and Exotel use different credentials, and
+      // sending Twilio auth to `recordings.exotel.com` gets a 401 (which
+      // is exactly the bug this branch used to have — the /media/proxy
+      // handler grew a source-switch but /media/fetch did not).
+      if (meta.source === "exotel_recording") {
+        const auth = readExotelBasicAuth();
+        if (!auth) return res.status(502).type("text/plain").send("exotel not configured");
+        headers.Authorization = `Basic ${Buffer.from(`${auth.user}:${auth.pass}`, "utf8").toString("base64")}`;
+      } else if (meta.source === "twilio_inbound") {
+        try {
+          const cfg = readTwilioConfig();
+          const basic = Buffer.from(`${cfg.sid}:${cfg.token}`, "utf8").toString("base64");
+          headers.Authorization = `Basic ${basic}`;
+        } catch {
+          return res.status(502).type("text/plain").send("twilio not configured");
+        }
+      } else {
+        // Unknown provider — no way to know what auth to send. Fall through
+        // and let the upstream fetch surface its own 401/403.
       }
     }
 
