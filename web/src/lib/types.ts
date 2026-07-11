@@ -974,6 +974,7 @@ export interface CreateLeadInput {
   name: string;
   email?: string;
   phone?: string;
+  phoneCountryCode?: string;
   city?: string;
   program?: string;
   value?: string;
@@ -988,6 +989,9 @@ export interface CreateLeadInput {
   nbaLabel?: string;
   nbaIcon?: string;
   advisorId?: string;
+  nextFollowupAt?: string;   // YYYY-MM-DD
+  visitingDate?: string;     // YYYY-MM-DD
+  deliveryMode?: "online" | "classroom" | "hybrid";
 }
 
 export interface SummaryResponse {

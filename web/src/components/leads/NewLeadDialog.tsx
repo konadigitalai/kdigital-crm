@@ -51,6 +51,7 @@ function Dialog({ defaultRating, onClose }: { defaultRating?: LeadRating; onClos
   // Form state
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
+  const [phoneCountryCode, setPhoneCountryCode] = useState("+91");
   const [phone, setPhone] = useState("");
   const [city, setCity] = useState("");
   const [program, setProgram] = useState("");
@@ -62,6 +63,9 @@ function Dialog({ defaultRating, onClose }: { defaultRating?: LeadRating; onClos
   const [score, setScore] = useState(50);
   const [advisorId, setAdvisorId] = useState<string>("");
   const [nbaLabel, setNbaLabel] = useState("");
+  const [nextFollowupAt, setNextFollowupAt] = useState<string>("");   // YYYY-MM-DD
+  const [visitingDate,   setVisitingDate]   = useState<string>("");   // YYYY-MM-DD
+  const [deliveryMode,   setDeliveryMode]   = useState<"" | "online" | "classroom" | "hybrid">("");
 
   useEffect(() => {
     // Load the catalog for the program dropdown. Program is optional — leave
@@ -81,6 +85,19 @@ function Dialog({ defaultRating, onClose }: { defaultRating?: LeadRating; onClos
   async function submit(e: React.FormEvent) {
     e.preventDefault();
     if (!name.trim()) { setError("Name is required"); return; }
+    // Phone is required so campaign / template sends work out of the box.
+    // Enforce a country code and a local number of ≥6 digits (the shortest
+    // real subscriber number worldwide). Anything else is almost certainly
+    // a typo or a placeholder.
+    const localDigits = phone.replace(/\D/g, "");
+    if (localDigits.length < 6) {
+      setError("Phone number is required (at least 6 digits).");
+      return;
+    }
+    if (!/^\+\d{1,4}$/.test(phoneCountryCode.trim())) {
+      setError("Country code must be like +91.");
+      return;
+    }
     setSubmitting(true);
     setError(null);
     try {
@@ -88,7 +105,8 @@ function Dialog({ defaultRating, onClose }: { defaultRating?: LeadRating; onClos
       const created = await createLead({
         name: name.trim(),
         email: email.trim() || undefined,
-        phone: phone.trim() || undefined,
+        phone: localDigits,
+        phoneCountryCode: phoneCountryCode.trim(),
         city: city.trim() || undefined,
         program: program || undefined,
         value: value.trim() || undefined,
@@ -103,6 +121,9 @@ function Dialog({ defaultRating, onClose }: { defaultRating?: LeadRating; onClos
         description: description.trim() || undefined,
         advisorId: advisorId || undefined,
         nbaLabel: nbaLabel.trim() || undefined,
+        nextFollowupAt: nextFollowupAt || undefined,
+        visitingDate:   visitingDate   || undefined,
+        deliveryMode:   deliveryMode   || undefined,
       });
       emitCrmMutation("lead.created");
       router.refresh();
@@ -153,8 +174,27 @@ function Dialog({ defaultRating, onClose }: { defaultRating?: LeadRating; onClos
               <Field label="Email">
                 <input className={inputCls} value={email} type="email" onChange={(e) => setEmail(e.target.value)} placeholder="aarav@gmail.com" />
               </Field>
-              <Field label="Phone">
-                <input className={inputCls} value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="+91 98••• ••••" />
+              <Field label="Phone" required>
+                <div className="flex gap-2">
+                  <select
+                    className={cn(inputCls, "w-[110px] font-mono")}
+                    value={phoneCountryCode}
+                    onChange={(e) => setPhoneCountryCode(e.target.value)}
+                    aria-label="Country code"
+                  >
+                    {COUNTRY_CODES.map((c) => (
+                      <option key={c.code} value={c.code}>{c.iso} {c.code}</option>
+                    ))}
+                  </select>
+                  <input
+                    className={cn(inputCls, "flex-1")}
+                    value={phone}
+                    onChange={(e) => setPhone(e.target.value.replace(/[^\d]/g, "").slice(0, 15))}
+                    placeholder="98••• •••••"
+                    inputMode="numeric"
+                    aria-label="Phone number"
+                  />
+                </div>
               </Field>
             </div>
 
@@ -288,6 +328,48 @@ function Dialog({ defaultRating, onClose }: { defaultRating?: LeadRating; onClos
               </span>
             </Field>
 
+            <div className="grid grid-cols-2 gap-4">
+              <Field label="Next follow-up">
+                <input
+                  type="date"
+                  className={inputCls}
+                  value={nextFollowupAt}
+                  onChange={(e) => setNextFollowupAt(e.target.value)}
+                />
+              </Field>
+              <Field label="Visiting date">
+                <input
+                  type="date"
+                  className={inputCls}
+                  value={visitingDate}
+                  onChange={(e) => setVisitingDate(e.target.value)}
+                />
+              </Field>
+            </div>
+
+            <Field label="Delivery mode">
+              <div className="flex flex-wrap gap-2">
+                {(["online","classroom","hybrid"] as const).map((m) => {
+                  const on = deliveryMode === m;
+                  return (
+                    <button
+                      type="button" key={m}
+                      onClick={() => setDeliveryMode(on ? "" : m)}
+                      className={cn(
+                        "inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-[12px] font-semibold transition capitalize",
+                        on
+                          ? "bg-brand-violet/10 text-brand-violet ring-2 ring-offset-1 ring-offset-paper ring-brand-violet"
+                          : "border border-rule bg-paper text-mute hover:border-rule2",
+                      )}
+                    >
+                      <span className={cn("h-1.5 w-1.5 rounded-full", on ? "bg-brand-violet" : "bg-rule2")} />
+                      {m}
+                    </button>
+                  );
+                })}
+              </div>
+            </Field>
+
             <Field label="Next-best-action label (optional)">
               <input
                 className={inputCls}
@@ -319,6 +401,22 @@ function Dialog({ defaultRating, onClose }: { defaultRating?: LeadRating; onClos
 }
 
 const inputCls = "w-full rounded-[10px] border border-rule bg-paper px-3 py-2.5 text-[13.5px] text-ink placeholder:text-hint focus:border-brand-violet focus:outline-none focus:ring-2 focus:ring-brand-violet/20";
+
+// Country codes mirrored from the public website intake form so operators
+// and self-serve leads have the same options. India first because most of
+// our leads are Indian; keep the rest in a sensible market order.
+const COUNTRY_CODES: { iso: string; code: string }[] = [
+  { iso: "IN", code: "+91"  },
+  { iso: "US", code: "+1"   },
+  { iso: "GB", code: "+44"  },
+  { iso: "AU", code: "+61"  },
+  { iso: "SG", code: "+65"  },
+  { iso: "AE", code: "+971" },
+  { iso: "QA", code: "+974" },
+  { iso: "SA", code: "+966" },
+  { iso: "DE", code: "+49"  },
+  { iso: "FR", code: "+33"  },
+];
 
 function Field({ label, required, children }: { label: string; required?: boolean; children: React.ReactNode }) {
   return (

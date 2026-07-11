@@ -17,6 +17,7 @@ import { ApprovalCard } from "@/components/record/ApprovalCard";
 import { NbaCard } from "@/components/record/NbaCard";
 import { InlineLeadField } from "@/components/record/InlineLeadField";
 import { LeadNavArrows } from "@/components/record/LeadNavArrows";
+import { GlobalLeadSearch } from "@/components/record/GlobalLeadSearch";
 import { PhoneField } from "@/components/record/PhoneField";
 import { PhoneCodeField } from "@/components/record/PhoneCodeField";
 
@@ -132,7 +133,12 @@ export default async function RecordPage({
             <b className="font-semibold text-ink">{lead.name}</b>
           </>
         }
-        centerSlot={<LeadNavArrows currentNumber={lead.number} />}
+        centerSlot={
+          <div className="flex items-center gap-3">
+            <GlobalLeadSearch currentNumber={lead.number} />
+            <LeadNavArrows currentNumber={lead.number} />
+          </div>
+        }
         status={isConverted ? "Converted to learner" : "Agent watching"}
       />
 
@@ -443,6 +449,13 @@ export default async function RecordPage({
                 kind={{ kind: "date", value: attrs.nextFollowupAt ?? null }}
                 valueClass="font-mono text-[13px] text-ink2"
               />
+            </DetailRow>
+            <DetailRow label="Lead created">
+              <span className="font-mono text-[13px] text-mute" title={lead.createdAt ?? ""}>
+                {lead.createdAt
+                  ? new Date(lead.createdAt).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" })
+                  : "—"}
+              </span>
             </DetailRow>
             <DetailRow label="Demo attended">
               <InlineLeadField

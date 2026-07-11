@@ -209,6 +209,17 @@ leadsRouter.post("/", async (req, res, next) => {
       else leadStatus = s;
     }
 
+    // Optional cadence + delivery fields — same rules as the PATCH path.
+    // Date-only (YYYY-MM-DD) → stored as-is; empty → null. Delivery mode
+    // validated against the enum. Anything else is a silent drop.
+    const isDateLike = (v: unknown): v is string =>
+      typeof v === "string" && /^\d{4}-\d{2}-\d{2}$/.test(v.trim());
+    const nextFollowupAt = isDateLike(b.nextFollowupAt) ? String(b.nextFollowupAt).trim() : null;
+    const visitingDate   = isDateLike(b.visitingDate)   ? String(b.visitingDate).trim()   : null;
+    const rawMode = typeof b.deliveryMode === "string" ? b.deliveryMode.trim().toLowerCase() : "";
+    const deliveryMode = (["online","classroom","hybrid"].includes(rawMode) ? rawMode : null) as
+      "online" | "classroom" | "hybrid" | null;
+
     if (errors.length) {
       res.status(400).json({ error: errors.join("; ") });
       return;
@@ -311,7 +322,8 @@ leadsRouter.post("/", async (req, res, next) => {
           program, program_id, value, description, stage, stage_label,
           advisor_id, avatar, initials,
           nba_icon, nba_label, nba_ghost,
-          nba_confidence, nba_headline, nba_why
+          nba_confidence, nba_headline, nba_why,
+          next_followup_at, visiting_date, delivery_mode
         ) VALUES (
           ${wiId}, current_tenant(),
           ${source}, ${sourceLabel}, ${score}, ${HEAT_LABEL[heat]}, ${HEAT_DESC[heat]}, ${heat}, ${rating},
@@ -319,7 +331,8 @@ leadsRouter.post("/", async (req, res, next) => {
           ${programName}, ${resolvedProgramId}, ${value}, ${description}, ${stage}, ${STAGE_LABEL[stage]},
           ${resolvedAdvisorId}, ${pickAvatar(name)}, ${initialsOf(name)},
           ${nbaIcon}, ${nbaLabel}, false,
-          ${nba.confidence}, ${nba.headline}, ${nba.why}
+          ${nba.confidence}, ${nba.headline}, ${nba.why},
+          ${nextFollowupAt}, ${visitingDate}, ${deliveryMode}
         )
         -- Phase 3: lead.city dropped; city lives on party only.
       `);
