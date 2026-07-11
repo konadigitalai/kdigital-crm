@@ -5,6 +5,7 @@ import { emitEvent } from "../lib/events.js";
 import { requirePermission } from "../middleware/require.js";
 import { partyIdFromAppUserId, resolveActorPartyId, resolveSentinelPartyId } from "../lib/party/resolve.js";
 import { evaluateTriggers } from "../lib/campaigns/triggers.js";
+import { bootstrapConsent } from "../lib/party/consent.js";
 
 export const leadsRouter = Router();
 
@@ -312,6 +313,14 @@ leadsRouter.post("/", async (req, res, next) => {
         )
         -- Phase 3: lead.city dropped; city lives on party only.
       `);
+
+      // 3b. Consent bootstrap — grant opt_in for whatsapp + sms so this
+      // lead can immediately receive campaign / template sends. Only
+      // inserts if no prior consent row exists; if the party already
+      // said "no" on either channel, we do NOT overwrite that.
+      // Source string is intentional — the audit trail must show this was
+      // an automatic grant, not a customer-initiated one.
+      await bootstrapConsent(db, partyId, ["whatsapp", "sms"], "auto_on_lead_create");
 
       // 4. signals
       const signals = deriveSignals(score, stage, source);

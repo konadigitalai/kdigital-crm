@@ -26,6 +26,7 @@ import {
 } from "../lib/twilio/inbox.js";
 import { validateMediaForChannel } from "../lib/twilio/media.js";
 import { signMediaFetchUrl } from "./media.js";
+import { bootstrapConsent } from "../lib/party/consent.js";
 
 // Public API base URL — used to build signed media-fetch URLs Twilio can
 // download. Derived from TWILIO_WEBHOOK_URL (already set + validated at
@@ -568,6 +569,9 @@ twilioRouter.post("/conversations/:id/promote-to-lead", requirePermission("leads
         VALUES (current_tenant(), ${conv.partyId}, 'lead', current_date)
         ON CONFLICT (party_id, role, valid_from) DO NOTHING
       `);
+      // The party already sent us a message — that's WhatsApp's own
+      // definition of opt-in, so we can grant with a strong source string.
+      await bootstrapConsent(db, conv.partyId, ["whatsapp", "sms"], "inbound_reply");
       await db.execute(sql`UPDATE tw_conversation SET is_unlinked = false, updated_at = now() WHERE id = ${id}`);
       return { kind: "ok" as const, number, alreadyLead: false };
     });

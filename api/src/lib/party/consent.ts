@@ -63,6 +63,41 @@ export async function setConsent(
 }
 
 /**
+ * Grant a starter opt_in row IFF the party currently has NO row for that
+ * channel. Non-destructive — will NOT overwrite an existing opt-in or
+ * opt-out. Meant for lead-create paths where we want a default consent
+ * state without stepping on prior consent history.
+ *
+ * `source` should describe how the lead reached us — e.g. "web_form",
+ * "advisor_manual", "xlsx_import", "twilio_promote", "auto_on_lead_create".
+ * The audit trail depends on this being accurate.
+ */
+export async function bootstrapConsent(
+  db: Exec,
+  partyId: string,
+  channels: Channel[],
+  source: string,
+  evidenceUrl?: string | null,
+): Promise<{ inserted: Channel[]; skipped: Channel[] }> {
+  const inserted: Channel[] = [];
+  const skipped: Channel[] = [];
+  for (const channel of channels) {
+    const r = await db.execute(sql`
+      INSERT INTO party_consent (tenant_id, party_id, channel, opt_in, source, evidence_url)
+      SELECT current_tenant(), ${partyId}, ${channel}, true, ${source}, ${evidenceUrl ?? null}
+      WHERE NOT EXISTS (
+        SELECT 1 FROM party_consent
+        WHERE party_id = ${partyId} AND channel = ${channel} AND valid_to IS NULL
+      )
+      RETURNING channel
+    `);
+    if (r.rows.length > 0) inserted.push(channel);
+    else                   skipped.push(channel);
+  }
+  return { inserted, skipped };
+}
+
+/**
  * Bulk filter: given a list of party ids and a channel, return which ones
  * have opt_in=true and which are blocked (with reason).
  *

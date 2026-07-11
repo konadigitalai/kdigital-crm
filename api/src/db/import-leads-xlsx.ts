@@ -1,6 +1,6 @@
 // One-shot import of leads from an xlsx export into the leads module.
 //
-// Reads the xlsx passed via --file (default: "../Leads july 6.xlsx"), maps
+// Reads the xlsx passed via --file (default: "../Leads july 7.xlsx"), maps
 // each row into the CRM's shape (party + work_item + lead + party_role),
 // and writes them in one big transaction. Dry-run by default; pass --apply
 // to commit.
@@ -37,7 +37,7 @@ import { pool } from "./client.js";
 const args = process.argv.slice(2);
 const APPLY = args.includes("--apply");
 const fileArg = args.find((a) => a.startsWith("--file="));
-const XLSX_PATH = fileArg ? fileArg.slice("--file=".length) : "../Leads july 6.xlsx";
+const XLSX_PATH = fileArg ? fileArg.slice("--file=".length) : "../Leads july 7.xlsx";
 
 // ─── Value maps ──────────────────────────────────────────────────────────
 // Source in xlsx → CRM source key. Values in the RIGHT column must match
@@ -184,11 +184,37 @@ function firstProgramFromCell(raw: string | null | undefined): { first: string |
 function parseDate(v: unknown): string | null {
   if (!v) return null;
   // xlsx dates come as strings like "2026-07-15 18:30:00 UTC" or JS Dates.
+  //
+  // WHY IST-SHIFT: Edify's export renders IST-midnight as "18:30:00 UTC"
+  // (00:00 IST on day D = 18:30 UTC on day D-1). Slicing d.toISOString()
+  // gives the UTC day (D-1) which is off-by-one from what the operator
+  // sees in the source system. Shift by +5:30 before slicing so we return
+  // the IST calendar day the human actually meant.
+  //
+  // For dates that WEREN'T IST-midnight (e.g. "2026-06-05 09:00:00 UTC"),
+  // shifting by +5:30 still lands on the correct IST calendar day, so the
+  // shift is safe across the entire column — never off, sometimes a no-op.
   const s = String(v).trim();
   if (!s) return null;
   const d = new Date(s);
   if (isNaN(d.getTime())) return null;
-  return d.toISOString().slice(0, 10);
+  const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
+  const ist = new Date(d.getTime() + IST_OFFSET_MS);
+  return ist.toISOString().slice(0, 10);
+}
+
+// Same source but returns a full ISO timestamp instead of just YYYY-MM-DD.
+// Used for columns that map to `timestamptz` in Postgres (party.created_at,
+// work_item.created_at, activity.ts) — throwing the time-of-day away would
+// bunch every lead's `created_at` at midnight UTC, breaking chronological
+// sort by minute-level granularity.
+function parseTimestamp(v: unknown): string | null {
+  if (!v) return null;
+  const s = String(v).trim();
+  if (!s) return null;
+  const d = new Date(s);
+  if (isNaN(d.getTime())) return null;
+  return d.toISOString();
 }
 
 // ─── Main ────────────────────────────────────────────────────────────────
@@ -209,6 +235,7 @@ interface LeadRow {
   nextFollowupAt: string | null;
   demoAttendedAt: string | null;
   status: string;               // raw xlsx value, preserved for the description footer
+  createdAt: string | null;     // xlsx "Created at" as ISO timestamp, or null → falls back to NOW() in the DB
   rowNo: number;
 }
 
@@ -379,6 +406,10 @@ async function main() {
       nextFollowupAt: parseDate(r["Next FollowUp Date"]),
       demoAttendedAt: parseDate(r["Demo Attended Date"]),
       status,
+      // Use the xlsx "Created at" as the lead's canonical creation moment
+      // so the CRM timeline and "newest-first" sort match the source of
+      // truth. Falls back to NULL → the DB defaults kick in (NOW()).
+      createdAt: parseTimestamp(r["Created at"]),
       rowNo,
     });
   }
@@ -405,6 +436,8 @@ async function main() {
   console.log(`  advisors missing:      ${finalPlan.filter((p) => p.advisorName && !findAdvisorParty(p.advisorName)).length}`);
   console.log(`  lead status resolved:  ${finalPlan.filter((p) => p.leadStatus).length}`);
   console.log(`  lead status unmapped:  ${finalPlan.filter((p) => !p.leadStatus && p.status).length}`);
+  console.log(`  created_at from xlsx:  ${finalPlan.filter((p) => p.createdAt).length}`);
+  console.log(`  created_at → NOW():    ${finalPlan.filter((p) => !p.createdAt).length} (missing / unparseable)`);
 
   if (missingAdvisors.size > 0) {
     console.log(`\n⚠ Missing advisors — add them in Settings → Advisors before applying:`);
@@ -422,6 +455,7 @@ async function main() {
       row: p.rowNo, name: p.name, phone: p.phone, email: p.email,
       advisor: p.advisorName, program: p.programText, programId: p.programId,
       rating: p.rating, source: p.source.key, status: p.status,
+      createdAt: p.createdAt,
     }));
   }
 
@@ -461,14 +495,22 @@ async function main() {
       const advisorPartyId = findAdvisorParty(p.advisorName);
 
       // 1) party
+      //
+      // We pass the xlsx "Created at" through as $9. If null, COALESCE
+      // falls back to NOW() (the DB default's semantics). updated_at is
+      // set the same way — a freshly-imported lead has no post-import
+      // edits, so updated_at ≈ created_at is the truthful default.
       const partyR = await client.query<{ id: string }>(
-        `INSERT INTO party (tenant_id, kind, name, email, phone, phone_country_code, city, identifiers, attributes)
-         VALUES ($1, 'person', $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb)
+        `INSERT INTO party (tenant_id, kind, name, email, phone, phone_country_code, city, identifiers, attributes, created_at, updated_at)
+         VALUES ($1, 'person', $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb,
+                 COALESCE($9::timestamptz, NOW()),
+                 COALESCE($9::timestamptz, NOW()))
          RETURNING id`,
         [
           tenantId, p.name, p.email, p.phone, p.phoneCountryCode, p.city,
-          JSON.stringify({ source: p.source.key, imported: "xlsx-2026-07-06" }),
+          JSON.stringify({ source: p.source.key, imported: "xlsx-2026-07-07" }),
           JSON.stringify({ initials: initialsOf(p.name) }),
+          p.createdAt,
         ],
       );
       const partyId = partyR.rows[0]!.id;
@@ -482,13 +524,19 @@ async function main() {
       );
 
       // 3) work_item
+      //
+      // work_item.created_at is what the /leads grid sorts on (readonly-created
+      // column). Setting it from the xlsx makes the "newest first" order
+      // match the source of truth. Same COALESCE fallback as party.
       const numR = await client.query<{ n: string }>(`SELECT nextval('seq_lead')::text AS n`);
       const number = `LEAD-${numR.rows[0]!.n}`;
       const wiR = await client.query<{ id: string }>(
-        `INSERT INTO work_item (tenant_id, number, type, party_id, assignee_id, state, priority, attributes)
-         VALUES ($1, $2, 'lead', $3, $4, 'open', 3, $5::jsonb)
+        `INSERT INTO work_item (tenant_id, number, type, party_id, assignee_id, state, priority, attributes, created_at, updated_at)
+         VALUES ($1, $2, 'lead', $3, $4, 'open', 3, $5::jsonb,
+                 COALESCE($6::timestamptz, NOW()),
+                 COALESCE($6::timestamptz, NOW()))
          RETURNING id`,
-        [tenantId, number, partyId, advisorPartyId, JSON.stringify({ source: p.source.key, sourceLabel: p.source.label })],
+        [tenantId, number, partyId, advisorPartyId, JSON.stringify({ source: p.source.key, sourceLabel: p.source.label }), p.createdAt],
       );
       const workItemId = wiR.rows[0]!.id;
 
@@ -519,7 +567,28 @@ async function main() {
         ],
       );
 
-      // 5) activity row so timeline shows how the lead came in
+      // 4b) Consent bootstrap — grant opt_in for whatsapp + sms on this
+      // party unless they already have a consent row. Uses raw client
+      // (not the Drizzle helper) because this whole script runs outside
+      // the withTenant transaction wrapper.
+      for (const ch of ["whatsapp", "sms"] as const) {
+        await client.query(
+          `INSERT INTO party_consent (tenant_id, party_id, channel, opt_in, source)
+           SELECT $1, $2, $3, true, 'xlsx_import'
+           WHERE NOT EXISTS (
+             SELECT 1 FROM party_consent
+             WHERE party_id = $2 AND channel = $3 AND valid_to IS NULL
+           )`,
+          [tenantId, partyId, ch],
+        );
+      }
+
+      // 5) activity row so timeline shows how the lead came in.
+      //
+      // Timestamp mirrors the lead's own creation moment (from the xlsx),
+      // not the import run time — otherwise every imported lead's timeline
+      // reads "Lead imported (just now)" alongside months-old follow-ups,
+      // which is misleading.
       await client.query(
         `INSERT INTO activity (
            tenant_id, work_item_id, party_id, actor_type, actor_party_id, actor_name,
@@ -527,12 +596,14 @@ async function main() {
          )
          VALUES (
            $1, $2, $3, 'agent', $4, 'System',
-           'Lead imported', $5, 'ai', $6::jsonb, NOW()
+           'Lead imported', $5, 'ai', $6::jsonb,
+           COALESCE($7::timestamptz, NOW())
          )`,
         [
           tenantId, workItemId, partyId, sentinelPartyId,
-          `Imported from Today UpdatedLeads.xlsx (row ${p.rowNo})`,
+          `Imported from Leads july 7.xlsx (row ${p.rowNo})`,
           JSON.stringify({ when: "Just now", quote: null, importedFrom: "xlsx", rowNo: p.rowNo, status: p.status }),
+          p.createdAt,
         ],
       );
 

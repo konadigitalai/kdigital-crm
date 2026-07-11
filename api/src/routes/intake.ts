@@ -27,6 +27,7 @@ import { appPool } from "../db/app.js";
 import { resolveSentinelPartyId } from "../lib/party/resolve.js";
 import { emitEvent } from "../lib/events.js";
 import { evaluateTriggers } from "../lib/campaigns/triggers.js";
+import { bootstrapConsent } from "../lib/party/consent.js";
 
 export const intakeRouter = Router();
 
@@ -206,6 +207,12 @@ intakeRouter.post("/", async (req, res) => {
           ${notes}, 'Reach out today', 'send'
         )
       `);
+
+      // Consent bootstrap — intake form implies contact intent, so we grant
+      // opt_in for whatsapp + sms. Source records that this came from the
+      // public web form for the audit trail. bootstrapConsent is idempotent,
+      // so a form re-submit doesn't spam the consent history.
+      await bootstrapConsent(db, partyId, ["whatsapp", "sms"], `web_form:${source ?? "unknown"}`);
 
       // Contact-point mirror — dual-write like POST /leads does.
       if (email) {
