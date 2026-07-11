@@ -194,13 +194,19 @@ async function dispatchRunning(db: Exec): Promise<void> {
 
     // Pick pending recipients + hydrate the context we need for variable
     // resolution + the send call itself, all in one query.
+    //
+    // phone_country_code is joined in — many rows store the local number
+    // in `phone` and the "+91" separately in `phone_country_code`. Sending
+    // just `phone` yields "+7729887766" style unroutable numbers and
+    // Twilio bounces with 63024. composeE164() below merges them.
     const rR = await db.execute(sql`
       SELECT
         cr.id           AS "recipientId",
         cr.party_id     AS "partyId",
         cr.work_item_id AS "workItemId",
         p.name          AS "partyName",
-        p.phone         AS "partyPhone",
+        p.phone         AS "partyPhoneRaw",
+        p.phone_country_code AS "partyPhoneCc",
         p.email         AS "partyEmail",
         p.city          AS "partyCity",
         wi.number       AS "leadNumber",
@@ -215,12 +221,20 @@ async function dispatchRunning(db: Exec): Promise<void> {
       ORDER BY cr.queued_at ASC
       LIMIT ${batchSize}
     `);
-    const recipients = rR.rows as Array<{
+    const rawRows = rR.rows as Array<{
       recipientId: string; partyId: string; workItemId: string | null;
-      partyName: string | null; partyPhone: string | null;
+      partyName: string | null;
+      partyPhoneRaw: string | null; partyPhoneCc: string | null;
       partyEmail: string | null; partyCity: string | null;
       leadNumber: string | null; leadProgram: string | null; leadStage: string | null;
     }>;
+    const recipients = rawRows.map((r) => ({
+      recipientId: r.recipientId, partyId: r.partyId, workItemId: r.workItemId,
+      partyName: r.partyName,
+      partyPhone: composeE164(r.partyPhoneCc, r.partyPhoneRaw),
+      partyEmail: r.partyEmail, partyCity: r.partyCity,
+      leadNumber: r.leadNumber, leadProgram: r.leadProgram, leadStage: r.leadStage,
+    }));
     if (recipients.length === 0) continue;
 
     // Consent gate — one query for the whole batch.
@@ -364,4 +378,28 @@ async function completeIfDrained(db: Exec): Promise<void> {
         WHERE cr.campaign_id = c.id AND cr.status IN ('pending','sending')
       )
   `);
+}
+
+/** Combine (phone_country_code, phone) into E.164, matching the shape
+ *  composePartyPhone() uses in routes/twilio.ts. Some rows have the "+91"
+ *  baked into `phone` (legacy imports) and a null cc; others split them.
+ *  Returns null if the result would obviously not be routable. */
+function composeE164(cc: string | null, phone: string | null): string | null {
+  const rawPhone = (phone ?? "").trim();
+  if (!rawPhone) return null;
+  const phoneDigits = rawPhone.replace(/\D/g, "");
+  if (rawPhone.startsWith("+") && phoneDigits.length > 10) {
+    return `+${phoneDigits}`;
+  }
+  const ccDigits = (cc ?? "").replace(/\D/g, "");
+  if (ccDigits) return `+${ccDigits}${phoneDigits}`;
+  // 10-digit bare number with no country code — this is the case that
+  // was producing "+7729887766" and Twilio 63024. Assume India (+91)
+  // when the phone has exactly 10 digits and looks Indian-mobile-shaped
+  // (starts 6-9). Anything else, refuse — the worker will mark the
+  // recipient skipped_no_phone rather than sending garbage.
+  if (phoneDigits.length === 10 && /^[6-9]/.test(phoneDigits)) {
+    return `+91${phoneDigits}`;
+  }
+  return null;
 }
