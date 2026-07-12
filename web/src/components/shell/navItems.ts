@@ -50,7 +50,10 @@ export function buildNavItems(summary: SummaryResponse): NavItem[] {
     { href: "/leads",                     icon: "user-plus",       label: "Leads",       badge: leadBadge, requires: "leads.read" },
     { href: "/learners",                  icon: "graduation-cap",  label: "Learners",                       requires: "learners.read" },
     { href: "/cases",                     icon: "life-ring",       label: "Cases",       badge: caseBadge, requires: "cases.read" },
-    { href: "/pipeline",                  icon: "pipeline",        label: "Pipeline",                       requires: "pipeline.read" },
+    // Pipeline was dropped from the nav 2026-07-12: /leads now carries the
+    // same List / Kanban / Chart modes and group-by axes, so the two screens
+    // were the same tool twice. The /pipeline route itself still resolves —
+    // old bookmarks and links keep working — it's just not advertised.
     { href: "/admin/cohorts",             icon: "batches",         label: "Batches",                        requires: "admin.batches.manage" },
     { href: "/calendar",                  icon: "calendar",        label: "Calendar",                       requires: "events.manage.self" },
     { href: "/agents",                    icon: "robot",           label: "Agents",                         requires: "agents.read" },
@@ -84,7 +87,6 @@ const DEDICATED_HREFS = [
   "/leads",
   "/learners",
   "/cases",
-  "/pipeline",
   "/admin/cohorts",   // Batches
   "/calendar",
   "/agents",

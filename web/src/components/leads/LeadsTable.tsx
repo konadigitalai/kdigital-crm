@@ -6,7 +6,7 @@ import { ScoreRing } from "@/components/ui/ScoreRing";
 import { FilterBar } from "@/components/filter/FilterBar";
 import { useFilter } from "@/components/filter/useFilter";
 import type { FilterField } from "@/components/filter/types";
-import { avatarGradClass, ratingStyles } from "@/lib/ui";
+import { avatarGradClass, ratingStyles, scoreBand } from "@/lib/ui";
 import { cn } from "@/lib/cn";
 import type { Lead } from "@/lib/types";
 import { LEAD_RATINGS } from "@/lib/types";
@@ -91,7 +91,7 @@ export function LeadsTable({ leads }: { leads: Lead[] }) {
                   </span>
                 </div>
                 <div>
-                  <ScoreRing score={l.score} heat={l.heat} />
+                  <ScoreRing score={l.score} heat={scoreBand(l.score).heat} />
                 </div>
                 <div className="flex items-center gap-2 text-[12px] text-ink2">
                   <span className="flex h-5 w-5 flex-shrink-0 items-center justify-center rounded-md bg-grad-soft">

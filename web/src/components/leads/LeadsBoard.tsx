@@ -6,19 +6,29 @@
 // shows up on both surfaces).
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { PipelineListView, PIPELINE_LIST_COLUMNS, PIPELINE_LIST_DEFAULT_COLUMNS } from "@/components/pipeline/PipelineListView";
+import {
+  ChartView, GROUP_BY_OPTIONS, groupKey, KanbanView, makeColumns,
+  ViewSwitcher, type GroupBy, type ViewMode,
+} from "@/components/pipeline/PipelineBoard";
 import { DEFAULT_VIEW_ID, ViewTabs } from "@/components/pipeline/ViewTabs";
 import { FilterBar } from "@/components/filter/FilterBar";
 import { useFilter } from "@/components/filter/useFilter";
 import { Icon } from "@/components/ui/Icon";
 import { cn } from "@/lib/cn";
-import { getLeads, getViewPreferences, updateViewPreferences, type UserViewPreference } from "@/lib/api";
+import { getLeads, getViewPreferences, updateLead, updateViewPreferences, type UserViewPreference } from "@/lib/api";
 import { applyFilter } from "@/components/filter/operators";
 import type { FilterField, FilterState } from "@/components/filter/types";
 import type { CatalogResponse, CurrentUser, Lead, SavedView } from "@/lib/types";
 import { LEAD_RATINGS } from "@/lib/types";
 import { avatarGradClass, ratingStyles } from "@/lib/ui";
+
+/** DOM id of the Topbar slot that LeadsBoard portals its search input into.
+ *  The page renders the (empty) node so it controls where it sits; the board
+ *  fills it, because only the board has the live, post-poller lead list. */
+export const LEADS_SEARCH_SLOT_ID = "leads-topbar-search";
 
 // How often the background poller checks for new leads. Kept at 30s to
 // balance responsiveness (users see a new lead within ~30s of the intake
@@ -245,6 +255,51 @@ export function LeadsBoard({
   const fields = useMemo(() => buildFields(localLeads), [localLeads]);
   const [filtered, filterState, setFilterState] = useFilter(localLeads, fields);
 
+  // ── view mode + grouping axis ─────────────────────────────────────────
+  // Same three modes and axes as /pipeline, so a user who learns one surface
+  // knows the other. The difference: here group-by also applies to the list,
+  // where it sections rows instead of making columns — and there it can be
+  // "none", because a flat sortable table is the sane default for a list.
+  // Kanban and chart have no such option: they need an axis to exist at all,
+  // so they fall back to rating.
+  const [view, setView] = useState<ViewMode>("list");
+  const [groupBy, setGroupBy] = useState<GroupBy | "none">("none");
+  const axis: GroupBy = groupBy === "none" ? "rating" : groupBy;
+
+  // Kanban / chart both want columns + a key→leads index off the same axis.
+  // We pass [] for rating columns because /leads never fetches the server's
+  // PipelineColumn[]; makeColumns synthesises them from the leads instead.
+  const columns = useMemo(
+    () => makeColumns(axis, [], filtered, localLeads),
+    [axis, filtered, localLeads],
+  );
+  const leadsByColumn = useMemo(() => {
+    const m = new Map<string, Lead[]>();
+    for (const l of filtered) {
+      const k = groupKey(l, axis);
+      const arr = m.get(k);
+      if (arr) arr.push(l);
+      else m.set(k, [l]);
+    }
+    return m;
+  }, [filtered, axis]);
+
+  // Grouping descriptor handed to PipelineListView — null when the user hasn't
+  // picked an axis, which keeps the list flat. Section order follows the
+  // synthesised columns so the list reads in the same bucket order as the
+  // Kanban; switching modes shouldn't reshuffle them.
+  const listGroupBy = useMemo(
+    () =>
+      groupBy === "none"
+        ? null
+        : {
+            get: (l: Lead) => groupKey(l, axis),
+            label: (k: string) => columns.find((c) => c.key === k)?.label ?? k,
+            order: columns.map((c) => c.key),
+          },
+    [groupBy, axis, columns],
+  );
+
   // ── saved views (shared scope: pipeline_list) ─────────────────────────
   //
   // The active view is mirrored into `?view=<id>` so a hard-refresh (or a
@@ -410,8 +465,79 @@ export function LeadsBoard({
     updateViewPreferences("pipeline_list", payload).catch(() => { /* silent */ });
   }
 
+  // ── topbar search portal ──────────────────────────────────────────────
+  // The slot lives in the Topbar (rendered by the page), so we can only grab
+  // it once the DOM exists. Held in state rather than a ref so that finding
+  // it triggers the re-render that actually paints the portal.
+  const [searchSlot, setSearchSlot] = useState<HTMLElement | null>(null);
+  useEffect(() => {
+    setSearchSlot(document.getElementById(LEADS_SEARCH_SLOT_ID));
+  }, []);
+
+  // ── kanban drag-drop ──────────────────────────────────────────────────
+  // Dragging a card across columns writes lead.rating, so it's only allowed
+  // on the rating axis — every other axis is a read-only bucketing. Applied
+  // optimistically and rolled back if the PATCH fails.
+  const [dragError, setDragError] = useState<string | null>(null);
+
+  async function onRatingDrop(leadId: string, fromKey: string, toKey: string) {
+    if (axis !== "rating" || fromKey === toKey) return;
+    if (!canWrite) {
+      setDragError("You don't have permission to move leads. Ask an admin for the leads.write permission.");
+      setTimeout(() => setDragError(null), 4000);
+      return;
+    }
+    const before = localLeads;
+    const target = before.find((l) => l.id === leadId);
+    if (!target) return;
+    const toRating = toKey as Lead["rating"];
+    setLocalLeads((prev) => prev.map((l) => (l.id === leadId ? { ...l, rating: toRating } : l)));
+    try {
+      await updateLead(target.number, { rating: toRating });
+      router.refresh();
+    } catch (err) {
+      setLocalLeads(before);
+      setDragError(`Couldn't update rating: ${(err as Error).message}`);
+      setTimeout(() => setDragError(null), 4000);
+    }
+  }
+
+  // Editing a filter by hand detaches from the active saved view — matches
+  // the pipeline UX, where the user "drifts" off a view once they touch it.
+  function changeFilter(next: FilterState) {
+    setFilterState(next);
+    if (activeViewId !== DEFAULT_VIEW_ID) setActiveViewId(DEFAULT_VIEW_ID);
+  }
+
+  const toolbar = (
+    <div className="flex flex-wrap items-center gap-2.5">
+      <ViewSwitcher value={view} onChange={setView} />
+      <LeadsGroupByPill value={groupBy} onChange={setGroupBy} />
+      <QuickFilterPill
+        label="Rating"
+        options={RATING_OPTIONS}
+        state={filterState}
+        fieldKey="rating"
+        onChange={changeFilter}
+      />
+      <QuickFilterPill
+        label="Status"
+        options={LEAD_STATUS_OPTIONS}
+        state={filterState}
+        fieldKey="leadStatus"
+        onChange={changeFilter}
+      />
+      <FilterBar fields={fields} state={filterState} onChange={changeFilter} />
+    </div>
+  );
+
   return (
     <>
+      {/* Searches localLeads, so optimistic edits and polled-in leads are all
+          findable — that's the whole reason this is a portal and not just
+          markup in the page. */}
+      {searchSlot && createPortal(<LeadsSearchBox leads={localLeads} />, searchSlot)}
+
       <div className="mb-3 flex items-center justify-between gap-3">
         <div className="min-w-0 flex-1">
           <ViewTabs
@@ -435,46 +561,6 @@ export function LeadsBoard({
         {headerSlot && <div className="flex-shrink-0">{headerSlot}</div>}
       </div>
 
-      {/* Search + quick-filter pills + full filter builder — one row.
-          Search on the left, then two dropdown pills (Rating, Status),
-          then the FilterBar's "+ Add filter" for anything more complex.
-          Matches the reference UI: dense, low-friction, only what you
-          actually reach for on most days. */}
-      <div className="mb-4 flex flex-wrap items-center gap-3 rounded-[14px] border border-rule bg-paper p-3">
-        <div className="min-w-[240px] flex-1">
-          <LeadsSearchBox leads={localLeads} />
-        </div>
-        <QuickFilterPill
-          label="Rating"
-          options={RATING_OPTIONS}
-          state={filterState}
-          fieldKey="rating"
-          onChange={(next) => {
-            setFilterState(next);
-            if (activeViewId !== DEFAULT_VIEW_ID) setActiveViewId(DEFAULT_VIEW_ID);
-          }}
-        />
-        <QuickFilterPill
-          label="Status"
-          options={LEAD_STATUS_OPTIONS}
-          state={filterState}
-          fieldKey="leadStatus"
-          onChange={(next) => {
-            setFilterState(next);
-            if (activeViewId !== DEFAULT_VIEW_ID) setActiveViewId(DEFAULT_VIEW_ID);
-          }}
-        />
-        <FilterBar
-          fields={fields}
-          state={filterState}
-          onChange={(next) => {
-            setFilterState(next);
-            // Manually editing filters detaches from the active view —
-            // matches the pipeline UX where the user "drifts" off a view.
-            if (activeViewId !== DEFAULT_VIEW_ID) setActiveViewId(DEFAULT_VIEW_ID);
-          }}
-        />
-      </div>
 
       {/* "N new leads — click to load" pill. Fixed to the viewport top,
           centred horizontally, so it floats over ANY content on the page
@@ -494,24 +580,60 @@ export function LeadsBoard({
         </div>
       )}
 
-      <PipelineListView
-        leads={filtered}
-        catalog={catalog}
-        canWrite={canWrite}
-        canDelete={canDelete}
-        viewColumns={viewColumnsToPush}
-        onColumnsChange={setLiveColumns}
-        onLocalEdit={(leadId, patch) => {
-          setLocalLeads((prev) =>
-            prev.map((l) => (l.id === leadId ? { ...l, ...patch } : l)),
-          );
-        }}
-        onLocalDelete={(leadIds) => {
-          const dropSet = new Set(leadIds);
-          setLocalLeads((prev) => prev.filter((l) => !dropSet.has(l.id)));
-          router.refresh();
-        }}
-      />
+      {dragError && (
+        <div className="mb-3 rounded-md border border-state-warn/30 bg-state-warn/10 px-3 py-2 text-[12.5px] text-state-warn">
+          {dragError}
+        </div>
+      )}
+
+      {/* Toolbar. In list mode it's injected into PipelineListView's own
+          Export/Columns row so everything lands on one line; the other two
+          modes have no such row, so it's rendered standalone. */}
+      {view === "list" ? (
+        <PipelineListView
+          leads={filtered}
+          catalog={catalog}
+          canWrite={canWrite}
+          canDelete={canDelete}
+          viewColumns={viewColumnsToPush}
+          onColumnsChange={setLiveColumns}
+          groupBy={listGroupBy}
+          toolbarSlot={toolbar}
+          hasActiveFilter={filterState.rules.length > 0}
+          onClearFilter={() => changeFilter({ combinator: "and", rules: [] })}
+          onLocalEdit={(leadId, patch) => {
+            setLocalLeads((prev) =>
+              prev.map((l) => (l.id === leadId ? { ...l, ...patch } : l)),
+            );
+          }}
+          onLocalDelete={(leadIds) => {
+            const dropSet = new Set(leadIds);
+            setLocalLeads((prev) => prev.filter((l) => !dropSet.has(l.id)));
+            router.refresh();
+          }}
+        />
+      ) : (
+        <>
+          <div className="mb-4">{toolbar}</div>
+          {view === "kanban" && (
+            <KanbanView
+              columns={columns}
+              leadsByColumn={leadsByColumn}
+              filterActive={filterState.rules.length > 0}
+              groupBy={axis}
+              onDrop={onRatingDrop}
+              canCreateLeads={canWrite}
+            />
+          )}
+          {view === "chart" && (
+            <ChartView
+              columns={columns}
+              leadsByColumn={leadsByColumn}
+              groupByLabel={GROUP_BY_OPTIONS.find((o) => o.value === axis)?.label ?? ""}
+            />
+          )}
+        </>
+      )}
     </>
   );
 }
@@ -527,7 +649,7 @@ export function LeadsBoard({
 // /records/LEAD-xxxx. Dropdown closes on outside click or Escape. The
 // underlying grid is untouched — this is a shortcut to the record page,
 // not a grid filter (the FilterBar handles that use case).
-function LeadsSearchBox({ leads }: { leads: Lead[] }) {
+export function LeadsSearchBox({ leads }: { leads: Lead[] }) {
   const [query, setQuery] = useState("");
   const [open, setOpen] = useState(false);
   const [activeIdx, setActiveIdx] = useState(0);
@@ -597,7 +719,7 @@ function LeadsSearchBox({ leads }: { leads: Lead[] }) {
 
   return (
     <div ref={boxRef} className="relative">
-      <div className="flex items-center gap-2 rounded-[14px] border border-rule bg-paper px-3 py-2 focus-within:border-brand-violet focus-within:ring-2 focus-within:ring-brand-violet/20">
+      <div className="flex items-center gap-2 rounded-full border border-rule bg-paper px-4 py-2 focus-within:border-brand-violet focus-within:ring-2 focus-within:ring-brand-violet/20">
         <Icon name="search" size={15} strokeWidth={2} className="text-mute" />
         <input
           ref={inputRef}
@@ -665,6 +787,78 @@ function LeadsSearchBox({ leads }: { leads: Lead[] }) {
           <div className="mono-cap border-t border-rule px-3 py-1.5 text-[9.5px] tracking-[.1em] text-hint">
             {matches.length === 0 ? "0 matches" : `${matches.length} of ${leads.length} · ↑↓ navigate · enter opens`}
           </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── LeadsGroupByPill ─────────────────────────────────────────────────
+//
+// The grouping axis. Deliberately not PipelineBoard's <GroupBySelector>:
+// that one is a bare <select> with no "off" state, because Kanban and Chart
+// always need an axis. A list doesn't — flat is the sane default — so this
+// one carries a "None" option and matches the visual weight of the filter
+// pills sitting beside it.
+function LeadsGroupByPill({
+  value, onChange,
+}: {
+  value: GroupBy | "none";
+  onChange: (v: GroupBy | "none") => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    function onClick(e: MouseEvent) {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    }
+    window.addEventListener("mousedown", onClick);
+    return () => window.removeEventListener("mousedown", onClick);
+  }, [open]);
+
+  const active = value !== "none";
+  const label = active
+    ? (GROUP_BY_OPTIONS.find((o) => o.value === value)?.label ?? value)
+    : "None";
+
+  const options: Array<{ value: GroupBy | "none"; label: string }> = [
+    { value: "none", label: "None" },
+    ...GROUP_BY_OPTIONS,
+  ];
+
+  return (
+    <div ref={ref} className="relative">
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        className={cn(
+          "inline-flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-[12.5px] font-semibold transition",
+          active
+            ? "border-brand-violet bg-brand-violet/10 text-brand-violet"
+            : "border-rule bg-paper text-ink2 hover:border-rule2 hover:text-ink",
+        )}
+      >
+        <span className="mono-cap text-[9.5px] tracking-[.08em] text-mute">Group by</span>
+        <span>{label}</span>
+        <span className="text-[9px] text-mute">▾</span>
+      </button>
+      {open && (
+        <div className="absolute left-0 top-full z-30 mt-1 min-w-[160px] overflow-hidden rounded-lg border border-rule bg-paper py-1 shadow-card">
+          {options.map((o) => (
+            <button
+              type="button"
+              key={o.value}
+              onClick={() => { onChange(o.value); setOpen(false); }}
+              className={cn(
+                "block w-full px-3 py-1.5 text-left text-[12.5px] hover:bg-warm",
+                value === o.value && "bg-warm font-semibold",
+              )}
+            >
+              {o.label}
+            </button>
+          ))}
         </div>
       )}
     </div>

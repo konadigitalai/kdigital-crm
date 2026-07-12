@@ -16,7 +16,10 @@ import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 import { cn } from "@/lib/cn";
 import { bulkDeleteLeads, bulkUpdateLeads, deleteLead, updateLead, type BulkLeadPatch } from "@/lib/api";
 import { emitCrmMutation } from "@/lib/live-summary";
-import { avatarGradClass, ratingStyles } from "@/lib/ui";
+import {
+  avatarGradClass, fmtFollowup, gradFor, initialsOf, LEAD_STATUS_FALLBACK_STYLE,
+  leadStatusStyles, prettyPhone, ratingStyles, scoreBand, shortName,
+} from "@/lib/ui";
 import type { CatalogResponse, Lead, LeadRating } from "@/lib/types";
 import { LEAD_RATINGS } from "@/lib/types";
 
@@ -76,7 +79,7 @@ const COLUMNS: ColumnDef[] = [
   { key: "advisor",         label: "Advisor",          width: "160px", type: "select-advisor" },
   { key: "source",          label: "Source",           width: "150px", type: "select-source" },
   { key: "value",           label: "Price quoted (₹)", width: "130px", type: "money" },
-  { key: "score",           label: "Score",            width: "90px",  type: "readonly-score" },
+  { key: "score",           label: "Score",            width: "130px", type: "readonly-score" },
   { key: "deliveryMode",    label: "Mode",             width: "120px", type: "select-delivery" },
   { key: "timeZone",        label: "Time zone",        width: "150px", type: "select-tz" },
   { key: "nextFollowupAt",  label: "Next follow-up",   width: "150px", type: "date" },
@@ -94,7 +97,7 @@ const COLUMN_BY_KEY = new Map(COLUMNS.map((c) => [c.key, c]));
 
 const DEFAULT_VISIBLE: ColumnKey[] = [
   "name", "rating", "leadStatus", "phone", "program", "advisor",
-  "value", "nextFollowupAt", "score",
+  "score", "nextFollowupAt", "value",
 ];
 
 // Canonical Lead Status values. Mirror `api/src/routes/catalog.ts`
@@ -555,6 +558,10 @@ export function PipelineListView({
   onLocalDelete,
   viewColumns,
   onColumnsChange,
+  toolbarSlot,
+  groupBy = null,
+  hasActiveFilter = false,
+  onClearFilter,
 }: {
   leads: Lead[];
   catalog: CatalogResponse;
@@ -575,6 +582,27 @@ export function PipelineListView({
    *  state" can capture them. Optional — pages without saved views can
    *  ignore it. */
   onColumnsChange?: (cols: string[]) => void;
+  /** Fills the left half of the toolbar row that Export / Columns sit on.
+   *  /leads uses it for the view switcher + filter pills so everything lands
+   *  on one line; /pipeline passes nothing and keeps the row-count hint. */
+  toolbarSlot?: React.ReactNode;
+  /** Optional row grouping. When set, rows are bucketed under section headers
+   *  instead of rendered as one flat list — this is what the "Group by" pill
+   *  drives on /leads. Passed as plain functions rather than a GroupBy union
+   *  so this file stays free of a PipelineBoard import cycle. Sorting still
+   *  applies, but within each section. */
+  groupBy?: {
+    get: (l: Lead) => string;
+    label: (key: string) => string;
+    /** Canonical bucket order. Keys not listed sort last, alphabetically. */
+    order: string[];
+  } | null;
+  /** Whether a filter is narrowing `leads` right now. Drives the "Clear
+   *  filters" affordance on the empty state — we only offer it when there's
+   *  actually something to clear, so a genuinely empty pipeline doesn't get a
+   *  button that does nothing. The filter state lives in the parent. */
+  hasActiveFilter?: boolean;
+  onClearFilter?: () => void;
 }) {
   const router = useRouter();
   const [visible, setVisible] = useState<ColumnKey[]>(DEFAULT_VISIBLE);
@@ -637,6 +665,28 @@ export function PipelineListView({
 
   // Sort a copy of the incoming leads — never mutate the parent's array.
   const sortedLeads = useMemo(() => [...leads].sort((a, b) => compareLeads(a, b, sort)), [leads, sort]);
+
+  // Sections for the grouped list. Without a groupBy this is a single
+  // unlabelled section holding everything, so the render path below stays
+  // the same shape whether or not grouping is on. Empty buckets are dropped —
+  // a list with a "Lukewarm (0)" header in it is just noise.
+  const sections = useMemo(() => {
+    if (!groupBy) return [{ key: "", label: "", leads: sortedLeads }];
+    const buckets = new Map<string, Lead[]>();
+    for (const l of sortedLeads) {
+      const k = groupBy.get(l);
+      const arr = buckets.get(k);
+      if (arr) arr.push(l);
+      else buckets.set(k, [l]);
+    }
+    const rank = (k: string) => {
+      const i = groupBy.order.indexOf(k);
+      return i === -1 ? groupBy.order.length : i;
+    };
+    return [...buckets.entries()]
+      .sort(([a], [b]) => rank(a) - rank(b) || a.localeCompare(b))
+      .map(([key, ls]) => ({ key, label: groupBy.label(key), leads: ls }));
+  }, [sortedLeads, groupBy]);
 
   // Close picker on outside click.
   useEffect(() => {
@@ -926,13 +976,11 @@ export function PipelineListView({
     }
   }
 
-  if (leads.length === 0) {
-    return (
-      <div className="rounded-2xl border border-rule bg-paper p-12 text-center text-[13px] text-mute">
-        No leads match the current filter.
-      </div>
-    );
-  }
+  // NB: no early return for the empty case. The toolbar row below carries the
+  // filter controls, so bailing out here would hide the very filters you'd
+  // need to undo a search that matched nothing — a dead end with no way back.
+  // The empty state replaces the *table* only; the toolbar always renders.
+  const isEmpty = leads.length === 0;
 
   const confirmDialog = pendingDelete ? (
     <ConfirmDialog
@@ -971,16 +1019,18 @@ export function PipelineListView({
   return (
     <div className="space-y-3">
       {confirmDialog}
-      <div className="flex items-center justify-between">
-        <div className="text-[12.5px] text-mute">
-          {leads.length} lead{leads.length === 1 ? "" : "s"} ·{" "}
-          {canWrite ? (
-            <span className="text-ink2">click any cell to edit</span>
-          ) : (
-            <span className="text-mute">read-only</span>
-          )}
-        </div>
-        <div className="flex items-center gap-2">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        {toolbarSlot ?? (
+          <div className="text-[12.5px] text-mute">
+            {leads.length} lead{leads.length === 1 ? "" : "s"} ·{" "}
+            {canWrite ? (
+              <span className="text-ink2">click any cell to edit</span>
+            ) : (
+              <span className="text-mute">read-only</span>
+            )}
+          </div>
+        )}
+        <div className="flex flex-shrink-0 items-center gap-2">
           {/* Export leads — CSV. Menu offers two shapes: just what's visible
               (matches what the user sees), or every field the grid supports.
               If any rows are selected, both options export just those. */}
@@ -1092,6 +1142,21 @@ export function PipelineListView({
         </div>
       )}
 
+      {isEmpty ? (
+        <div className="rounded-2xl border border-rule bg-paper p-12 text-center">
+          <div className="text-[13px] text-mute">No leads match the current filter.</div>
+          {hasActiveFilter && onClearFilter && (
+            <button
+              type="button"
+              onClick={onClearFilter}
+              className="mt-3 inline-flex items-center gap-1.5 rounded-full border border-rule bg-paper px-3 py-1.5 text-[12.5px] font-semibold text-ink2 transition hover:border-brand-violet hover:text-brand-violet"
+            >
+              <Icon name="plus" size={12} strokeWidth={2.4} className="rotate-45" />
+              Clear filters
+            </button>
+          )}
+        </div>
+      ) : (
       <div className="overflow-x-auto rounded-2xl border border-rule bg-paper">
         <div style={{ minWidth: "fit-content" }}>
           {/* Header */}
@@ -1134,12 +1199,29 @@ export function PipelineListView({
             })}
           </div>
 
-          {/* Rows */}
-          {sortedLeads.map((l) => (
+          {/* Rows. One pass per section — with no groupBy there's exactly one
+              unlabelled section, so this collapses to a flat list. */}
+          {sections.map((section) => (
+            // Only the very last row in the whole table drops its bottom rule
+            // (it would otherwise draw a line just inside the card's rounded
+            // edge). Rows at the end of a *section* keep theirs, so they stay
+            // separated from the next section's header.
+            <div key={section.key || "__all__"} className="last:[&>*:last-child]:border-b-0">
+              {groupBy && (
+                <div className="flex items-center gap-2 border-b border-rule bg-warm/40 px-4 py-2">
+                  <span className="mono-cap text-[9.5px] font-semibold tracking-[.12em] text-ink2">
+                    {section.label}
+                  </span>
+                  <span className="rounded-full bg-warm2 px-1.5 py-0.5 font-mono text-[9.5px] font-semibold text-mute">
+                    {section.leads.length}
+                  </span>
+                </div>
+              )}
+              {section.leads.map((l) => (
             <div
               key={l.id}
               className={cn(
-                "grid items-center border-b border-rule px-4 transition last:border-b-0",
+                "grid items-center border-b border-rule px-4 transition",
                 selected.has(l.id) ? "bg-brand-violet/[.04]" : "hover:bg-warm/30",
               )}
               style={{ gridTemplateColumns: gridTemplate }}
@@ -1167,7 +1249,7 @@ export function PipelineListView({
                       if (cellEditable) startEdit(l, c);
                     }}
                     className={cn(
-                      "relative py-2 pr-3 text-[12.5px] text-ink2",
+                      "relative py-2.5 pr-3 text-[12.5px] text-ink2",
                       cellEditable && !isThisCellEditing && "cursor-pointer rounded-md hover:bg-warm",
                     )}
                   >
@@ -1199,9 +1281,12 @@ export function PipelineListView({
                   record page. Removing these dedupes the row's action column
                   and matches the request to keep the list tidy. */}
             </div>
+              ))}
+            </div>
           ))}
         </div>
       </div>
+      )}
 
       {bulkDialogOpen && (
         <BulkUpdateDialog
@@ -1265,13 +1350,18 @@ function CellIdle({
       <Link
         href={`/records/${lead.number}`}
         onClick={(e) => { onNavigate?.(); e.stopPropagation(); }}
-        className="flex min-w-0 items-center gap-2.5 hover:text-brand-violet"
+        className="group/name flex min-w-0 items-center gap-2.5"
       >
-        <div className={cn("flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-full text-[10.5px] font-bold text-white", avatarGradClass[lead.avatar])}>
+        <div className={cn("flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full text-[10.5px] font-bold text-white", avatarGradClass[lead.avatar])}>
           {lead.initials}
         </div>
         <div className="min-w-0">
-          <div className="truncate text-[13px] font-semibold tracking-[-.005em] text-ink group-hover:text-brand-violet">{lead.name}</div>
+          <div className="truncate text-[13px] font-semibold tracking-[-.005em] text-ink group-hover/name:text-brand-violet">
+            {lead.name}
+          </div>
+          {/* The lead number rides under the name instead of eating a column
+              of its own — it's an identifier you copy, not one you scan. */}
+          <div className="mono-cap truncate text-[9px] tracking-[.08em] text-hint">{lead.number}</div>
         </div>
       </Link>
     );
@@ -1288,9 +1378,15 @@ function CellIdle({
     );
   }
   if (column.type === "readonly-score") {
+    // The band label does the triage work — "78" alone doesn't tell an
+    // advisor whether to call now or let it sit.
+    const band = scoreBand(lead.score);
     return (
-      <div className="flex justify-center">
-        <ScoreRing score={lead.score} heat={lead.heat} size={28} inner={22} fontSize={9.5} />
+      <div className="flex items-center gap-2">
+        <ScoreRing score={lead.score} heat={band.heat} size={30} inner={23} fontSize={9.5} />
+        <span className={cn("mono-cap text-[9px] font-semibold tracking-[.1em]", band.text)}>
+          {band.label}
+        </span>
       </div>
     );
   }
@@ -1316,8 +1412,15 @@ function CellIdle({
     const key = lead.leadStatus ?? "";
     if (!key) return <span className="text-mute">—</span>;
     const label = LEAD_STATUS_LABEL[key] ?? key;
+    const sc = leadStatusStyles[key] ?? LEAD_STATUS_FALLBACK_STYLE;
+    const strike = "strike" in sc && sc.strike;
     return (
-      <span className="inline-flex items-center gap-1.5 rounded-full bg-warm2 px-2.5 py-0.5 text-[11px] font-semibold text-ink2">
+      <span
+        className={cn(
+          "inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-semibold",
+          sc.bg, sc.text, strike && "line-through decoration-hint",
+        )}
+      >
         {label}
       </span>
     );
@@ -1325,16 +1428,16 @@ function CellIdle({
 
   switch (column.key) {
     case "email":          return <span className="truncate" title={lead.email ?? undefined}>{lead.email || "—"}</span>;
-    case "phone":          return <span className="truncate" title={lead.phone ?? undefined}>{joinCountryAndPhone(lead.phoneCountryCode, lead.phone) || "—"}</span>;
+    case "phone":          return <span className="truncate font-mono text-[12px]" title={lead.phone ?? undefined}>{prettyPhone(lead.phoneCountryCode, lead.phone) || "—"}</span>;
     case "phoneCountryCode": return <span className="font-mono text-[12px]">{lead.phoneCountryCode || "—"}</span>;
     case "city":           return <span className="truncate">{lead.city || "—"}</span>;
     case "program":        return <span className="truncate" title={lead.program ?? undefined}>{lead.program || "—"}</span>;
-    case "advisor":        return <span className="truncate" title={lead.advisorName ?? undefined}>{lead.advisorName || "—"}</span>;
+    case "advisor":        return <AdvisorChip name={lead.advisorName} />;
     case "source":         return <span className="truncate">{lead.sourceLabel || lead.source || "—"}</span>;
     case "value":          return <span className="font-mono text-[12px]">{fmtINRFull(lead.value)}</span>;
     case "deliveryMode":   return <span>{lead.deliveryMode || "—"}</span>;
     case "timeZone":       return <span>{TZ_OPTIONS.find((o) => o.value === lead.timeZone)?.label ?? lead.timeZone ?? "—"}</span>;
-    case "nextFollowupAt": return <span className="font-mono text-[11px]">{fmtDate(lead.nextFollowupAt)}</span>;
+    case "nextFollowupAt": return <FollowupCell iso={lead.nextFollowupAt} />;
     case "demoAttendedAt": return <span className="font-mono text-[11px]">{fmtDate(lead.demoAttendedAt)}</span>;
     case "visitedDate":    return <span className="font-mono text-[11px]">{fmtDate(lead.visitedDate)}</span>;
     case "visitingDate":   return <span className="font-mono text-[11px]">{fmtDate(lead.visitingDate)}</span>;
@@ -1345,6 +1448,43 @@ function CellIdle({
     case "description":    return <span className="line-clamp-2" title={lead.description ?? undefined}>{lead.description || "—"}</span>;
     default:               return <span>—</span>;
   }
+}
+
+// Advisor as a face, not a string. Leads are scanned by "whose desk is this
+// on", and a colour+initials chip answers that faster than reading a name.
+// The gradient is derived from the name, so an advisor keeps the same colour
+// everywhere in the app without us storing one.
+function AdvisorChip({ name }: { name: string | null | undefined }) {
+  if (!name) return <span className="text-mute">—</span>;
+  return (
+    <div className="flex min-w-0 items-center gap-2" title={name}>
+      <div
+        className={cn(
+          "flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-full text-[9px] font-bold text-white",
+          avatarGradClass[gradFor(name)],
+        )}
+      >
+        {initialsOf(name)}
+      </div>
+      <span className="truncate text-[12.5px] text-ink2">{shortName(name)}</span>
+    </div>
+  );
+}
+
+// Follow-up dates are the one column an advisor acts on directly, so today's
+// and overdue ones are coloured red rather than left as neutral mono text.
+function FollowupCell({ iso }: { iso: string | null | undefined }) {
+  const { label, urgent, muted } = fmtFollowup(iso);
+  return (
+    <span
+      className={cn(
+        "truncate text-[12.5px]",
+        urgent ? "font-semibold text-state-warn" : muted ? "text-hint" : "text-ink2",
+      )}
+    >
+      {label}
+    </span>
+  );
 }
 
 // Editor popover. Anchors to the cell (its parent has `relative`) but sits

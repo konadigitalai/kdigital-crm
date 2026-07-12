@@ -9,7 +9,7 @@ import { NewLeadButton } from "@/components/leads/NewLeadDialog";
 import { FilterBar } from "@/components/filter/FilterBar";
 import { useFilter } from "@/components/filter/useFilter";
 import type { FilterField } from "@/components/filter/types";
-import { avatarGradClass, ratingStyles } from "@/lib/ui";
+import { avatarGradClass, ratingStyles, scoreBand } from "@/lib/ui";
 import { cn } from "@/lib/cn";
 import { updateLead } from "@/lib/api";
 import type { CatalogResponse, CurrentUser, Lead, LeadRating, PipelineColumn, SavedView } from "@/lib/types";
@@ -29,9 +29,9 @@ const DRAG_MIME = "application/x-decrm-lead";
 // The "Group by" axis selector is applied to Kanban + Chart only. Rating is
 // the default and the only axis where drag-drop is allowed (since dragging
 // across columns writes lead.rating). Other axes are read-only buckets.
-type GroupBy = "rating" | "status" | "program" | "advisor" | "source";
+export type GroupBy = "rating" | "status" | "program" | "advisor" | "source";
 
-const GROUP_BY_OPTIONS: { value: GroupBy; label: string }[] = [
+export const GROUP_BY_OPTIONS: { value: GroupBy; label: string }[] = [
   { value: "rating",  label: "Rating" },
   { value: "status",  label: "Status" },
   { value: "program", label: "Program" },
@@ -43,7 +43,7 @@ const LEAD_STATUS_LABEL: Record<string, string> = Object.fromEntries(
   LEAD_STATUS_OPTIONS.map((o) => [o.value, o.label]),
 );
 
-function groupKey(l: Lead, by: GroupBy): string {
+export function groupKey(l: Lead, by: GroupBy): string {
   if (by === "rating")  return l.rating;
   if (by === "status")  return l.leadStatus || "—";
   if (by === "program") return l.program || "—";
@@ -54,6 +54,11 @@ function groupKey(l: Lead, by: GroupBy): string {
 
 function groupLabel(by: GroupBy, key: string): string {
   if (by === "status") return key === "—" ? "No status" : (LEAD_STATUS_LABEL[key] ?? key);
+  // Rating keys are raw enum values ("superhot", "new lead"). /pipeline never
+  // hit this — it takes the server's pre-labelled columns — but /leads
+  // synthesises its rating columns, so without this the Kanban headers and
+  // list sections read "superhot" instead of "Super hot".
+  if (by === "rating") return ratingStyles[key as LeadRating]?.label ?? key;
   return key;
 }
 
@@ -149,7 +154,7 @@ function fmtINR(n: number): string {
 // is "rating" we re-use the server-computed PipelineColumn[] (ordered + with
 // AI notes). When grouping by anything else we synthesise columns on the fly
 // from the filtered leads.
-interface SynthColumn {
+export interface SynthColumn {
   key: string;
   label: string;
   count: number;
@@ -162,13 +167,16 @@ interface SynthColumn {
   droppable: boolean;
 }
 
-function makeColumns(
+export function makeColumns(
   groupBy: GroupBy,
   ratingColumns: PipelineColumn[],
   filtered: Lead[],
   filteredAll: Lead[],
 ): SynthColumn[] {
-  if (groupBy === "rating") {
+  // /pipeline hands us server-computed rating columns (ordered, with AI
+  // notes). /leads has no such fetch, so it passes [] and we synthesise the
+  // rating buckets from the leads themselves below — same shape, no AI note.
+  if (groupBy === "rating" && ratingColumns.length > 0) {
     return ratingColumns.map((c) => ({
       key: c.key,
       label: c.label,
@@ -181,18 +189,20 @@ function makeColumns(
     }));
   }
 
-  // Build the bucket list. For "status" we show the full canonical set so
-  // every status is a visible column (mirroring how Rating shows all rating
-  // buckets even when empty). For other axes we synth from the data so we
-  // don't invent buckets that don't exist yet.
-  const canonical =
-    groupBy === "status" ? LEAD_STATUS_OPTIONS.map((o) => o.value) : [];
+  // Build the bucket list. For "rating" and "status" we show the full
+  // canonical set so every bucket is a visible column even when empty. For
+  // other axes we synth from the data so we don't invent buckets that don't
+  // exist yet.
+  const canonical: string[] =
+    groupBy === "status" ? LEAD_STATUS_OPTIONS.map((o) => o.value)
+    : groupBy === "rating" ? [...LEAD_RATINGS]
+    : [];
   const seenKeys = unique(
     [...canonical, ...filteredAll.map((l) => groupKey(l, groupBy))],
   );
-  const sorted = groupBy === "status"
+  const sorted = canonical.length > 0
     ? seenKeys.sort((a, b) => {
-        // Preserve LEAD_STATUS_OPTIONS order; unknown / "—" go last.
+        // Preserve canonical order; unknown / "—" go last.
         const ia = canonical.indexOf(a);
         const ib = canonical.indexOf(b);
         if (ia === -1 && ib === -1) return a.localeCompare(b);
@@ -205,7 +215,10 @@ function makeColumns(
     const inAll = filteredAll.filter((l) => groupKey(l, groupBy) === k);
     const inFiltered = filtered.filter((l) => groupKey(l, groupBy) === k);
     const sumNum = inFiltered.reduce((s, l) => s + parseINR(l.value), 0);
-    const palette = paletteFor(k);
+    const isRating = groupBy === "rating" && k in colDot;
+    const palette = isRating
+      ? { dot: colDot[k as LeadRating], hex: colHex[k as LeadRating] }
+      : paletteFor(k);
     return {
       key: k,
       label: groupLabel(groupBy, k),
@@ -214,14 +227,14 @@ function makeColumns(
       aiNote: null,
       dotClass: palette.dot,
       hex: palette.hex,
-      droppable: false,
+      droppable: groupBy === "rating",
     };
   });
 }
 
 // ─── top-level component ──────────────────────────────────────────────────
 
-type ViewMode = "list" | "kanban" | "chart";
+export type ViewMode = "list" | "kanban" | "chart";
 
 export function PipelineBoard({
   columns,
@@ -453,7 +466,7 @@ export function PipelineBoard({
 
 // ─── ViewSwitcher (segmented control) ─────────────────────────────────────
 
-function ViewSwitcher({ value, onChange }: { value: ViewMode; onChange: (v: ViewMode) => void }) {
+export function ViewSwitcher({ value, onChange }: { value: ViewMode; onChange: (v: ViewMode) => void }) {
   const items: { key: ViewMode; label: string; icon: IconName }[] = [
     { key: "list",   label: "List",   icon: "bars" },
     { key: "kanban", label: "Kanban", icon: "agents-grid" },
@@ -501,7 +514,7 @@ function GroupBySelector({ value, onChange }: { value: GroupBy; onChange: (v: Gr
 
 // ─── Kanban ───────────────────────────────────────────────────────────────
 
-function KanbanView({
+export function KanbanView({
   columns,
   leadsByColumn,
   filterActive,
@@ -647,7 +660,10 @@ function KanbanView({
                         <div className="truncate text-[13.5px] font-semibold tracking-[-.005em]">{l.name}</div>
                         <div className="mt-px font-mono text-[9px] tracking-[.04em] text-mute">{l.number} · {l.city}</div>
                       </div>
-                      <ScoreRing score={l.score} heat={l.heat} size={30} inner={23} fontSize={10} />
+                      {/* Ring colour tracks the *score*, not lead.heat — heat is
+                          derived from the human rating, which is already the
+                          column this card sits in. */}
+                      <ScoreRing score={l.score} heat={scoreBand(l.score).heat} size={30} inner={23} fontSize={10} />
                     </div>
                     <div className="text-[12px] font-medium text-ink2">{l.program}</div>
                     <div className="mt-1 font-mono text-[10px] tracking-[.04em] text-mute">{l.value}</div>
@@ -702,7 +718,7 @@ function KanbanView({
 
 // ─── Chart (funnel + bar, SVG) ────────────────────────────────────────────
 
-function ChartView({
+export function ChartView({
   columns,
   leadsByColumn,
   groupByLabel,
