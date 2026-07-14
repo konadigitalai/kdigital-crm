@@ -8,10 +8,12 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { Icon } from "@/components/ui/Icon";
 import { cn } from "@/lib/cn";
-import { getTwConversations } from "@/lib/api";
-import type { TwChannel, TwConversationListItem } from "@/lib/types";
+import { getGmailStatus, getTwConversations } from "@/lib/api";
+import type { GmailStatus, TwChannel, TwConversationListItem } from "@/lib/types";
 import { ThreadList } from "./ThreadList";
 import { ThreadView } from "./ThreadView";
+import { ComposeEmailDialog } from "./ComposeEmailDialog";
+import { ConnectGmailPrompt } from "@/components/record/ConnectGmailPrompt";
 
 const LIST_POLL_MS = 30_000;
 
@@ -19,8 +21,17 @@ const LIST_POLL_MS = 30_000;
 // restores what the user was looking at. Same-origin `whatsapp` is the
 // default and is omitted from the URL to keep it clean.
 function channelFromParam(v: string | null): TwChannel {
-  return v === "voice" ? "voice" : "whatsapp";
+  if (v === "voice") return "voice";
+  if (v === "email") return "email";
+  return "whatsapp";
 }
+
+const SEARCH_PLACEHOLDER: Record<TwChannel, string> = {
+  whatsapp: "Search WhatsApp threads…",
+  voice:    "Search call threads…",
+  email:    "Search email threads…",
+  sms:      "Search SMS threads…",
+};
 
 export function InboxShell({
   initialConversations,
@@ -59,6 +70,24 @@ export function InboxShell({
     channelFromParam(searchParams.get("channel")),
   );
   const [q, setQ] = useState("");
+
+  // Gmail connection state — only needed for the Email tab, so we fetch it
+  // lazily the first time someone opens it. Without a connected mailbox the
+  // Email tab is permanently empty, so we surface a Connect prompt rather than
+  // leaving the user staring at a blank list with no explanation.
+  const [gmail, setGmail] = useState<GmailStatus | null>(null);
+  const loadGmail = useCallback(() => {
+    void getGmailStatus().then(setGmail).catch(() => {});
+  }, []);
+  useEffect(() => {
+    if (channel === "email" && !gmail) loadGmail();
+  }, [channel, gmail, loadGmail]);
+  const noMailbox = channel === "email" && gmail !== null && !gmail.connected && !gmail.shared;
+  // Which mailbox a send leaves from — mirrors the API's resolution order in
+  // routes/gmail.ts: the user's own connected account, else the shared one.
+  const senderEmail = gmail?.account?.email ?? gmail?.shared ?? null;
+  const canCompose = channel === "email" && canSend && !!senderEmail;
+  const [composeOpen, setComposeOpen] = useState(false);
 
   // Push the current channel + active thread into the URL. `whatsapp` is
   // the default channel so it's omitted from the URL; `t` is omitted when
@@ -111,10 +140,10 @@ export function InboxShell({
     <div className="grid h-[calc(100vh-140px)] grid-cols-[360px_1fr] gap-4">
       <div className="flex flex-col overflow-hidden rounded-2xl border border-rule bg-paper">
         <div className="border-b border-rule p-3">
-          {/* Two-tab channel switch — WhatsApp | Voice calls. A single row of
-              equal-width segments so it reads as a mode toggle, not a chip
+          {/* Three-tab channel switch — WhatsApp | Calls | Email. A single row
+              of equal-width segments so it reads as a mode toggle, not a chip
               filter you can accidentally deselect. */}
-          <div className="mb-2 grid grid-cols-2 gap-1 rounded-full border border-rule bg-warm/40 p-1">
+          <div className="mb-2 grid grid-cols-3 gap-1 rounded-full border border-rule bg-warm/40 p-1">
             <ChannelTab
               active={channel === "whatsapp"}
               onClick={() => setChannel("whatsapp")}
@@ -129,13 +158,33 @@ export function InboxShell({
               label="Calls"
               activeClass="bg-brand-violet text-white"
             />
+            <ChannelTab
+              active={channel === "email"}
+              onClick={() => setChannel("email")}
+              icon="mail"
+              label="Email"
+              activeClass="bg-brand-blue text-white"
+            />
           </div>
+          {/* Compose — the only way to email an address that has no thread and
+              no lead record yet. Email-only: SMS/WhatsApp/voice all require an
+              existing contact to send to. */}
+          {canCompose && (
+            <button
+              type="button"
+              onClick={() => setComposeOpen(true)}
+              className="mb-2 flex w-full items-center justify-center gap-1.5 rounded-[10px] bg-brand-blue px-3 py-2 text-[12.5px] font-semibold text-white transition hover:bg-brand-blue/90"
+            >
+              <Icon name="plus" size={12} strokeWidth={2.4} />
+              New email
+            </button>
+          )}
           <div className="flex items-center gap-2 rounded-[10px] border border-rule bg-warm/40 px-2.5 py-1.5">
             <Icon name="search" size={12} strokeWidth={2} className="text-mute" />
             <input
               value={q}
               onChange={(e) => setQ(e.target.value)}
-              placeholder={channel === "whatsapp" ? "Search WhatsApp threads…" : "Search call threads…"}
+              placeholder={SEARCH_PLACEHOLDER[channel]}
               className="min-w-0 flex-1 bg-transparent text-[12.5px] text-ink placeholder:text-hint outline-none"
             />
           </div>
@@ -148,7 +197,13 @@ export function InboxShell({
       </div>
 
       <div className="overflow-hidden rounded-2xl border border-rule bg-paper">
-        {activeThread ? (
+        {noMailbox ? (
+          <div className="flex h-full items-center justify-center p-10">
+            <div className="w-full max-w-[460px]">
+              <ConnectGmailPrompt status={gmail} onChanged={loadGmail} />
+            </div>
+          </div>
+        ) : activeThread ? (
           <ThreadView
             threadId={activeThread.id}
             summary={activeThread}
@@ -161,26 +216,61 @@ export function InboxShell({
         ) : (
           <div className="flex h-full items-center justify-center p-10 text-center text-[13px] text-mute">
             <div>
-              <Icon name="message-square" size={28} strokeWidth={1.5} className="mx-auto mb-3 text-hint" />
+              <Icon
+                name={channel === "email" ? "mail" : "message-square"}
+                size={28}
+                strokeWidth={1.5}
+                className="mx-auto mb-3 text-hint"
+              />
               <div className="font-serif text-[20px] text-ink">No thread selected</div>
-              <div className="mt-1 text-[12.5px]">Pick a conversation from the list, or wait for a new message to arrive.</div>
+              <div className="mt-1 text-[12.5px]">
+                Pick a conversation from the list, or wait for a new message to arrive.
+              </div>
+              {canCompose && (
+                <button
+                  type="button"
+                  onClick={() => setComposeOpen(true)}
+                  className="mt-4 inline-flex items-center gap-1.5 rounded-md bg-brand-blue px-3 py-1.5 text-[12.5px] font-semibold text-white transition hover:bg-brand-blue/90"
+                >
+                  <Icon name="plus" size={12} strokeWidth={2.4} />
+                  New email
+                </button>
+              )}
             </div>
           </div>
         )}
       </div>
+
+      {composeOpen && (
+        <ComposeEmailDialog
+          senderEmail={senderEmail}
+          onClose={() => setComposeOpen(false)}
+          onSent={async (conversationId) => {
+            setComposeOpen(false);
+            // The send created (or reused) a conversation. Clear the search box
+            // first — an active query would filter the new thread straight back
+            // out on the next poll — then refresh and open it, so the mail
+            // doesn't vanish into a thread the user has to go hunting for.
+            setQ("");
+            const rows = await getTwConversations({ channel: "email" }).catch(() => null);
+            if (rows) setThreads(rows);
+            setActiveId(conversationId);
+          }}
+        />
+      )}
     </div>
   );
 }
 
 /** Segmented tab in the channel switch. Active tab uses a full-colour fill
- *  (green for WhatsApp, violet for Calls) to match the thread-list styling.
- *  Inactive tabs stay transparent inside the rounded track. */
+ *  (green for WhatsApp, violet for Calls, blue for Email) to match the
+ *  thread-list styling. Inactive tabs stay transparent inside the track. */
 function ChannelTab({
   active, onClick, icon, label, activeClass,
 }: {
   active: boolean;
   onClick: () => void;
-  icon: "message-square" | "phone";
+  icon: "message-square" | "phone" | "mail";
   label: string;
   activeClass: string;
 }) {

@@ -104,6 +104,11 @@ const CAPS: Record<TwChannel, Partial<Record<MimeFamily, { bytes: number; label:
     // Voice channel doesn't accept runtime media — recordings are managed
     // by Exotel post-call. Empty caps map = validate rejects any attach.
   },
+  email: {
+    // Gmail's limit isn't per-file-type — it's a single 25 MB cap across the
+    // whole message, enforced server-side in routes/gmail.ts while building
+    // the MIME. Nothing routes email attachments through this table.
+  },
 };
 
 /** Icon glyph for each MIME family (Lucide-style Icon names our Icon component knows). */

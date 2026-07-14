@@ -246,6 +246,7 @@ twilioRouter.get("/conversations", requirePermission("messaging.read"), async (r
           p.id                AS "partyId",
           p.name              AS "partyName",
           p.phone             AS "partyPhone",
+          p.email             AS "partyEmail",
           wi.number           AS "leadNumber"
         FROM tw_conversation c
         JOIN party p ON p.id = c.party_id
@@ -261,7 +262,7 @@ twilioRouter.get("/conversations", requirePermission("messaging.read"), async (r
                   SELECT party_id FROM app_user WHERE id = ${req.userId!}
                )) OR
                c.assigned_user_id::text = ${assignee})
-          AND (${q} = '' OR p.name ILIKE ${"%" + q + "%"} OR p.phone ILIKE ${"%" + q + "%"} OR c.last_message_text ILIKE ${"%" + q + "%"})
+          AND (${q} = '' OR p.name ILIKE ${"%" + q + "%"} OR p.phone ILIKE ${"%" + q + "%"} OR p.email ILIKE ${"%" + q + "%"} OR c.last_message_text ILIKE ${"%" + q + "%"})
         ORDER BY c.last_message_at DESC NULLS LAST, c.updated_at DESC
         LIMIT ${limit}
       `);
@@ -321,6 +322,12 @@ twilioRouter.get("/conversations/:id", requirePermission("messaging.read"), asyn
           m.status, m.error_code AS "errorCode", m.error_message AS "errorMessage",
           m.sender_user_id AS "senderUserId",
           m.sent_at AS "sentAt", m.delivered_at AS "deliveredAt",
+          -- Email-only (channel='email'); NULL for every other channel.
+          m.subject,
+          m.body_html          AS "bodyHtml",
+          m.to_addrs           AS "toAddrs",
+          m.cc_addrs           AS "ccAddrs",
+          m.provider_thread_id AS "providerThreadId",
           COALESCE(
             (
               SELECT jsonb_agg(

@@ -213,7 +213,7 @@ intakeRouter.post("/", async (req, res) => {
       // opt_in for whatsapp + sms. Source records that this came from the
       // public web form for the audit trail. bootstrapConsent is idempotent,
       // so a form re-submit doesn't spam the consent history.
-      await bootstrapConsent(db, partyId, ["whatsapp", "sms"], `web_form:${source ?? "unknown"}`);
+      await bootstrapConsent(db, partyId, ["whatsapp", "sms", "email"], `web_form:${source ?? "unknown"}`);
 
       // Contact-point mirror — dual-write like POST /leads does.
       if (email) {

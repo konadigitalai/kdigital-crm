@@ -340,11 +340,11 @@ If you know ServiceNow or Salesforce, this table shows exactly which patterns we
 After a fresh install, the platform starts with:
 
 - 1 tenant (Digital Edify)
-- 23 records total: 1 system sentinel, 10 internal users (admin, advisors, service reps, super-user), 12 seeded leads
+- 23 records total: 1 system sentinel, 9 internal users (admin, advisors, service reps, super-user), 12 seeded leads, 1 duplicate-test party (so the scanner finds a candidate on first run)
 - 34 contact methods (email + phone per person, WhatsApp for inbox contacts)
 - 4 matching rules ready to run
 - 7 seeded consent rows (3 opt-in, 1 opt-out, rest unknown to demo the strict-block behaviour)
-- 60 timeline entries — every one traceable to a specific actor (advisor, admin, or the System agent)
+- Dozens of timeline entries across the seeded leads — every one traceable to a specific actor (advisor, admin, or the System agent)
 
 **And it stays that way:** every new lead, every AI agent action, every WhatsApp inbound message goes through the same path — one record for the person, one contact method per channel, one consent state, and every action attributed via audit trail.
 

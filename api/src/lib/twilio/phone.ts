@@ -9,7 +9,9 @@
 // out. That way `contact_point.value` always stores plain E.164 regardless
 // of channel, matching how the rest of the CRM stores phone numbers.
 
-export type TwChannel = "sms" | "whatsapp" | "voice";
+// 'voice' (Exotel) and 'email' (Gmail) aren't Twilio at all — they reuse the
+// tw_* tables and this union rather than duplicating the whole inbox stack.
+export type TwChannel = "sms" | "whatsapp" | "voice" | "email";
 
 /** Strip non-digit characters. Handy for comparing phones with mixed formats. */
 export function digitsOnly(s: string | null | undefined): string {

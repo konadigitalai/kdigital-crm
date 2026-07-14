@@ -14,6 +14,7 @@ import {
 } from "@/lib/api";
 import type { TwConversationDetail, TwConversationListItem, TwMessage } from "@/lib/types";
 import { ReplyBox } from "./ReplyBox";
+import { EmailComposer } from "./EmailComposer";
 import { MessageMediaGallery } from "@/components/media/MessageMediaGallery";
 import { linkify } from "./linkify";
 import { CHAT_BG_DATA_URL } from "./chatBg";
@@ -85,6 +86,26 @@ export function ThreadView({
   }
 
   const messages = detail?.messages ?? [];
+  // The newest email in the thread — the default reply target, since replying
+  // to it is what keeps our reply inside the same Gmail thread AND inside the
+  // recipient's mail-client thread.
+  const lastEmail = [...messages].reverse().find((m) => m.channel === "email") ?? null;
+
+  // Composer target. `composeNew` means "start a fresh thread with a new
+  // subject"; otherwise we reply to `replyToId`, defaulting to the newest mail.
+  // Held here rather than in the composer so the per-message Reply buttons in
+  // the transcript can drive it.
+  const [replyToId, setReplyToId] = useState<string | null>(null);
+  const [composeNew, setComposeNew] = useState(false);
+  const replyTarget = composeNew
+    ? null
+    : (messages.find((m) => m.id === replyToId && m.channel === "email") ?? lastEmail);
+
+  // A thread the user switched away from shouldn't keep a stale reply target.
+  useEffect(() => {
+    setReplyToId(null);
+    setComposeNew(false);
+  }, [threadId]);
 
   return (
     <div className="flex h-full flex-col">
@@ -106,6 +127,7 @@ export function ThreadView({
             <span className="mono-cap rounded-full bg-warm2 px-2 py-0.5 text-[9px] font-semibold tracking-[.08em] text-mute">
               {summary.channel === "whatsapp" ? "WhatsApp"
                 : summary.channel === "voice"    ? "Voice"
+                : summary.channel === "email"    ? "Email"
                 : "SMS"}
             </span>
             {summary.leadNumber && (
@@ -117,7 +139,11 @@ export function ThreadView({
               </Link>
             )}
           </div>
-          <div className="mt-0.5 text-[12px] text-mute">{summary.partyPhone ?? "—"}</div>
+          <div className="mt-0.5 text-[12px] text-mute">
+            {summary.channel === "email"
+              ? summary.partyEmail ?? "—"
+              : summary.partyPhone ?? "—"}
+          </div>
         </div>
         {summary.isUnlinked && canPromote && (
           <button
@@ -151,10 +177,14 @@ export function ThreadView({
         {messages.length === 0 && !loadError && (
           <div className="text-center text-[12.5px] text-mute">Loading…</div>
         )}
-        <MessageList messages={messages} />
+        <MessageList
+          messages={messages}
+          replyingToId={replyTarget?.id ?? null}
+          onReplyTo={canSend ? (id) => { setComposeNew(false); setReplyToId(id); } : undefined}
+        />
       </div>
 
-      {/* Reply — text on SMS/WA, Call button on voice. */}
+      {/* Reply — text on SMS/WA, Call button on voice, composer on email. */}
       <div className="border-t border-rule bg-[#f0ece5] p-2.5">
         {!canSend ? (
           <div className="rounded-md border border-dashed border-rule px-3 py-2 text-center text-[12px] text-mute">
@@ -167,6 +197,22 @@ export function ThreadView({
               <CallButton leadNumber={summary.leadNumber} leadPhone={summary.partyPhone} />
             )}
           </div>
+        ) : summary.channel === "email" ? (
+          // `to` prefers the party's address over the lead number — an unlinked
+          // thread has no lead number at all.
+          <EmailComposer
+            to={summary.partyEmail ?? summary.leadNumber ?? ""}
+            replyTo={replyTarget ? { id: replyTarget.id, subject: replyTarget.subject ?? null } : null}
+            hasThread={!!lastEmail}
+            onStartNew={() => { setComposeNew(true); setReplyToId(null); }}
+            onReplyToLatest={() => { setComposeNew(false); setReplyToId(null); }}
+            onSent={() => {
+              setComposeNew(false);
+              setReplyToId(null);
+              void fetchDetail();
+              onRefreshList();
+            }}
+          />
         ) : (
           <ReplyBox
             conversationId={threadId}
@@ -210,7 +256,15 @@ export function ThreadView({
 
 // ─── Message list with date separators + consecutive-bubble grouping ─────
 
-function MessageList({ messages }: { messages: TwMessage[] }) {
+function MessageList({
+  messages, replyingToId, onReplyTo,
+}: {
+  messages: TwMessage[];
+  /** Highlights whichever message the composer is currently aimed at. */
+  replyingToId?: string | null;
+  /** Undefined when the user can't send — the Reply buttons then don't render. */
+  onReplyTo?: (messageId: string) => void;
+}) {
   // Group by day (Today / Yesterday / dd MMM) with a subtle pill separator
   // between groups, matching WhatsApp's chat rhythm.
   const groups = groupByDay(messages);
@@ -225,7 +279,15 @@ function MessageList({ messages }: { messages: TwMessage[] }) {
               prev && prev.direction === m.direction &&
               // If < 1 minute since previous, treat as same "burst" — no tail.
               (new Date(m.sentAt).getTime() - new Date(prev.sentAt).getTime()) < 60_000;
-            return <MessageBubble key={m.id} msg={m} attachTail={!nextSameSender} />;
+            return (
+              <MessageBubble
+                key={m.id}
+                msg={m}
+                attachTail={!nextSameSender}
+                isReplyTarget={m.id === replyingToId}
+                onReplyTo={onReplyTo}
+              />
+            );
           })}
         </div>
       ))}
@@ -274,26 +336,47 @@ function DateSeparator({ label }: { label: string }) {
   );
 }
 
-function MessageBubble({ msg, attachTail }: { msg: TwMessage; attachTail: boolean }) {
+function MessageBubble({
+  msg, attachTail, isReplyTarget = false, onReplyTo,
+}: {
+  msg: TwMessage;
+  attachTail: boolean;
+  isReplyTarget?: boolean;
+  onReplyTo?: (messageId: string) => void;
+}) {
   const outbound = msg.direction === "outbound";
   const failed   = msg.status === "failed";
   const hasMedia = !!msg.media && msg.media.length > 0;
+  const isEmail  = msg.channel === "email";
   return (
-    <div className={cn("flex", outbound ? "justify-end" : "justify-start")}>
+    <div className={cn("group/bubble flex items-center gap-1.5", outbound ? "justify-end" : "justify-start")}>
+      {/* Reply-to-this-message, on the outside of the bubble. Lets you answer an
+          OLD mail in the thread, not just the newest one — the composer would
+          otherwise always target the last message. Left of outbound bubbles,
+          right of inbound ones, so it never covers the text. */}
+      {isEmail && onReplyTo && outbound && (
+        <ReplyToButton active={isReplyTarget} onClick={() => onReplyTo(msg.id)} />
+      )}
       <div
         className={cn(
-          "relative max-w-[70%] min-w-[80px] px-2.5 py-[6px] text-[13.5px] leading-[1.35] shadow-sm",
+          "relative min-w-[80px] px-2.5 py-[6px] text-[13.5px] leading-[1.35] shadow-sm",
+          // Email carries subject lines, signatures and quoted history, so a
+          // 70% chat bubble squeezes it into a column. Give it more room.
+          isEmail ? "max-w-[88%]" : "max-w-[70%]",
           outbound
             ? attachTail ? "rounded-[10px] rounded-tr-[4px]" : "rounded-[10px]"
             : attachTail ? "rounded-[10px] rounded-tl-[4px]" : "rounded-[10px]",
           outbound
             ? failed
               ? "bg-[#fde7e7] text-ink ring-1 ring-state-warn/40"
-              : "bg-[#dcf8c6] text-ink"
+              : isEmail ? "bg-[#e8eefc] text-ink" : "bg-[#dcf8c6] text-ink"
             : "bg-white text-ink",
+          isReplyTarget && "ring-2 ring-brand-blue/45",
         )}
       >
-        {msg.channel === "voice" ? (
+        {isEmail ? (
+          <EmailBubbleBody msg={msg} outbound={outbound} />
+        ) : msg.channel === "voice" ? (
           // Voice bubble: verb line + optional inline recording player.
           <VoiceBubbleBody msg={msg} outbound={outbound} />
         ) : msg.body ? (
@@ -345,8 +428,129 @@ function MessageBubble({ msg, attachTail }: { msg: TwMessage; attachTail: boolea
           )}
         </div>
       </div>
+      {isEmail && onReplyTo && !outbound && (
+        <ReplyToButton active={isReplyTarget} onClick={() => onReplyTo(msg.id)} />
+      )}
     </div>
   );
+}
+
+/** Aim the composer at one specific message. Stays hidden until you hover the
+ *  bubble (or it's the active target) so the transcript doesn't turn into a
+ *  wall of buttons. */
+function ReplyToButton({ active, onClick }: { active: boolean; onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      title="Reply to this email"
+      aria-label="Reply to this email"
+      className={cn(
+        "flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-full border transition",
+        active
+          ? "border-brand-blue bg-brand-blue text-white opacity-100"
+          : "border-rule bg-white/80 text-mute opacity-0 hover:text-ink group-hover/bubble:opacity-100 focus-visible:opacity-100",
+      )}
+    >
+      <Icon name="reply" size={12} strokeWidth={2.2} />
+    </button>
+  );
+}
+
+/** Email bubble — subject line, the sender's actual address, the message, and
+ *  the quoted history folded away behind a toggle.
+ *
+ *  We render the PLAIN-TEXT body, never `bodyHtml`. Dropping arbitrary sender
+ *  HTML into the page would be a stored-XSS hole (and would let a sender
+ *  restyle the CRM), and sanitizing it properly needs a real sanitizer.
+ *  bodyHtml is stored so we can render it safely in an iframe sandbox later. */
+function EmailBubbleBody({ msg, outbound }: { msg: TwMessage; outbound: boolean }) {
+  const [showQuoted, setShowQuoted] = useState(false);
+  const { visible, quoted } = splitQuoted(msg.body ?? "");
+  const recipients = (msg.toAddrs ?? []).join(", ");
+
+  return (
+    <div className="px-1">
+      <div className="mb-1.5 border-b border-black/[.06] pb-1.5">
+        <div className="flex items-start gap-1.5">
+          <Icon
+            name="mail"
+            size={12}
+            strokeWidth={2.2}
+            className={cn("mt-[3px] flex-shrink-0", outbound ? "text-brand-blue" : "text-mute")}
+          />
+          <span className="break-words text-[13px] font-semibold leading-[1.3]">
+            {msg.subject?.trim() || "(no subject)"}
+          </span>
+        </div>
+        <div className="mt-1 break-all font-mono text-[10px] leading-[1.4] text-mute">
+          {msg.fromNumber}
+          {recipients && <> → {recipients}</>}
+          {msg.ccAddrs && msg.ccAddrs.length > 0 && (
+            <> · cc {msg.ccAddrs.join(", ")}</>
+          )}
+        </div>
+      </div>
+
+      {visible ? (
+        <p className="whitespace-pre-wrap break-words">{linkify(visible, outbound)}</p>
+      ) : (
+        !quoted && <p className="italic text-mute">(no message body)</p>
+      )}
+
+      {quoted && (
+        <>
+          <button
+            type="button"
+            onClick={() => setShowQuoted((v) => !v)}
+            className="mt-1.5 rounded border border-black/10 bg-black/[.04] px-1.5 py-0.5 text-[11px] leading-none text-mute transition hover:bg-black/[.07]"
+            title={showQuoted ? "Hide quoted text" : "Show quoted text"}
+          >
+            {showQuoted ? "Hide quoted text" : "··· Show quoted text"}
+          </button>
+          {showQuoted && (
+            <p className="mt-1.5 whitespace-pre-wrap break-words border-l-2 border-black/10 pl-2 text-[12.5px] text-mute">
+              {quoted}
+            </p>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Split a reply into what the person actually wrote and the thread they wrote
+ * it on top of. Mirrors stripQuotedReply() on the API side (api/src/lib/gmail/parse.ts).
+ *
+ * There's no standard for reply quoting, so this is heuristic: cut at the first
+ * "On <date>, <someone> wrote:" attribution, `>` quote block, or common client
+ * separator. When nothing matches, everything stays visible — failing open is
+ * right here, since hiding real content is worse than showing quoted content.
+ */
+function splitQuoted(text: string): { visible: string; quoted: string } {
+  if (!text) return { visible: "", quoted: "" };
+  const lines = text.split(/\r?\n/);
+  const cutPatterns = [
+    /^On .+ wrote:\s*$/i,
+    /^-{2,}\s*Original Message\s*-{2,}/i,
+    /^-{2,}\s*Forwarded message\s*-{2,}/i,
+    /^_{10,}\s*$/,
+    /^From:\s.+/i,
+  ];
+  let cut = -1;
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]!;
+    if (line.startsWith(">") || cutPatterns.some((re) => re.test(line.trim()))) {
+      cut = i;
+      break;
+    }
+  }
+  if (cut === -1) return { visible: text.trim(), quoted: "" };
+  return {
+    visible: lines.slice(0, cut).join("\n").trim(),
+    quoted:  lines.slice(cut).join("\n").trim(),
+  };
 }
 
 /** Voice bubble body — inbound = "Call from customer", outbound = "You

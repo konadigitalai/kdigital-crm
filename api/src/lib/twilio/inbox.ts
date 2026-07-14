@@ -99,6 +99,105 @@ export async function matchOrCreatePartyByPhone(
   return { partyId, isNew: true, leadWorkItemId: null, leadNumber: null };
 }
 
+/**
+ * Look up an existing party by email WITHOUT creating one. Returns null when
+ * we've never seen the address.
+ *
+ * Split out from matchOrCreatePartyByEmail because the Gmail sync has to answer
+ * "do we already know this person?" *before* deciding whether to ingest the
+ * message at all — in known_contacts mode, a stranger's mail is dropped and no
+ * party may be invented for them. Calling the create-variant to find that out
+ * would defeat the entire purpose.
+ *
+ * Match order:
+ *   1. contact_point where kind='email' and value = $email (case-insensitive)
+ *   2. party.email (legacy, pre-contact_point storage)
+ */
+export async function findPartyByEmail(
+  db: DbExec,
+  email: string,
+): Promise<PartyLookup | null> {
+  const addr = email.trim().toLowerCase();
+  if (!addr.includes("@")) {
+    throw new Error(`findPartyByEmail requires an email address, got: ${addr}`);
+  }
+
+  // The ORDER BY is load-bearing, not cosmetic. One address can map to several
+  // party rows — an app_user party auto-provisioned at login, plus the lead row
+  // for the same human, plus duplicates from imports. A bare LIMIT 1 picks one
+  // arbitrarily, which means an inbound email can attach to a party that ISN'T
+  // the lead, showing up as an unlinked thread with a "Promote to lead" button
+  // for someone who is already a lead. Prefer, in order: a party with a lead,
+  // then the primary contact point, then the oldest.
+  const cpR = await db.execute(sql`
+    SELECT cp.party_id AS "partyId"
+    FROM contact_point cp
+    WHERE lower(cp.value) = ${addr}
+      AND cp.kind = 'email'
+      AND cp.valid_to IS NULL
+    ORDER BY
+      EXISTS (
+        SELECT 1 FROM work_item w
+        WHERE w.party_id = cp.party_id AND w.type = 'lead'
+      ) DESC,
+      cp.is_primary DESC,
+      cp.created_at ASC
+    LIMIT 1
+  `);
+  const cpRow = cpR.rows[0] as { partyId: string } | undefined;
+  if (cpRow) return await annotateWithLead(db, cpRow.partyId, false);
+
+  const pR = await db.execute(sql`
+    SELECT id AS "partyId"
+    FROM party
+    WHERE lower(coalesce(email, '')) = ${addr}
+    ORDER BY
+      EXISTS (
+        SELECT 1 FROM work_item w
+        WHERE w.party_id = party.id AND w.type = 'lead'
+      ) DESC,
+      created_at ASC
+    LIMIT 1
+  `);
+  const pRow = pR.rows[0] as { partyId: string } | undefined;
+  if (pRow) return await annotateWithLead(db, pRow.partyId, false);
+
+  return null;
+}
+
+/**
+ * Same contract as matchOrCreatePartyByPhone, keyed on an email address:
+ * find the party, or create a stub one if this address is new.
+ *
+ * Like the phone path, this never promotes anyone to a lead — an unknown
+ * sender lands as an unlinked conversation the inbox can offer to promote.
+ */
+export async function matchOrCreatePartyByEmail(
+  db: DbExec,
+  email: string,
+  /** Display name from the From header, if we have one. Only used on create. */
+  displayName?: string | null,
+): Promise<PartyLookup> {
+  const existing = await findPartyByEmail(db, email);
+  if (existing) return existing;
+
+  const addr = email.trim().toLowerCase();
+  const name = (displayName ?? "").trim() || addr;
+  const created = await db.execute(sql`
+    INSERT INTO party (tenant_id, kind, name, email)
+    VALUES (current_tenant(), 'person', ${name}, ${addr})
+    RETURNING id
+  `);
+  const partyId = (created.rows[0] as { id: string }).id;
+  await db.execute(sql`
+    INSERT INTO contact_point (tenant_id, party_id, kind, value, label, is_primary)
+    VALUES (current_tenant(), ${partyId}, 'email', ${addr}, 'primary', true)
+    ON CONFLICT (tenant_id, party_id, kind) WHERE is_primary
+    DO UPDATE SET value = EXCLUDED.value, updated_at = now()
+  `);
+  return { partyId, isNew: true, leadWorkItemId: null, leadNumber: null };
+}
+
 async function annotateWithLead(
   db: DbExec,
   partyId: string,
@@ -300,8 +399,15 @@ export async function applyStatusUpdate(
 
 // ─── Timeline activity mirror ─────────────────────────────────────────────
 
+const CHANNEL_VERB: Record<TwChannel, string> = {
+  sms:      "SMS",
+  whatsapp: "WhatsApp",
+  voice:    "Call",
+  email:    "Email",
+};
+
 /**
- * Drop a row into `activity` for the lead's timeline. Verb = 'SMS' or 'WhatsApp'.
+ * Drop a row into `activity` for the lead's timeline.
  * No-op when there's no lead work_item attached (unlinked contacts skip the
  * mirror — the message is still visible in the /inbox surface).
  */
@@ -316,6 +422,8 @@ export async function insertActivityForMessage(
     direction: "inbound" | "outbound";
     channel: TwChannel;
     body: string;
+    /** Email only — shown instead of the body in the timeline detail line. */
+    subject?: string | null;
     /** Number of files attached to this message, if any. */
     mediaCount?: number;
     /** MIME types of the attached files (in order). */
@@ -323,14 +431,19 @@ export async function insertActivityForMessage(
   },
 ): Promise<void> {
   if (!input.workItemId) return;
-  const verb   = input.channel === "whatsapp" ? "WhatsApp" : "SMS";
+  const verb   = CHANNEL_VERB[input.channel] ?? "SMS";
   const tag    = input.direction === "outbound" ? "you" : "auto";
   const verbPrefix = input.direction === "outbound" ? "Sent" : "Received";
   const mediaCount = input.mediaCount ?? 0;
   const mediaTag = mediaCount > 0
     ? ` [Attachment${mediaCount > 1 ? ` × ${mediaCount}` : ""}]`
     : "";
-  const detail = `${verbPrefix}:${mediaTag}${input.body ? ` ${input.body}` : ""}`;
+  // For email the subject is the useful summary; the body is usually far too
+  // long for a timeline row and often carries a quoted thread underneath.
+  const summary = input.channel === "email" && input.subject
+    ? input.subject
+    : input.body;
+  const detail = `${verbPrefix}:${mediaTag}${summary ? ` ${summary}` : ""}`;
   await db.execute(sql`
     INSERT INTO activity (
       tenant_id, work_item_id, party_id,
@@ -342,9 +455,10 @@ export async function insertActivityForMessage(
       ${input.actorType}, ${input.actorPartyId}, ${input.actorName},
       ${verb}, ${detail}, ${tag},
       ${JSON.stringify({
-        kind: "twilio_message",
+        kind: input.channel === "email" ? "email" : "twilio_message",
         channel: input.channel,
         direction: input.direction,
+        subject: input.subject ?? null,
         mediaCount,
         mediaMimes: input.mediaMimes ?? [],
       })}::jsonb,

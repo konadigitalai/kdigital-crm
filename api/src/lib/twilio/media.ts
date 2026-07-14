@@ -72,6 +72,12 @@ const CAPS: Record<TwChannel, Partial<Record<MimeFamily, MediaCap>>> = {
     // by Exotel post-call, not attached at send time. Empty caps map means
     // any validateMediaForChannel("voice", ...) call rejects.
   },
+  email: {
+    // Email attachments aren't validated here. Gmail's constraint isn't
+    // per-file-type at all — it's a single 25 MB cap across the whole encoded
+    // message, which routes/gmail.ts enforces while assembling the MIME. An
+    // empty map here means nothing routes email through validateMediaForChannel.
+  },
 };
 
 // WhatsApp Business API accepts a strict MIME allowlist. Files outside this

@@ -18,7 +18,9 @@ export type IconName =
   | "life-ring" | "calendar" | "tag" | "robot"
   | "batches"
   // Voice / Exotel
-  | "phone";
+  | "phone"
+  // Email / Gmail
+  | "reply";
 
 export function Icon({ name, size = 16, strokeWidth = 1.7, className, ...rest }: IconProps) {
   const props = {
@@ -59,6 +61,8 @@ export function Icon({ name, size = 16, strokeWidth = 1.7, className, ...rest }:
       return (<svg {...props}><path d="M4 4h16v12H5.2L4 20z" /></svg>);
     case "mail":
       return (<svg {...props}><path d="M4 4h16v12H5.2L4 20z" /></svg>);
+    case "reply":
+      return (<svg {...props}><path d="M9 17l-5-5 5-5" /><path d="M4 12h9a7 7 0 017 7v1" /></svg>);
     case "star":
       return (<svg {...props}><path d="M12 2l2 7h7l-5.5 4 2 7L12 16l-5.5 4 2-7L3 9h7z" /></svg>);
     case "check":

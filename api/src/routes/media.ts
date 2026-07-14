@@ -26,6 +26,9 @@ import {
   ALLOWED_UPLOAD_CONTENT_TYPES,
   MAX_UPLOAD_BYTES,
 } from "../lib/twilio/media.js";
+import {
+  accessTokenFor, getAttachment, type GmailAccountRow,
+} from "../lib/gmail/client.js";
 import { readTwilioAuthToken, readTwilioConfig } from "../lib/twilio/client.js";
 import { readExotelBasicAuth } from "../lib/exotel/client.js";
 import type { DbExec } from "../lib/twilio/inbox.js";
@@ -412,6 +415,19 @@ mediaRouter.get("/proxy/:id", requirePermission("media.read"), async (req, res, 
     });
     if (!meta) return res.status(404).json({ error: "Not found" });
 
+    // Gmail attachments aren't fetchable by URL at all — they're an authorized
+    // API call per (message, attachment) that returns base64. So they can't go
+    // through the stream-an-upstream path below; we resolve the bytes here and
+    // send them directly.
+    if (meta.source === "gmail_attachment") {
+      const buf = await fetchGmailAttachment(meta.blobUrl);
+      if (!buf) return res.status(502).json({ error: "Could not fetch Gmail attachment" });
+      res.setHeader("Content-Type", meta.contentType);
+      res.setHeader("Cache-Control", "private, max-age=300");
+      res.setHeader("Content-Disposition", `inline; filename="${meta.filename.replace(/"/g, "")}"`);
+      return res.send(buf);
+    }
+
     const headers: Record<string, string> = {};
     if (meta.providerHosted) {
       // Provider-hosted URLs need Basic auth. Which credentials depends on
@@ -449,6 +465,59 @@ mediaRouter.get("/proxy/:id", requirePermission("media.read"), async (req, res, 
     Readable.fromWeb(upstream.body as any).pipe(res);
   } catch (err) { next(err); }
 });
+
+// ─── Gmail attachment resolution ─────────────────────────────────────────
+//
+// Gmail attachments have no fetchable URL, so at ingest we store a locator
+// instead of one:
+//
+//   gmail://<gmailAccountId>/<gmailMessageId>/<attachmentId>
+//
+// Resolving it means an OAuth'd API call as the mailbox that received the mail.
+// The alternative — downloading every attachment to Vercel Blob at ingest —
+// would have us paying to store copies of every PDF anyone ever emailed us.
+// The tradeoff: if the mailbox is disconnected or the mail is deleted from
+// Gmail, the attachment stops resolving. Same bargain we already accept for
+// Exotel call recordings.
+
+// Shared by BOTH /media/proxy/:id (authenticated) and /media/fetch/:id (public
+// signed URL). Keeping one function is the point: this file already carries a
+// comment about /media/proxy growing a source-switch that /media/fetch didn't,
+// which broke Exotel recording playback. Don't reintroduce that split.
+//
+// Takes no tenantId — the public signed-URL route has no tenant context. We
+// resolve the tenant from the account row itself, then do the token work inside
+// withTenant so RLS and the token-refresh UPDATE both behave normally.
+async function fetchGmailAttachment(locator: string): Promise<Buffer | null> {
+  const m = locator.match(/^gmail:\/\/([^/]+)\/([^/]+)\/(.+)$/);
+  if (!m) return null;
+  const [, accountId, messageId, attachmentId] = m;
+  try {
+    const { appPool } = await import("../db/app.js");
+    const owner = await appPool.query<{ tenantId: string }>(
+      `SELECT tenant_id AS "tenantId" FROM gmail_account WHERE id = $1 LIMIT 1`,
+      [accountId],
+    );
+    const tenantId = owner.rows[0]?.tenantId;
+    if (!tenantId) return null;
+
+    return await withTenant(tenantId, async (db) => {
+      const r = await db.execute(sql`
+        SELECT id, email, refresh_token AS "refreshToken", access_token AS "accessToken",
+               expires_at AS "expiresAt", history_id AS "historyId",
+               app_user_id AS "appUserId", is_shared AS "isShared"
+        FROM gmail_account WHERE id = ${accountId} LIMIT 1
+      `);
+      const account = r.rows[0] as unknown as GmailAccountRow | undefined;
+      if (!account) return null;
+      const token = await accessTokenFor(db, account);
+      return await getAttachment(token, messageId!, attachmentId!);
+    });
+  } catch (err) {
+    console.error("[media] gmail attachment fetch failed:", (err as Error).message);
+    return null;
+  }
+}
 
 // ─── Public signed-fetch router (for Twilio outbound media) ──────────────
 //
@@ -513,6 +582,19 @@ mediaFetchRouter.get("/:id", async (req, res) => {
     );
     const meta = q.rows[0];
     if (!meta) return res.status(404).type("text/plain").send("not found");
+
+    // Gmail attachments have no fetchable URL — they're an authorized API call
+    // that returns base64, so they can't use the stream-an-upstream path below.
+    // This is the route the thread UI's <img>/<a> tags actually hit (they can't
+    // send a JWT), so it MUST handle the source, not just /media/proxy.
+    if (meta.source === "gmail_attachment") {
+      const buf = await fetchGmailAttachment(meta.blobUrl);
+      if (!buf) return res.status(502).type("text/plain").send("gmail attachment fetch failed");
+      res.setHeader("Content-Type", meta.contentType);
+      res.setHeader("Cache-Control", "private, max-age=300");
+      res.setHeader("Content-Disposition", `attachment; filename="${meta.filename.replace(/"/g, "")}"`);
+      return res.send(buf);
+    }
 
     const headers: Record<string, string> = {};
     if (meta.providerHosted) {
