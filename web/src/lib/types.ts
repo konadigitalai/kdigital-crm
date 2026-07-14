@@ -2,7 +2,9 @@
 
 // ── Twilio messaging (SMS + WhatsApp) ────────────────────────────────────
 
-export type TwChannel = "sms" | "whatsapp" | "voice";
+// 'voice' (Exotel) and 'email' (Gmail) reuse the same conversation/message
+// tables as Twilio SMS/WhatsApp — see api/drizzle/post-0071 and post-0072.
+export type TwChannel = "sms" | "whatsapp" | "voice" | "email";
 export type TwMessageDirection = "inbound" | "outbound";
 export type TwMessageStatus = "queued" | "sent" | "delivered" | "read" | "failed" | "received";
 export type TwConversationStatus = "open" | "closed";
@@ -21,6 +23,7 @@ export interface TwConversationListItem {
   partyId: string;
   partyName: string;
   partyPhone: string | null;
+  partyEmail: string | null;
   leadNumber: string | null;
 }
 
@@ -48,6 +51,13 @@ export interface TwMessage {
   /** Joined from wa_template — friendly name + type block for local render. */
   templateName?: string | null;
   templateTypes?: Record<string, unknown> | null;
+  /** Email only (channel='email'). For email messages, fromNumber/toNumber
+   *  above carry email ADDRESSES, not phone numbers. */
+  subject?: string | null;
+  bodyHtml?: string | null;
+  toAddrs?: string[] | null;
+  ccAddrs?: string[] | null;
+  providerThreadId?: string | null;
 }
 
 export interface TwMessageMedia {
@@ -62,6 +72,23 @@ export interface TwMessageMedia {
    *  /media/proxy endpoint (which can't receive a JWT from an <img> tag).
    *  Undefined when the server isn't configured to sign URLs. */
   fetchUrl?: string;
+}
+
+// ── Gmail ────────────────────────────────────────────────────────────────
+
+export interface GmailStatus {
+  /** Whether the API has Google OAuth credentials at all. */
+  configured: boolean;
+  /** Whether THIS user has connected their own mailbox. */
+  connected: boolean;
+  account: {
+    email: string;
+    connectedAt: string;
+    lastSyncedAt: string | null;
+    syncError: string | null;
+  } | null;
+  /** The shared fallback mailbox, if an admin has connected one. */
+  shared: string | null;
 }
 
 // ── Media library ────────────────────────────────────────────────────────
@@ -81,7 +108,7 @@ export interface MediaAsset {
   sizeBytes: number;
   blobUrl: string;
   isLibrary: boolean;
-  source: "user_upload" | "twilio_inbound";
+  source: "user_upload" | "twilio_inbound" | "exotel_recording" | "gmail_attachment";
   providerHosted: boolean;
   uploadedBy: string | null;
   folderId: string | null;
@@ -153,6 +180,11 @@ export interface Lead {
   phoneCountryCode?: string | null;
   description?: string | null;
   programId?: string | null;
+  /** Derived server-side from the program (program.stack_id is NOT NULL), never
+   *  stored on the lead. Null when no program is assigned — rendered "TBD".
+   *  Read-only everywhere: reassign the program and the stack follows. */
+  stack?: string | null;
+  stackId?: string | null;
   deliveryMode?: string | null;     // online | classroom | hybrid
   leadStatus?: string | null;       // see LEAD_STATUS_KEYS server-side
   timeZone?: string | null;          // IANA tz
@@ -440,6 +472,42 @@ export interface LeaveDay {
 }
 
 export type EventRsvp = "pending" | "accepted" | "declined" | "tentative";
+
+// ─── Lead tasks (post-0073) ───────────────────────────────────────────────
+//
+// The scheduled work an advisor owes a lead. `activity` (TimelineRow) records
+// what already happened; a LeadTask is what's still owed — it has a due date,
+// an owner and an open/done lifecycle. The Leads > Calendar view is a render
+// of these, and the record page's Activity panel creates them.
+
+export const LEAD_TASK_KINDS = [
+  "follow_up", "call", "demo", "campus_visit",
+  "trainer_talk", "enrollment", "re_engage", "task",
+] as const;
+export type LeadTaskKind = (typeof LEAD_TASK_KINDS)[number];
+
+export type LeadTaskStatus = "open" | "done" | "cancelled";
+
+export interface LeadTask {
+  id: string;
+  kind: LeadTaskKind;
+  title: string;
+  notes: string | null;
+  /** ISO instant. For allDay rows this is IST midnight — read `allDay`, not the clock. */
+  dueAt: string;
+  allDay: boolean;
+  durationMin: number | null;
+  status: LeadTaskStatus;
+  completedAt: string | null;
+  createdAt: string;
+  /** Denormalised from the joined lead, so the calendar renders without a second fetch. */
+  leadId: string;
+  leadNumber: string;
+  leadName: string;
+  /** app_user.id — the wire never carries party ids. */
+  assigneeId: string | null;
+  assigneeName: string | null;
+}
 
 export interface CalendarEventSummary {
   id: string;

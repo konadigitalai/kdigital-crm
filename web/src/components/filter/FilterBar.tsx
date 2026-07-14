@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { Icon } from "@/components/ui/Icon";
+import { AnchoredPopover } from "@/components/ui/AnchoredPopover";
 import { cn } from "@/lib/cn";
 import {
   OPERATORS, defaultOperator, defaultValue, operatorsForType,
@@ -233,7 +234,7 @@ function FieldPicker({
         <span className="text-[9px] text-mute">▾</span>
       </button>
       {open && (
-        <Popover>
+        <Popover anchor={ref.current}>
           {fields.map((f) => (
             <button
               type="button"
@@ -274,7 +275,7 @@ function OperatorPicker({
         <span className="text-[9px]">▾</span>
       </button>
       {open && (
-        <Popover>
+        <Popover anchor={ref.current}>
           {ops.map((op) => (
             <button
               type="button"
@@ -467,7 +468,7 @@ function DateValueEditor({
         <span className="text-[9px]">▾</span>
       </button>
       {open && (
-        <Popover>
+        <Popover anchor={ref.current}>
           {DATE_TOKENS.map((t) => (
             <button
               type="button"
@@ -532,7 +533,7 @@ function EnumSinglePicker({
         <span className="text-[9px] text-mute">▾</span>
       </button>
       {open && (
-        <Popover>
+        <Popover anchor={ref.current}>
           {options.map((o) => (
             <button
               type="button"
@@ -589,7 +590,7 @@ function EnumMultiPicker({
         <span className="text-[9px] text-mute">▾</span>
       </button>
       {open && (
-        <Popover>
+        <Popover anchor={ref.current}>
           {options.map((o) => {
             const checked = set.has(o.value);
             return (
@@ -617,21 +618,24 @@ function EnumMultiPicker({
   );
 }
 
-function Popover({ children }: { children: React.ReactNode }) {
-  // Stop mousedown/mouseup from bubbling to any parent modal backdrop or
-  // scroll-drag handler. Without this, clicking a filter field inside an
-  // "Edit view" modal was closing the modal because the modal's backdrop
-  // dismiss saw the mouse event bubble through the absolutely-positioned
-  // popover (which paints on top of the backdrop layer visually).
+// Portalled to <body> rather than absolutely positioned inside the bar, because
+// the leads toolbar is a horizontal scroller and `overflow-x: auto` would clip
+// an in-flow dropdown. See AnchoredPopover for the full reasoning.
+//
+// It still stops mousedown/mouseup/click from propagating (AnchoredPopover does
+// that internally): without it, clicking a filter field inside an "Edit view"
+// modal closed the modal, because the backdrop's dismiss handler saw the event
+// bubble through the popover that was painting on top of it.
+function Popover({
+  anchor, children,
+}: {
+  anchor: HTMLElement | null;
+  children: React.ReactNode;
+}) {
   return (
-    <div
-      className="absolute left-0 top-full z-30 mt-1 min-w-[200px] max-h-[300px] overflow-y-auto rounded-lg border border-rule bg-paper py-1 shadow-card"
-      onMouseDown={(e) => e.stopPropagation()}
-      onMouseUp={(e) => e.stopPropagation()}
-      onClick={(e) => e.stopPropagation()}
-    >
+    <AnchoredPopover anchor={anchor} className="max-h-[300px] min-w-[200px] overflow-y-auto">
       {children}
-    </div>
+    </AnchoredPopover>
   );
 }
 

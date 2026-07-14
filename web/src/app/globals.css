@@ -49,6 +49,22 @@ body::before {
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: var(--rule2); border-radius: 999px; }
 
+/* Horizontal scroller with no scrollbar taking up height.
+ *
+ * Used by the leads toolbar's filter track. A classic scrollbar is laid out
+ * *inside* its container, so an 8px-tall horizontal bar makes the scroller 8px
+ * taller than the pinned buttons on either side of it — and because the row is
+ * centre-aligned, the pills inside end up sitting visibly higher than the view
+ * switcher and Export/Columns. Removing the bar keeps every zone on one line.
+ *
+ * The overflow is still reachable: trackpads scroll it natively, and the track
+ * translates a vertical wheel into horizontal scroll (see LeadsBoard). */
+.scroll-x-clean {
+  scrollbar-width: none;        /* Firefox */
+  -ms-overflow-style: none;     /* legacy Edge */
+}
+.scroll-x-clean::-webkit-scrollbar { display: none; }
+
 @layer components {
   .grad-text {
     background: var(--grad);

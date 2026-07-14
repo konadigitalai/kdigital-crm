@@ -28,12 +28,16 @@ import { advisorsRouter } from "./routes/advisors.js";
 import { groupsRouter } from "./routes/groups.js";
 import { leavesRouter } from "./routes/leaves.js";
 import { eventsRouter } from "./routes/events.js";
+import { tasksRouter } from "./routes/tasks.js";
 import { batchesRouter } from "./routes/batches.js";
 import { viewsRouter } from "./routes/views.js";
 import { integrationsRouter } from "./routes/integrations.js";
 import { shareRouter } from "./routes/share.js";
 import { shareSlackUserRouter } from "./routes/share-slack-user.js";
 import { slackOAuthRouter, slackOAuthCallbackRouter } from "./routes/slack-oauth.js";
+import { googleOAuthRouter, googleOAuthCallbackRouter } from "./routes/google-oauth.js";
+import { gmailRouter } from "./routes/gmail.js";
+import { startGmailWorker } from "./lib/gmail/worker.js";
 import { partiesRouter } from "./routes/parties.js";
 import { partyConsentRouter } from "./routes/party-consent.js";
 import { twilioRouter } from "./routes/twilio.js";
@@ -131,6 +135,11 @@ app.use("/leads/intake", intakeRouter);
 // state param the API included when it sent them to Slack.
 app.use("/auth/slack", slackOAuthCallbackRouter);
 
+// Google OAuth callback — same deal as Slack above. Google redirects the
+// user's browser here after they approve the "Connect Gmail" consent screen,
+// so there's no Bearer token on the hop; trust comes from the signed state.
+app.use("/auth/google", googleOAuthCallbackRouter);
+
 // Public signed-URL fetch for outbound Twilio media. Twilio has no JWT;
 // authentication is a short-lived HMAC in the querystring. Mounted BEFORE
 // authMiddleware for that reason.
@@ -146,6 +155,9 @@ app.use("/me", meRouter);
 
 // Slack OAuth authorize-url + disconnect — need req.userId, so behind auth.
 app.use("/auth/slack", slackOAuthRouter);
+
+// Gmail connect/status/disconnect — need req.userId, so behind auth.
+app.use("/auth/google", googleOAuthRouter);
 
 // Method-aware guard: reads need readPerm, mutating verbs need writePerm.
 // We treat GET as the read fence so routes with PATCH/POST/DELETE always
@@ -201,6 +213,12 @@ app.use("/groups",   requirePermission("groups.manage"), groupsRouter);
 // Phase G — every route gates per-handler so we can mix self/admin permissions.
 app.use("/leaves",      leavesRouter);
 app.use("/events",      eventsRouter);
+// Lead tasks — the Leads calendar + the record page's Activity panel. Gated on
+// the *lead* perms, not events.*: a task is a property of a lead, so anyone who
+// can see a lead can see its tasks, and anyone who can edit one can schedule
+// against it. DELETE lands on leads.write (not leads.delete) — dropping a
+// scheduled call is an edit, not a destruction of the lead.
+app.use("/tasks",       readWrite("leads.read", "leads.write"), tasksRouter);
 app.use("/batches",     batchesRouter);
 // Saved views — gated per-handler against the surface's read perm
 // (pipeline_list ⇒ pipeline.read for GET, etc.). The router itself does
@@ -231,6 +249,11 @@ app.use("/twilio", twilioRouter);
 // in the same tw_conversation table Twilio uses; nothing else to wire.
 app.use("/exotel", exotelRouter);
 
+// Gmail — outbound send. Inbound is pulled by the sync worker below rather
+// than pushed to a webhook, so there's no public /webhooks/gmail counterpart.
+// Email threads are channel='email' rows in the same tw_conversation table.
+app.use("/gmail", gmailRouter);
+
 // WhatsApp templates (Twilio Content Builder cache + approval status).
 app.use("/templates", templatesRouter);
 
@@ -253,6 +276,8 @@ app.listen(port, async () => {
   console.log(`api listening on http://localhost:${port}`);
   startDedupWorker();
   startCampaignWorker();
+  // No-ops if the Gmail env vars aren't set.
+  startGmailWorker();
   // Idempotent: creates the LangGraph checkpoint tables on first boot.
   try {
     await ensureCheckpointerSetup();

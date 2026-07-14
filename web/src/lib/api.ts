@@ -9,7 +9,8 @@ import type {
   Course, CourseInput, CreateLeadInput, CurrentUser,
   Case, CaseDashboard, CaseDetail, CaseResolutionCode,
   CreateCaseInput, DeletedLead, EdifyAnswer, EdifySessionSummary, EnrolmentStatus, EventRsvp, FeedItem,
-  ForecastSnapshot, GroupsResponse, Lead, LeaveDay, LeaveHalfDay, LeaveKind, LearnerFeeInput, LearnerRecord, LearnerSummary,
+  ForecastSnapshot, GroupsResponse, Lead, LeadTask, LeadTaskKind, LeadTaskStatus,
+  LeaveDay, LeaveHalfDay, LeaveKind, LearnerFeeInput, LearnerRecord, LearnerSummary,
   PaymentStatus,
   PipelineColumn, Program, ProgramInput, RecentRun, RecordResponse,
   SavedView, SavedViewInput, SavedViewScope,
@@ -1034,6 +1035,74 @@ export async function deleteLeave(id: string): Promise<void> {
 
 // ── Calendar events ────────────────────────────────────────────────────────
 
+// ─── Lead tasks ───────────────────────────────────────────────────────────
+//
+// Backs the Leads > Calendar view (range query) and the record page's Activity
+// panel (per-lead query). See api/src/routes/tasks.ts.
+
+export async function getLeadTasks(params: {
+  /** Inclusive date window, YYYY-MM-DD. The calendar's month range. */
+  from?: string;
+  to?: string;
+  /** Lead uuid or LEAD-number — the record page's Activity panel. */
+  lead?: string;
+  status?: LeadTaskStatus;
+  kind?: LeadTaskKind;
+  /** app_user.id */
+  assignee?: string;
+} = {}): Promise<LeadTask[]> {
+  const qs = new URLSearchParams();
+  for (const [k, v] of Object.entries(params)) if (v) qs.set(k, String(v));
+  try {
+    const path = qs.toString() ? `/tasks?${qs}` : "/tasks";
+    const { tasks } = await get<{ tasks: LeadTask[] }>(path);
+    return tasks;
+  } catch (err) {
+    // Same posture as getEvents: an unauthenticated read is an empty calendar,
+    // not a crashed page.
+    if ((err as Error).message.includes("→ 401")) return [];
+    throw err;
+  }
+}
+
+export async function createLeadTask(input: {
+  /** Lead uuid or LEAD-number. */
+  lead: string;
+  kind: LeadTaskKind;
+  title: string;
+  notes?: string | null;
+  /** ISO instant. */
+  dueAt: string;
+  allDay?: boolean;
+  durationMin?: number | null;
+  /** app_user.id. Omit to inherit the lead's advisor. */
+  assigneeId?: string | null;
+}): Promise<LeadTask> {
+  const { task } = await post<{ task: LeadTask }>("/tasks", input);
+  return task;
+}
+
+export async function updateLeadTask(
+  id: string,
+  patch: {
+    kind?: LeadTaskKind;
+    title?: string;
+    notes?: string | null;
+    dueAt?: string;
+    allDay?: boolean;
+    durationMin?: number | null;
+    status?: LeadTaskStatus;
+    assigneeId?: string | null;
+  },
+): Promise<LeadTask> {
+  const { task } = await send<{ task: LeadTask }>("PATCH", `/tasks/${id}`, patch);
+  return task;
+}
+
+export async function deleteLeadTask(id: string): Promise<void> {
+  await send<void>("DELETE", `/tasks/${id}`);
+}
+
 export async function getEvents(from?: string, to?: string): Promise<CalendarEventSummary[]> {
   const qs = new URLSearchParams();
   if (from) qs.set("from", from);
@@ -1104,7 +1173,7 @@ export async function setAgentMode(key: string, mode: AgentMode): Promise<void> 
 // ── Twilio messaging (SMS + WhatsApp) ──────────────────────────────────
 
 import type {
-  TwChannel, TwConversationDetail, TwConversationListItem,
+  TwChannel, TwConversationDetail, TwConversationListItem, GmailStatus,
 } from "./types";
 
 export interface TwConversationFilter {
@@ -1376,6 +1445,50 @@ export async function sendTwMessageInThread(
     `/twilio/conversations/${encodeURIComponent(conversationId)}/messages`,
     { body, mediaAssetIds },
   );
+}
+
+// ── Gmail ────────────────────────────────────────────────────────────────
+
+export async function getGmailStatus(): Promise<GmailStatus> {
+  return await get<GmailStatus>("/auth/google/status");
+}
+
+/** Returns the Google consent URL to redirect the browser to. */
+export async function getGmailAuthorizeUrl(returnTo: string): Promise<string> {
+  const { url } = await get<{ url: string }>(
+    `/auth/google/authorize-url?returnTo=${encodeURIComponent(returnTo)}`,
+  );
+  return url;
+}
+
+export async function disconnectGmail(): Promise<void> {
+  await post("/auth/google/disconnect", {});
+}
+
+export interface SendEmailResult {
+  ok: boolean;
+  messageId: string;
+  conversationId: string;
+  from: string;
+  to: string;
+  error: string | null;
+}
+
+/**
+ * Send an email. `to` is an address or a lead number ("LEAD-9865").
+ * Pass `inReplyToMessageId` (a TwMessage.id) to reply inside an existing
+ * thread — the API inherits the subject and the Gmail thread from the parent.
+ */
+export async function sendEmail(input: {
+  to: string;
+  subject?: string;
+  body: string;
+  bodyHtml?: string;
+  cc?: string[];
+  mediaAssetIds?: string[];
+  inReplyToMessageId?: string;
+}): Promise<SendEmailResult> {
+  return await post("/gmail/send", input);
 }
 
 export async function markTwConversationRead(id: string): Promise<void> {

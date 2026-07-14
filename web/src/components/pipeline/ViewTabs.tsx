@@ -28,6 +28,10 @@ import type { CurrentUser, SavedView, SavedViewVisibility } from "@/lib/types";
 
 export const DEFAULT_VIEW_ID = "__all__";
 
+// Own MIME type so the tab strip never reacts to an unrelated drag — the Kanban
+// board is dragging leads around the same page under `application/x-decrm-lead`.
+const TAB_DRAG_MIME = "application/x-decrm-viewtab";
+
 interface Props {
   views: SavedView[];
   activeId: string;
@@ -106,6 +110,79 @@ export function ViewTabs({
     });
   }, [views, hiddenSet, tabOrder]);
 
+  // ── drag-to-reorder ───────────────────────────────────────────────────
+  //
+  // Reuses the existing tabOrder preference (PATCH /me/view-preferences) rather
+  // than inventing a second ordering channel — so a drag here and a reorder in
+  // the "Manage tabs" sheet write the same field and can't disagree.
+  //
+  // Only the visible tabs are ordered. Hidden ones aren't in `orderedTabs`, and
+  // the parent's persist step re-attaches them, so dropping them from the list
+  // we emit is correct, not lossy.
+  const canReorder = !!onPreferencesChange;
+  const [dragId, setDragId] = useState<string | null>(null);
+  const [overId, setOverId] = useState<string | null>(null);
+  // A drag that ends on a tab fires `click` on some platforms; without this the
+  // drop would also re-select (or worse, open the editor for) the dropped tab.
+  const draggedRef = useRef(false);
+
+  // React unmounts the source button as the reorder re-renders, so its own
+  // dragend can go missing and leave a tab stuck at half opacity. A window
+  // listener doesn't depend on any particular node surviving.
+  useEffect(() => {
+    function clear() { setDragId(null); setOverId(null); }
+    window.addEventListener("dragend", clear);
+    window.addEventListener("drop", clear);
+    return () => {
+      window.removeEventListener("dragend", clear);
+      window.removeEventListener("drop", clear);
+    };
+  }, []);
+
+  function commitReorder(fromId: string, toId: string) {
+    if (!onPreferencesChange || fromId === toId) return;
+    const ids = orderedTabs.map((t) => t.id);
+    const from = ids.indexOf(fromId);
+    const to = ids.indexOf(toId);
+    if (from < 0 || to < 0) return;
+    const next = [...ids];
+    next.splice(from, 1);
+    next.splice(to, 0, fromId);
+    onPreferencesChange({ hiddenViewIds: hiddenViewIds ?? [], tabOrder: next });
+  }
+
+  function dragPropsFor(id: string) {
+    if (!canReorder) return {};
+    return {
+      draggable: true,
+      dragging: dragId === id,
+      // Only mark a drop edge for a *different* tab — highlighting the tab
+      // you're still holding just looks like a bug.
+      dropTarget: !!dragId && dragId !== id && overId === id,
+      wasDragged: draggedRef,
+      onDragStart: (e: React.DragEvent) => {
+        e.dataTransfer.effectAllowed = "move";
+        e.dataTransfer.setData(TAB_DRAG_MIME, id);
+        draggedRef.current = true;
+        setDragId(id);
+      },
+      onDragOver: (e: React.DragEvent) => {
+        if (!e.dataTransfer.types.includes(TAB_DRAG_MIME)) return;
+        e.preventDefault();
+        e.dataTransfer.dropEffect = "move";
+        if (overId !== id) setOverId(id);
+      },
+      onDragLeave: () => setOverId((cur) => (cur === id ? null : cur)),
+      onDrop: (e: React.DragEvent) => {
+        e.preventDefault();
+        const from = e.dataTransfer.getData(TAB_DRAG_MIME);
+        setDragId(null);
+        setOverId(null);
+        if (from) commitReorder(from, id);
+      },
+    };
+  }
+
   return (
     <div className="flex flex-wrap items-center gap-1.5">
       {orderedTabs.map((t) => {
@@ -118,6 +195,7 @@ export function ViewTabs({
               onClick={() => onSelect(DEFAULT_VIEW_ID)}
               label="All leads"
               count={counts?.[DEFAULT_VIEW_ID]}
+              {...dragPropsFor(t.id)}
             />
           );
         }
@@ -133,6 +211,7 @@ export function ViewTabs({
             editable={canEdit}
             count={counts?.[v.id]}
             visibility={v.visibility}
+            {...dragPropsFor(v.id)}
           />
         );
       })}
@@ -221,6 +300,8 @@ export function ViewTabs({
 
 function Tab({
   active, onClick, onSecondaryClick, label, editable, count, visibility,
+  draggable, dragging, dropTarget, wasDragged,
+  onDragStart, onDragOver, onDragLeave, onDrop,
 }: {
   active: boolean;
   onClick: () => void;
@@ -231,10 +312,25 @@ function Tab({
   /** Personal → single-person glyph; shared → two-person glyph; undefined
    *  (e.g. "All leads" default tab) → no glyph. */
   visibility?: SavedViewVisibility;
+  draggable?: boolean;
+  dragging?: boolean;
+  dropTarget?: boolean;
+  /** Set on dragstart so the click that some platforms fire after a drop can be
+   *  swallowed instead of re-selecting the tab. */
+  wasDragged?: React.MutableRefObject<boolean>;
+  onDragStart?: (e: React.DragEvent) => void;
+  onDragOver?: (e: React.DragEvent) => void;
+  onDragLeave?: () => void;
+  onDrop?: (e: React.DragEvent) => void;
 }) {
   return (
     <button
       type="button"
+      draggable={draggable}
+      onDragStart={onDragStart}
+      onDragOver={onDragOver}
+      onDragLeave={onDragLeave}
+      onDrop={onDrop}
       onClick={(e) => {
         // Stop the click from bubbling further up the tree — otherwise the
         // native mouseup arriving *after* setEditing() has mounted the
@@ -242,11 +338,17 @@ function Tab({
         // (observed in a repro where clicking the active tab briefly showed
         // "Edit view" then closed).
         e.stopPropagation();
+        // Swallow the click that trails a drag, so dropping a tab reorders it
+        // without also selecting it (or opening its editor, if it was active).
+        if (wasDragged?.current) {
+          wasDragged.current = false;
+          return;
+        }
         if (active && onSecondaryClick) onSecondaryClick();
         else onClick();
       }}
       title={
-        active && editable ? "Click again to edit"
+        active && editable ? "Click again to edit · drag to reorder"
         : visibility === "shared" ? `${label} · shared with the team`
         : visibility === "personal" ? `${label} · your personal view`
         : label
@@ -258,6 +360,11 @@ function Tab({
         active
           ? "border-brand-violet text-brand-violet"
           : "border-transparent text-ink2 hover:text-ink",
+        draggable && "cursor-grab active:cursor-grabbing",
+        dragging && "opacity-40",
+        // A left rule marks where the dragged tab will land — clearer than
+        // tinting the whole target, which reads as "you're selecting this".
+        dropTarget && "before:absolute before:inset-y-1 before:-left-[3px] before:w-[2px] before:rounded-full before:bg-brand-violet",
       )}
     >
       {visibility === "personal" && <PersonGlyph className={active ? "text-brand-violet" : "text-mute"} />}

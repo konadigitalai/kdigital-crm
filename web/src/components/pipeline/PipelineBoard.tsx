@@ -29,11 +29,12 @@ const DRAG_MIME = "application/x-decrm-lead";
 // The "Group by" axis selector is applied to Kanban + Chart only. Rating is
 // the default and the only axis where drag-drop is allowed (since dragging
 // across columns writes lead.rating). Other axes are read-only buckets.
-export type GroupBy = "rating" | "status" | "program" | "advisor" | "source";
+export type GroupBy = "rating" | "status" | "stack" | "program" | "advisor" | "source";
 
 export const GROUP_BY_OPTIONS: { value: GroupBy; label: string }[] = [
   { value: "rating",  label: "Rating" },
   { value: "status",  label: "Status" },
+  { value: "stack",   label: "Stack" },
   { value: "program", label: "Program" },
   { value: "advisor", label: "Advisor" },
   { value: "source",  label: "Source" },
@@ -46,6 +47,7 @@ const LEAD_STATUS_LABEL: Record<string, string> = Object.fromEntries(
 export function groupKey(l: Lead, by: GroupBy): string {
   if (by === "rating")  return l.rating;
   if (by === "status")  return l.leadStatus || "—";
+  if (by === "stack")   return l.stack   || "TBD";
   if (by === "program") return l.program || "—";
   if (by === "advisor") return l.advisorName || "—";
   if (by === "source")  return l.sourceLabel || l.source || "—";
@@ -108,6 +110,7 @@ const RATING_OPTIONS = LEAD_RATINGS.map((r) => ({ value: r, label: ratingStyles[
 function unique<T>(xs: T[]): T[] { return [...new Set(xs.filter(Boolean))]; }
 
 function buildFields(allLeads: Lead[]): FilterField[] {
+  const stacks   = unique(allLeads.map((l) => l.stack).filter((x): x is string => !!x));
   const programs = unique(allLeads.map((l) => l.program).filter((x): x is string => !!x));
   const cities   = unique(allLeads.map((l) => l.city).filter((x): x is string => !!x));
   const advisors = unique(allLeads.map((l) => l.advisorName).filter((x): x is string => !!x));
@@ -115,6 +118,7 @@ function buildFields(allLeads: Lead[]): FilterField[] {
   return [
     { key: "name",       label: "Name",        type: "text",   get: (l: Lead) => l.name },
     { key: "number",     label: "Lead #",      type: "text",   get: (l: Lead) => l.number },
+    { key: "stack",      label: "Stack",       type: "enum",   options: stacks.map((s) => ({ value: s, label: s })),   get: (l: Lead) => l.stack },
     { key: "program",    label: "Program",     type: "enum",   options: programs.map((p) => ({ value: p, label: p })), get: (l: Lead) => l.program },
     { key: "city",       label: "City",        type: "enum",   options: cities.map((c) => ({ value: c, label: c })),   get: (l: Lead) => l.city },
     { key: "advisor",    label: "Advisor",     type: "enum",   options: advisors.map((a) => ({ value: a, label: a })), get: (l: Lead) => l.advisorName },
@@ -128,16 +132,30 @@ function buildFields(allLeads: Lead[]): FilterField[] {
   ];
 }
 
-// Parse "₹1.49L" / "₹99k" / "₹2.4Cr" → number (rupees)
+// Parse a lead's price into rupees.
+//
+// `lead.value` is a text column and holds two shapes: PATCH /leads validates it
+// as a bare number ("15000"), which is what every real row carries, while the
+// seeded/demo rows carry the display form ("₹1.49L"). The original parser only
+// matched the second, so it scored every genuine lead as 0 — which is why the
+// Kanban column ₹ totals all read "—". Accept both.
 function parseINR(s: string | null | undefined): number {
   if (!s) return 0;
-  const m = s.match(/^₹([\d.]+)([CrLk]+)?$/);
-  if (!m) return 0;
-  const n = Number(m[1]);
-  if (m[2] === "Cr") return n * 1_00_00_000;
-  if (m[2] === "L")  return n * 1_00_000;
-  if (m[2] === "k")  return n * 1_000;
-  return n;
+  const raw = String(s).trim();
+  if (!raw) return 0;
+
+  const suffixed = raw.match(/^₹?\s*([\d.]+)\s*(Cr|L|k)$/i);
+  if (suffixed) {
+    const n = Number(suffixed[1]);
+    if (!Number.isFinite(n)) return 0;
+    const unit = suffixed[2].toLowerCase();
+    if (unit === "cr") return n * 1_00_00_000;
+    if (unit === "l")  return n * 1_00_000;
+    return n * 1_000;
+  }
+
+  const plain = Number(raw.replace(/[₹,\s]/g, ""));
+  return Number.isFinite(plain) ? plain : 0;
 }
 
 function fmtINR(n: number): string {

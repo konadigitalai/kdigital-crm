@@ -273,13 +273,15 @@ export default async function RecordPage({
             </div>
           )}
 
-          {/* Timeline / Emails / Notes — interactive tabs */}
+          {/* Timeline / Emails / Notes / Activities — interactive tabs */}
           <TimelineTabs
             leadNumber={lead.number}
             timeline={data.timeline}
             partyId={lead.partyId}
+            partyEmail={attrs.email ?? null}
             hasPhone={!!composeE164(attrs.phoneCountryCode ?? null, attrs.phone ?? null)}
             canSendMessage={canSendMessage}
+            canWriteLead={canWriteLead}
           />
         </div>
 
@@ -397,6 +399,21 @@ export default async function RecordPage({
                 kind={{ kind: "text", value: attrs.city ?? lead.city ?? null }}
                 valueClass="text-[13px] font-semibold text-ink"
               />
+            </DetailRow>
+            {/* Stack is derived from the program (program.stack_id is NOT NULL),
+                so it's shown, not edited — pick the program below and this
+                follows. "TBD" until one is assigned. */}
+            <DetailRow label="Stack">
+              {lead.stack ? (
+                <span className="text-[13px] font-semibold text-ink">{lead.stack}</span>
+              ) : (
+                <span
+                  className="mono-cap text-[10px] tracking-[.08em] text-hint"
+                  title="No program assigned — pick one below and the stack follows"
+                >
+                  TBD
+                </span>
+              )}
             </DetailRow>
             <DetailRow label="Program">
               <InlineLeadField

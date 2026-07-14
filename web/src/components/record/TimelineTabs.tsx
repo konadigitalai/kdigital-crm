@@ -7,17 +7,20 @@ import { cn } from "@/lib/cn";
 import { addLeadNote, updateLeadNote } from "@/lib/api";
 import type { TimelineRow } from "@/lib/types";
 import { MessagesTab } from "./MessagesTab";
+import { EmailsTab } from "./EmailsTab";
+import { TasksPanel } from "./TasksPanel";
 
-type Tab = "notes" | "inbox" | "timeline" | "emails";
+type Tab = "notes" | "activities" | "inbox" | "timeline" | "emails";
 
 const TABS: { key: Tab; label: string }[] = [
-  { key: "notes",    label: "Notes" },
-  { key: "inbox",    label: "Inbox" },
-  { key: "timeline", label: "Timeline" },
-  { key: "emails",   label: "Emails" },
+  { key: "notes",      label: "Notes" },
+  { key: "activities", label: "Activities" },
+  { key: "inbox",      label: "Inbox" },
+  { key: "timeline",   label: "Timeline" },
+  { key: "emails",     label: "Emails" },
 ];
 
-const TAB_KEYS: Tab[] = ["notes", "inbox", "timeline", "emails"];
+const TAB_KEYS: Tab[] = ["notes", "activities", "inbox", "timeline", "emails"];
 function tabFromParam(v: string | null): Tab | null {
   return v && (TAB_KEYS as string[]).includes(v) ? (v as Tab) : null;
 }
@@ -87,16 +90,21 @@ function TimeLabel({ iso, className }: { iso: string | null | undefined; classNa
 }
 
 export function TimelineTabs({
-  leadNumber, timeline, partyId, hasPhone = false, canSendMessage = false,
+  leadNumber, timeline, partyId, partyEmail, hasPhone = false, canSendMessage = false,
+  canWriteLead = false,
 }: {
   leadNumber: string;
   timeline: TimelineRow[];
   /** Lead's party id — used by the Messages tab to fetch/send Twilio threads. */
   partyId?: string;
+  /** Lead's email — the Emails tab needs somewhere to send to. */
+  partyEmail?: string | null;
   /** Hide the Messages tab when the lead has no phone (nowhere to send to). */
   hasPhone?: boolean;
   /** From current user's `messaging.send` — gates the reply box. */
   canSendMessage?: boolean;
+  /** From current user's `leads.write` — gates scheduling/completing activities. */
+  canWriteLead?: boolean;
 }) {
   const router = useRouter();
   const pathname = usePathname();
@@ -130,8 +138,9 @@ export function TimelineTabs({
     router.replace(qs ? `${pathname}?${qs}` : pathname, { scroll: false });
   }, [tab, pathname, router, searchParams]);
 
-  // Filter rows by tab.
-  const emails = timeline.filter((t) => t.verb === "Email" || t.verb === "Sent" || t.payload?.kind === "email");
+  // Filter rows by tab. Emails are NOT derived from `timeline` any more —
+  // <EmailsTab> reads the real tw_message thread, so an activity-row count
+  // here would disagree with what the tab actually shows.
   const notes  = timeline.filter((t) => t.verb === "Note" || t.payload?.kind === "note");
 
   // Search predicate: match against actor, verb, and detail. Case-insensitive.
@@ -146,7 +155,6 @@ export function TimelineTabs({
     );
   };
   const filteredTimeline = filterRows(timeline);
-  const filteredEmails   = filterRows(emails);
   const filteredNotes    = filterRows(notes);
 
   return (
@@ -179,8 +187,10 @@ export function TimelineTabs({
 
       <div className="mb-5 flex gap-1 border-b border-rule">
         {visibleTabs.map((t) => {
+          // Emails and Inbox load their own data asynchronously, so they get
+          // no count badge — a number sourced from `timeline` would contradict
+          // what the tab renders.
           const count = t.key === "timeline" ? filteredTimeline.length
-                      : t.key === "emails"   ? filteredEmails.length
                       : t.key === "notes"    ? filteredNotes.length
                       : 0;
           return (
@@ -201,11 +211,25 @@ export function TimelineTabs({
         })}
       </div>
 
+      {tab === "activities" && (
+        <TasksPanel leadNumber={leadNumber} canWrite={canWriteLead} />
+      )}
       {tab === "inbox" && showInbox && partyId && (
         <MessagesTab partyId={partyId} canSend={canSendMessage} />
       )}
       {tab === "timeline" && <TimelineView rows={filteredTimeline} />}
-      {tab === "emails"   && <EmailsView   rows={filteredEmails} />}
+      {tab === "emails" && (
+        partyId ? (
+          <EmailsTab
+            partyId={partyId}
+            partyEmail={partyEmail ?? null}
+            leadNumber={leadNumber}
+            canSend={canSendMessage}
+          />
+        ) : (
+          <Empty text="No emails sent or received yet." />
+        )
+      )}
       {tab === "notes"    && <NotesView    rows={filteredNotes} leadNumber={leadNumber} />}
     </>
   );
@@ -244,28 +268,6 @@ function TimelineView({ rows }: { rows: TimelineRow[] }) {
               </div>
             )}
           </div>
-        </div>
-      ))}
-    </div>
-  );
-}
-
-function EmailsView({ rows }: { rows: TimelineRow[] }) {
-  if (rows.length === 0) {
-    return <Empty text="No emails sent or received yet." />;
-  }
-  return (
-    <div className="flex flex-col gap-3">
-      {rows.map((t, i) => (
-        <div key={i} className="rounded-[13px] border border-rule bg-paper p-[15px_17px]">
-          <div className="mb-2 flex items-center gap-2.5 text-[12.5px]">
-            <span className="font-bold">{t.actorName}</span>
-            <span className="mono-cap rounded-full bg-[rgba(46,158,106,.10)] px-2 py-0.5 text-[8.5px] font-semibold tracking-[.08em] text-state-ok">
-              {t.verb}
-            </span>
-            <TimeLabel iso={t.ts} className="ml-auto font-mono text-[10px] text-mute" />
-          </div>
-          <p className="whitespace-pre-line text-[13px] leading-[1.55] text-ink2">{t.detail}</p>
         </div>
       ))}
     </div>

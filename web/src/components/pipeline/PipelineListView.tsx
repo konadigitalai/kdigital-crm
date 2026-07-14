@@ -33,7 +33,7 @@ import { LEAD_RATINGS } from "@/lib/types";
 export type ColumnKey =
   | "name" | "rating" | "leadStatus" | "number" | "email"
   | "phoneCountryCode" | "phone" | "city"
-  | "program" | "advisor" | "source" | "value"
+  | "stack" | "program" | "advisor" | "source" | "value"
   | "score" | "deliveryMode" | "timeZone"
   | "nextFollowupAt" | "demoAttendedAt"
   | "visitedDate" | "visitingDate"
@@ -54,6 +54,7 @@ type CellType =
   | "select-lead-status"
   | "select-delivery"
   | "select-tz"
+  | "readonly-derived"
   | "readonly-name"
   | "readonly-number"
   | "readonly-score"
@@ -75,6 +76,10 @@ const COLUMNS: ColumnDef[] = [
   { key: "phoneCountryCode", label: "Phone CC",        width: "100px", type: "phone" },
   { key: "phone",           label: "Phone",            width: "170px", type: "phone" },
   { key: "city",            label: "City",             width: "140px", type: "text" },
+  // Read-only: Stack is derived from the program server-side, so it is not
+  // independently editable. Sits directly above Program because it is the
+  // broader bucket the program belongs to.
+  { key: "stack",           label: "Stack",            width: "180px", type: "readonly-derived" },
   { key: "program",         label: "Program",          width: "200px", type: "select-program" },
   { key: "advisor",         label: "Advisor",          width: "160px", type: "select-advisor" },
   { key: "source",          label: "Source",           width: "150px", type: "select-source" },
@@ -96,7 +101,7 @@ const COLUMNS: ColumnDef[] = [
 const COLUMN_BY_KEY = new Map(COLUMNS.map((c) => [c.key, c]));
 
 const DEFAULT_VISIBLE: ColumnKey[] = [
-  "name", "rating", "leadStatus", "phone", "program", "advisor",
+  "name", "rating", "leadStatus", "phone", "stack", "program", "advisor",
   "score", "nextFollowupAt", "value",
 ];
 
@@ -250,6 +255,7 @@ function exportValueFor(l: Lead, col: ColumnKey): string {
     case "phoneCountryCode": return l.phoneCountryCode ?? "";
     case "phone":           return joinCountryAndPhone(l.phoneCountryCode, l.phone);
     case "city":            return l.city ?? "";
+    case "stack":           return l.stack ?? "TBD";
     case "program":         return l.program ?? "";
     case "advisor":         return l.advisorName ?? "";
     case "source":          return l.sourceLabel ?? l.source ?? "";
@@ -319,6 +325,7 @@ function sortValueFor(l: Lead, col: ColumnKey): number | string | null {
     case "phoneCountryCode": return l.phoneCountryCode ?? "";
     case "phone":           return l.phone ?? "";
     case "city":            return (l.city ?? "").toLowerCase();
+    case "stack":           return (l.stack ?? "").toLowerCase();
     case "program":         return (l.program ?? "").toLowerCase();
     case "advisor":         return (l.advisorName ?? "").toLowerCase();
     case "source":          return (l.sourceLabel ?? l.source ?? "").toLowerCase();
@@ -520,7 +527,18 @@ function buildLocalPatch(
     case "leadStatus":      return { leadStatus: nullable };
     case "program": {
       const p = catalog.programs.find((x) => x.id === draft);
-      return { programId: nullable, program: p?.name ?? "" };
+      // Stack rides along with the program. The server derives it from
+      // program.stack_id on the next read, but the catalog already carries
+      // stackName — so resolving it here makes the Stack cell update in the
+      // same paint as the Program cell, instead of snapping a second later
+      // when the refetch lands. Clearing the program clears the stack to null,
+      // which the cell renders as "TBD".
+      return {
+        programId: nullable,
+        program: p?.name ?? "",
+        stack: p?.stackName ?? null,
+        stackId: p?.stackId ?? null,
+      };
     }
     case "advisor": {
       const a = catalog.advisors.find((x) => x.id === draft);
@@ -1019,17 +1037,27 @@ export function PipelineListView({
   return (
     <div className="space-y-3">
       {confirmDialog}
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        {toolbarSlot ?? (
-          <div className="text-[12.5px] text-mute">
-            {leads.length} lead{leads.length === 1 ? "" : "s"} ·{" "}
-            {canWrite ? (
-              <span className="text-ink2">click any cell to edit</span>
-            ) : (
-              <span className="text-mute">read-only</span>
-            )}
-          </div>
-        )}
+      {/* Toolbar row. Export / Columns stay pinned right; the slot gets the rest
+          and owns its own internal scrolling (see LeadsBoard's `toolbar`, which
+          pins the view switcher and scrolls only the filter pills). We don't put
+          a scroller here — that would nest two of them and they'd fight.
+
+          Note the dropdowns inside that scroller are portalled (AnchoredPopover):
+          `overflow-x: auto` forces overflow-y to compute to `auto` as well, so an
+          in-flow absolute panel would be clipped by its own scroll container. */}
+      <div className="flex items-center justify-between gap-3">
+        <div className="min-w-0 flex-1">
+          {toolbarSlot ?? (
+            <div className="text-[12.5px] text-mute">
+              {leads.length} lead{leads.length === 1 ? "" : "s"} ·{" "}
+              {canWrite ? (
+                <span className="text-ink2">click any cell to edit</span>
+              ) : (
+                <span className="text-mute">read-only</span>
+              )}
+            </div>
+          )}
+        </div>
         <div className="flex flex-shrink-0 items-center gap-2">
           {/* Export leads — CSV. Menu offers two shapes: just what's visible
               (matches what the user sees), or every field the grid supports.
@@ -1431,6 +1459,9 @@ function CellIdle({
     case "phone":          return <span className="truncate font-mono text-[12px]" title={lead.phone ?? undefined}>{prettyPhone(lead.phoneCountryCode, lead.phone) || "—"}</span>;
     case "phoneCountryCode": return <span className="font-mono text-[12px]">{lead.phoneCountryCode || "—"}</span>;
     case "city":           return <span className="truncate">{lead.city || "—"}</span>;
+    case "stack":          return lead.stack
+      ? <span className="truncate" title={lead.stack}>{lead.stack}</span>
+      : <span className="mono-cap text-[10px] tracking-[.08em] text-hint" title="No program assigned — assign one and the stack follows">TBD</span>;
     case "program":        return <span className="truncate" title={lead.program ?? undefined}>{lead.program || "—"}</span>;
     case "advisor":        return <AdvisorChip name={lead.advisorName} />;
     case "source":         return <span className="truncate">{lead.sourceLabel || lead.source || "—"}</span>;
@@ -2367,6 +2398,10 @@ function bulkPatchToLocalPatch(patch: BulkLeadPatch, catalog: CatalogResponse): 
     const p = catalog.programs.find((x) => x.id === patch.programId);
     out.programId = patch.programId ?? null;
     out.program = p?.name ?? "";
+    // Stack follows the program here too — a bulk reassign must not leave the
+    // Stack column showing the old stack until the next refetch.
+    out.stack = p?.stackName ?? null;
+    out.stackId = p?.stackId ?? null;
   }
   if (patch.advisorId !== undefined) {
     const a = catalog.advisors.find((x) => x.id === patch.advisorId);

@@ -1019,6 +1019,50 @@ export const calendarInvitee = pgTable(
   }),
 );
 
+// ─── Lead tasks (post-0073) ──────────────────────────────────────────────
+//
+// The forward-looking counterpart to `activity`. `activity` logs what already
+// happened; `lead_task` is what an advisor still owes a lead — a follow-up, a
+// call, a demo, a campus visit — with a due date, a lifecycle and an owner.
+// This is what the Leads calendar view reads.
+
+export const leadTask = pgTable(
+  "lead_task",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    tenantId: uuid("tenant_id").notNull().references(() => tenant.id),
+    workItemId: uuid("work_item_id").notNull().references(() => workItem.id, { onDelete: "cascade" }),
+    kind: text("kind").notNull().default("follow_up"),
+    title: text("title").notNull(),
+    notes: text("notes"),
+    // all_day rows still carry a timestamp (IST midnight) so one ORDER BY
+    // due_at sorts timed and all-day rows together; the UI reads all_day to
+    // decide whether to render a time.
+    dueAt: timestamp("due_at", { withTimezone: true }).notNull(),
+    allDay: boolean("all_day").notNull().default(false),
+    durationMin: integer("duration_min"),
+    status: text("status").notNull().default("open"),
+    assigneePartyId: uuid("assignee_party_id").references(() => party.id, { onDelete: "set null" }),
+    createdByPartyId: uuid("created_by_party_id").references(() => party.id, { onDelete: "set null" }),
+    completedAt: timestamp("completed_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    tenantDueIdx: index("lead_task_tenant_due_idx").on(t.tenantId, t.dueAt),
+    wiDueIdx: index("lead_task_wi_due_idx").on(t.tenantId, t.workItemId, t.dueAt),
+    kindCheck: check(
+      "lead_task_kind_check",
+      sql`${t.kind} IN ('follow_up','call','demo','campus_visit','trainer_talk','enrollment','re_engage','task')`,
+    ),
+    statusCheck: check("lead_task_status_check", sql`${t.status} IN ('open','done','cancelled')`),
+    durationCheck: check(
+      "lead_task_duration_check",
+      sql`${t.durationMin} IS NULL OR ${t.durationMin} BETWEEN 1 AND 1440`,
+    ),
+  }),
+);
+
 // ─── Audit log (insert-only — enforced via GRANTs in raw SQL) ─────────────
 
 export const auditLog = pgTable(
@@ -1323,7 +1367,7 @@ export const twConversation = pgTable(
     tenantChannelIdx: index("tw_conversation_tenant_channel_idx")
       .on(t.tenantId, t.channel, t.lastMessageAt),
     channelCheck: check("tw_conversation_channel_check",
-      sql`${t.channel} IN ('sms','whatsapp','voice')`),
+      sql`${t.channel} IN ('sms','whatsapp','voice','email')`),
     statusCheck: check("tw_conversation_status_check",
       sql`${t.status} IN ('open','closed')`),
   }),
@@ -1352,6 +1396,17 @@ export const twMessage = pgTable(
     contentSid:          text("content_sid"),
     contentVariables:    jsonb("content_variables"),
     campaignId:          uuid("campaign_id"),
+    // Email-only (channel='email'). See post-0072-gmail.sql. Note that for
+    // email rows, fromNumber/toNumber above hold email ADDRESSES — the
+    // column names are a Twilio-era legacy the voice channel already inherited.
+    subject:             text("subject"),
+    bodyHtml:            text("body_html"),
+    toAddrs:             text("to_addrs").array(),
+    ccAddrs:             text("cc_addrs").array(),
+    providerThreadId:    text("provider_thread_id"),
+    rfc822MessageId:     text("rfc822_message_id"),
+    inReplyTo:           text("in_reply_to"),
+    gmailAccountId:      uuid("gmail_account_id"),
   },
   (t) => ({
     conversationSentIdx: index("tw_message_conversation_sent_idx")
@@ -1362,12 +1417,50 @@ export const twMessage = pgTable(
       .on(t.providerMessageId),
     campaignIdx: index("tw_message_campaign_idx")
       .on(t.campaignId, t.sentAt),
+    providerThreadIdx: index("tw_message_provider_thread_idx")
+      .on(t.providerThreadId),
+    rfc822Idx: index("tw_message_rfc822_idx")
+      .on(t.rfc822MessageId),
     directionCheck: check("tw_message_direction_check",
       sql`${t.direction} IN ('inbound','outbound')`),
     channelCheck: check("tw_message_channel_check",
-      sql`${t.channel} IN ('sms','whatsapp','voice')`),
+      sql`${t.channel} IN ('sms','whatsapp','voice','email')`),
     statusCheck: check("tw_message_status_check",
       sql`${t.status} IN ('queued','sent','delivered','read','failed','received')`),
+  }),
+);
+
+// ─── Gmail (two-way email) ───────────────────────────────────────────────
+// One row per connected mailbox. Per-user accounts have appUserId set; the
+// shared fallback mailbox (GMAIL_SHARED_ACCOUNT_EMAIL) has isShared=true and
+// appUserId NULL. Email messages themselves live in tw_message with
+// channel='email'. See post-0072-gmail.sql.
+
+export const gmailAccount = pgTable(
+  "gmail_account",
+  {
+    id:              uuid("id").primaryKey().defaultRandom(),
+    tenantId:        uuid("tenant_id").notNull().references(() => tenant.id),
+    appUserId:       uuid("app_user_id"),
+    email:           text("email").notNull(),
+    refreshToken:    text("refresh_token").notNull(),
+    accessToken:     text("access_token"),
+    expiresAt:       timestamp("expires_at", { withTimezone: true }),
+    scopes:          text("scopes"),
+    isShared:        boolean("is_shared").notNull().default(false),
+    historyId:       text("history_id"),
+    lastSyncedAt:    timestamp("last_synced_at", { withTimezone: true }),
+    syncErrorCount:  integer("sync_error_count").notNull().default(0),
+    syncError:       text("sync_error"),
+    connectedAt:     timestamp("connected_at", { withTimezone: true }).notNull().defaultNow(),
+    revokedAt:       timestamp("revoked_at", { withTimezone: true }),
+    createdAt:       timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt:       timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    appUserKey:      uniqueIndex("gmail_account_app_user_key").on(t.appUserId),
+    tenantEmailKey:  uniqueIndex("gmail_account_tenant_email_key").on(t.tenantId, t.email),
+    tenantIdx:       index("gmail_account_tenant_idx").on(t.tenantId),
   }),
 );
 

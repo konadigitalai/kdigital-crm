@@ -26,6 +26,9 @@ recordsRouter.get("/:idOrNumber", async (req, res, next) => {
                 p.phone_country_code AS "partyPhoneCountryCode",
                 p.city             AS "partyCity",
                 l.initials, l.program, l.program_id AS "programId", l.value,  -- Phase 3: l.city dropped (use p.city)
+                -- Stack is derived from the program (program.stack_id is NOT NULL),
+                -- never stored on the lead — see the note in routes/leads.ts.
+                stk.name AS stack, prg.stack_id AS "stackId",
                 l.description     AS "description",
                 l.fee_paid        AS "feePaid",
                 l.fee_due         AS "feeDue",
@@ -59,6 +62,8 @@ recordsRouter.get("/:idOrNumber", async (req, res, next) => {
               JOIN work_item wi ON wi.id = l.work_item_id
               JOIN party p      ON p.id  = wi.party_id
               LEFT JOIN app_user u ON u.party_id = l.advisor_id
+              LEFT JOIN program prg ON prg.id = l.program_id
+              LEFT JOIN stack   stk ON stk.id = prg.stack_id
               WHERE wi.id = ${idOrNumber}
               LIMIT 1
             `
@@ -74,6 +79,9 @@ recordsRouter.get("/:idOrNumber", async (req, res, next) => {
                 p.phone_country_code AS "partyPhoneCountryCode",
                 p.city             AS "partyCity",
                 l.initials, l.program, l.program_id AS "programId", l.value,  -- Phase 3: l.city dropped (use p.city)
+                -- Stack is derived from the program (program.stack_id is NOT NULL),
+                -- never stored on the lead — see the note in routes/leads.ts.
+                stk.name AS stack, prg.stack_id AS "stackId",
                 l.description     AS "description",
                 l.fee_paid        AS "feePaid",
                 l.fee_due         AS "feeDue",
@@ -107,6 +115,8 @@ recordsRouter.get("/:idOrNumber", async (req, res, next) => {
               JOIN work_item wi ON wi.id = l.work_item_id
               JOIN party p      ON p.id  = wi.party_id
               LEFT JOIN app_user u ON u.party_id = l.advisor_id
+              LEFT JOIN program prg ON prg.id = l.program_id
+              LEFT JOIN stack   stk ON stk.id = prg.stack_id
               WHERE wi.number = ${idOrNumber}
               LIMIT 1
             `,

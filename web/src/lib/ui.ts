@@ -1,7 +1,7 @@
 // Pure-UI lookup tables (Tailwind class maps, etc.) — not data.
 // These never round-trip through the DB; they describe how to *render* values.
 
-import type { AvatarGrad, Heat, LeadRating, Stage } from "./types";
+import type { AvatarGrad, Heat, LeadRating, LeadTaskKind, Stage } from "./types";
 
 export const stageStyles: Record<Stage, { bg: string; text: string; dot: string }> = {
   new:  { bg: "bg-[rgba(31,63,207,.08)]",  text: "text-brand-blue",    dot: "bg-brand-blue" },
@@ -56,6 +56,50 @@ export const leadStatusStyles: Record<string, { bg: string; text: string; strike
 };
 
 export const LEAD_STATUS_FALLBACK_STYLE = { bg: "bg-warm2", text: "text-ink2" } as const;
+
+// Lead-task styles. Colour encodes *what kind of commitment* it is, so a month
+// of the calendar reads at a glance: green = they showed up / they paid (good),
+// magenta = a live conversation is booked, violet/blue = they're coming to us,
+// amber = we owe them a nudge, grey = a long shot.
+//
+// `hex` is here because the calendar chips draw their dot with an inline style
+// (a Tailwind class can't be interpolated into a legend swatch), and `bg`/`text`
+// for the chip body itself.
+export const taskKindStyles: Record<
+  LeadTaskKind,
+  { label: string; bg: string; text: string; dot: string; hex: string }
+> = {
+  follow_up:    { label: "Follow-up",    bg: "bg-[rgba(224,138,30,.12)]", text: "text-state-amber",   dot: "bg-state-amber",   hex: "#E08A1E" },
+  call:         { label: "Call",         bg: "bg-[rgba(199,25,122,.10)]", text: "text-brand-magenta", dot: "bg-brand-magenta", hex: "#C7197A" },
+  demo:         { label: "Demo",         bg: "bg-[rgba(46,158,106,.12)]", text: "text-state-ok",      dot: "bg-state-ok",      hex: "#2E9E6A" },
+  campus_visit: { label: "Campus visit", bg: "bg-[rgba(107,31,184,.09)]", text: "text-brand-violet",  dot: "bg-brand-violet",  hex: "#6B1FB8" },
+  trainer_talk: { label: "Trainer talk", bg: "bg-[rgba(31,63,207,.08)]",  text: "text-brand-blue",    dot: "bg-brand-blue",    hex: "#1F3FCF" },
+  enrollment:   { label: "Enrollment",   bg: "bg-[rgba(46,158,106,.14)]", text: "text-state-ok",      dot: "bg-state-ok",      hex: "#2E9E6A" },
+  re_engage:    { label: "Re-engage",    bg: "bg-warm2",                  text: "text-mute",          dot: "bg-mute",          hex: "#A89DAC" },
+  task:         { label: "Task",         bg: "bg-warm2",                  text: "text-ink2",          dot: "bg-ink-2",         hex: "#3B2E4A" },
+};
+
+/** "Kavya · Visit 6:00p" — the calendar chip label. Time is dropped for all-day
+ *  rows, and abbreviated hard ("6:00p") because a month cell is ~140px wide. */
+export function taskChipLabel(t: {
+  leadName: string;
+  kind: LeadTaskKind;
+  dueAt: string;
+  allDay: boolean;
+}): string {
+  const who = (t.leadName ?? "").trim().split(/\s+/)[0] || "Lead";
+  const what = taskKindStyles[t.kind]?.label ?? "Task";
+  if (t.allDay) return `${who} · ${what}`;
+  const d = new Date(t.dueAt);
+  if (Number.isNaN(d.getTime())) return `${who} · ${what}`;
+  // Same IST pinning as fmtFollowup, and for the same reason: this string is
+  // server-rendered then hydrated, so it must not depend on the runtime's zone.
+  const parts = istTimeFmt.formatToParts(d);
+  const get = (type: Intl.DateTimeFormatPartTypes) => parts.find((p) => p.type === type)?.value ?? "";
+  const mins = get("minute");
+  const clock = mins === "00" ? get("hour") : `${get("hour")}:${mins}`;
+  return `${who} · ${what} ${clock}${get("dayPeriod").toLowerCase().startsWith("a") ? "a" : "p"}`;
+}
 
 // Score bands. The donut alone tells you "78" but not whether 78 is good —
 // the band label next to it is what an advisor actually triages on. Bounds

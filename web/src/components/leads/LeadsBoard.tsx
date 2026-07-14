@@ -10,20 +10,63 @@ import { createPortal } from "react-dom";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { PipelineListView, PIPELINE_LIST_COLUMNS, PIPELINE_LIST_DEFAULT_COLUMNS } from "@/components/pipeline/PipelineListView";
 import {
-  ChartView, GROUP_BY_OPTIONS, groupKey, KanbanView, makeColumns,
-  ViewSwitcher, type GroupBy, type ViewMode,
+  GROUP_BY_OPTIONS, groupKey, KanbanView, makeColumns,
+  type GroupBy,
 } from "@/components/pipeline/PipelineBoard";
+import { LeadsCalendarView, type CalendarScale } from "@/components/leads/LeadsCalendarView";
+import {
+  LEADS_CHART_MEASURES, LeadsChartView,
+  type LeadsChartMeasure, type LeadsChartRange,
+} from "@/components/leads/LeadsChartView";
 import { DEFAULT_VIEW_ID, ViewTabs } from "@/components/pipeline/ViewTabs";
 import { FilterBar } from "@/components/filter/FilterBar";
 import { useFilter } from "@/components/filter/useFilter";
-import { Icon } from "@/components/ui/Icon";
+import { Icon, type IconName } from "@/components/ui/Icon";
+import { AnchoredPopover } from "@/components/ui/AnchoredPopover";
 import { cn } from "@/lib/cn";
 import { getLeads, getViewPreferences, updateLead, updateViewPreferences, type UserViewPreference } from "@/lib/api";
 import { applyFilter } from "@/components/filter/operators";
 import type { FilterField, FilterState } from "@/components/filter/types";
-import type { CatalogResponse, CurrentUser, Lead, SavedView } from "@/lib/types";
-import { LEAD_RATINGS } from "@/lib/types";
-import { avatarGradClass, ratingStyles } from "@/lib/ui";
+import type { CatalogResponse, CurrentUser, Lead, LeadTaskKind, LeadTaskStatus, SavedView } from "@/lib/types";
+import { LEAD_RATINGS, LEAD_TASK_KINDS } from "@/lib/types";
+import { avatarGradClass, ratingStyles, taskKindStyles } from "@/lib/ui";
+
+// /leads carries a fourth view that /pipeline doesn't: a calendar of scheduled
+// lead tasks. Rather than widen PipelineBoard's ViewMode (and give /pipeline a
+// Calendar tab that has nothing to render), the leads surface owns its own
+// mode union and its own switcher.
+type LeadsViewMode = "list" | "kanban" | "chart" | "calendar";
+
+const LEADS_VIEW_MODES: readonly LeadsViewMode[] = ["list", "kanban", "chart", "calendar"];
+
+function parseViewMode(raw: string | null): LeadsViewMode {
+  return LEADS_VIEW_MODES.includes(raw as LeadsViewMode) ? (raw as LeadsViewMode) : "list";
+}
+
+// Chart-view controls. These are deliberately NOT part of FilterState: they
+// slice the chart's own presentation (what to measure, over what window) and
+// mean nothing to the grid, so folding them into the shared filter would make
+// switching views silently mutate the user's row set.
+//
+// The measure list comes from LeadsChartView rather than being restated here,
+// so a measure can't appear in the pill without the maths to back it.
+const RANGE_OPTIONS: Array<{ value: LeadsChartRange; label: string }> = [
+  { value: "30d",     label: "Last 30 days" },
+  { value: "90d",     label: "Last 90 days" },
+  { value: "quarter", label: "This quarter" },
+  { value: "all",     label: "All time" },
+];
+
+const TASK_KIND_OPTIONS = LEAD_TASK_KINDS.map((k) => ({
+  value: k as LeadTaskKind,
+  label: taskKindStyles[k].label,
+}));
+
+const TASK_STATUS_OPTIONS: Array<{ value: LeadTaskStatus; label: string }> = [
+  { value: "open",      label: "Open" },
+  { value: "done",      label: "Done" },
+  { value: "cancelled", label: "Cancelled" },
+];
 
 /** DOM id of the Topbar slot that LeadsBoard portals its search input into.
  *  The page renders the (empty) node so it controls where it sits; the board
@@ -75,6 +118,7 @@ const STAGE_OPTIONS = [
 ];
 
 function buildFields(leads: Lead[]): FilterField[] {
+  const stacks    = unique(leads.map((l) => l.stack).filter((x): x is string => typeof x === "string" && x !== ""));
   const programs  = unique(leads.map((l) => l.program).filter((x): x is string => typeof x === "string" && x !== ""));
   const cities    = unique(leads.map((l) => l.city).filter((x): x is string => typeof x === "string" && x !== ""));
   const advisors  = unique(leads.map((l) => l.advisorName).filter((x): x is string => typeof x === "string" && x !== ""));
@@ -87,6 +131,10 @@ function buildFields(leads: Lead[]): FilterField[] {
     { key: "phone",            label: "Phone",            type: "text",   get: (l: Lead) => l.phone },
     { key: "city",             label: "City",             type: "enum",   options: cities.map((c) => ({ value: c, label: c })), get: (l: Lead) => l.city },
     // Assignment / classification
+    // Stack is read-only and derived from the program, but it's still a
+    // perfectly good thing to filter and group by — "show me everything in the
+    // Full AI Stack" is a coarser cut than picking its programs one by one.
+    { key: "stack",            label: "Stack",            type: "enum",   options: stacks.map((s) => ({ value: s, label: s })),    get: (l: Lead) => l.stack },
     { key: "program",          label: "Program",          type: "enum",   options: programs.map((p) => ({ value: p, label: p })), get: (l: Lead) => l.program },
     { key: "advisor",          label: "Advisor",          type: "enum",   options: advisors.map((a) => ({ value: a, label: a })), get: (l: Lead) => l.advisorName },
     { key: "source",           label: "Source",           type: "enum",   options: sources.map((s) => ({ value: s, label: s })),  get: (l: Lead) => l.sourceLabel ?? l.source },
@@ -262,9 +310,43 @@ export function LeadsBoard({
   // "none", because a flat sortable table is the sane default for a list.
   // Kanban and chart have no such option: they need an axis to exist at all,
   // so they fall back to rating.
-  const [view, setView] = useState<ViewMode>("list");
+  // Hydrated from the URL, not defaulted — otherwise a refresh (or a link
+  // pasted to a teammate) always lands on the list, whatever you were looking
+  // at. Mirrored back on change by the effect below.
+  const [view, setView] = useState<LeadsViewMode>(() => parseViewMode(searchParams.get("v")));
   const [groupBy, setGroupBy] = useState<GroupBy | "none">("none");
   const axis: GroupBy = groupBy === "none" ? "rating" : groupBy;
+
+  // ── chart + calendar controls ─────────────────────────────────────────
+  // Local to their view, for the reason given on the Measure/ChartRange types:
+  // they're presentation knobs, not row filters.
+  const [measure, setMeasure] = useState<LeadsChartMeasure>("count");
+  const [chartRange, setChartRange] = useState<LeadsChartRange>("30d");
+  const [chartAdvisor, setChartAdvisor] = useState<string>("all");
+  const [calKind, setCalKind] = useState<LeadTaskKind | "all">("all");
+  const [calAssignee, setCalAssignee] = useState<string>("all");
+  const [calStatus, setCalStatus] = useState<LeadTaskStatus | "all">("open");
+  const [calScale, setCalScale] = useState<CalendarScale>(
+    () => (searchParams.get("cal") === "week" ? "week" : "month"),
+  );
+
+  // Two different advisor vocabularies, because the two views key on different
+  // things: the chart buckets leads by the advisor's *name* (that's all a Lead
+  // carries), while the calendar filters tasks by assignee *id* (what the API
+  // takes). Both come off the catalog so they stay in sync with Manage Advisors.
+  const advisorNameOptions = useMemo(
+    () => catalog.advisors.map((a) => ({ value: a.name, label: a.name })),
+    [catalog.advisors],
+  );
+  const advisorIdOptions = useMemo(
+    () => catalog.advisors.map((a) => ({ value: a.id, label: a.name })),
+    [catalog.advisors],
+  );
+  const programOptions = useMemo(
+    () => catalog.programs.map((p) => ({ value: p.name, label: p.name })),
+    [catalog.programs],
+  );
+
 
   // Kanban / chart both want columns + a key→leads index off the same axis.
   // We pass [] for rating columns because /leads never fetches the server's
@@ -314,24 +396,62 @@ export function LeadsBoard({
   });
   const [liveColumns, setLiveColumns] = useState<string[] | null>(null);
 
-  // Keep the URL in sync when the active view changes (tab click, or a
-  // view was deleted and we fell back to the default). If a URL param
-  // references a view that no longer exists, drop it.
+  // Mirror the surface's state into the URL so a refresh — or a link pasted to
+  // a teammate — reopens exactly what you were looking at:
+  //
+  //   ?view=<id>  the active saved-view tab   (absent ⇒ "All leads")
+  //   ?v=<mode>   list | kanban | chart | calendar   (absent ⇒ list)
+  //   ?cal=week   calendar scale               (absent ⇒ month)
+  //
+  // All three are written by this one effect. Splitting them into an effect
+  // each would have them racing: they'd each build their next URL from the same
+  // stale `searchParams` snapshot and the last `router.replace` to land would
+  // silently drop the others' params.
+  //
+  // Defaults are omitted rather than written out, to keep a plain /leads link
+  // clean.
   useEffect(() => {
-    const current = searchParams.get("view");
-    const desired = activeViewId === DEFAULT_VIEW_ID ? null : activeViewId;
-    if (current === desired) return;
+    const desiredView  = activeViewId === DEFAULT_VIEW_ID ? null : activeViewId;
+    const desiredMode  = view === "list" ? null : view;
+    const desiredScale = view === "calendar" && calScale === "week" ? "week" : null;
+
+    if (
+      searchParams.get("view") === desiredView
+      && searchParams.get("v") === desiredMode
+      && searchParams.get("cal") === desiredScale
+    ) return;
+
     const next = new URLSearchParams(searchParams.toString());
-    if (desired) next.set("view", desired);
-    else next.delete("view");
+    for (const [key, val] of [
+      ["view", desiredView],
+      ["v", desiredMode],
+      ["cal", desiredScale],
+    ] as const) {
+      if (val) next.set(key, val);
+      else next.delete(key);
+    }
     const qs = next.toString();
     router.replace(qs ? `${pathname}?${qs}` : pathname, { scroll: false });
-  }, [activeViewId, pathname, router, searchParams]);
+  }, [activeViewId, view, calScale, pathname, router, searchParams]);
 
   const activeView = activeViewId === DEFAULT_VIEW_ID
     ? null
     : views.find((v) => v.id === activeViewId) ?? null;
   const viewColumnsToPush = activeView?.columns ?? null;
+
+  // Which leads the board is currently showing. The calendar renders tasks, not
+  // leads, so it can't reuse `filtered` directly — it needs the id set to test
+  // each task's parent lead against. Null when nothing is filtering, so the
+  // common case doesn't pay for a Set lookup per task.
+  //
+  // Keyed off `filterState`, not `activeViewId`: hand-editing a filter detaches
+  // you from the saved-view tab but must still scope the calendar, and clearing
+  // the filter must un-scope it.
+  const leadScope = useMemo(
+    () => (filterState.rules.length > 0 ? new Set(filtered.map((l) => l.id)) : null),
+    [filterState.rules.length, filtered],
+  );
+  const leadScopeLabel = leadScope ? (activeView?.name ?? "Filtered leads") : null;
 
   function selectView(id: string) {
     setActiveViewId(id);
@@ -509,27 +629,154 @@ export function LeadsBoard({
     if (activeViewId !== DEFAULT_VIEW_ID) setActiveViewId(DEFAULT_VIEW_ID);
   }
 
+  // ── toolbar ───────────────────────────────────────────────────────────
+  //
+  // The controls to the right of the view switcher are per-view, because the
+  // four views answer different questions. Grouping and row filters are
+  // meaningless to a chart of the whole book; a measure and a date range are
+  // meaningless to a grid that shows every column anyway.
+  //
+  //   list      group-by · rating · status · +filter   (Export / Columns come
+  //                                                     from PipelineListView's
+  //                                                     own toolbar row)
+  //   kanban    group-by · advisor · program · +filter
+  //   chart     measure  · advisor · range
+  //   calendar  events   · advisor · status
+  // Three zones, and the split matters:
+  //
+  //   [ view switcher ][ ← filters scroll → ][ Export/Columns or Month ]
+  //     pinned            the only scroller     pinned (rendered by the caller)
+  //
+  // The switcher is how you leave the view you're in — it must never scroll out
+  // of reach behind a long filter row. Only the pills scroll; `flex-nowrap` +
+  // `w-max` on the inner track makes them overflow sideways instead of wrapping
+  // onto a second line and shoving the grid down.
   const toolbar = (
-    <div className="flex flex-wrap items-center gap-2.5">
-      <ViewSwitcher value={view} onChange={setView} />
-      <LeadsGroupByPill value={groupBy} onChange={setGroupBy} />
-      <QuickFilterPill
-        label="Rating"
-        options={RATING_OPTIONS}
-        state={filterState}
-        fieldKey="rating"
-        onChange={changeFilter}
-      />
-      <QuickFilterPill
-        label="Status"
-        options={LEAD_STATUS_OPTIONS}
-        state={filterState}
-        fieldKey="leadStatus"
-        onChange={changeFilter}
-      />
-      <FilterBar fields={fields} state={filterState} onChange={changeFilter} />
+    <div className="flex min-w-0 items-center gap-2.5">
+      <div className="flex-shrink-0">
+        <LeadsViewSwitcher value={view} onChange={setView} />
+      </div>
+
+      <div
+        className="min-w-0 flex-1 overflow-x-auto scroll-x-clean"
+        // The scrollbar is hidden (it would otherwise reserve height inside the
+        // scroller and knock these pills out of line with the pinned buttons —
+        // see .scroll-x-clean). A trackpad still scrolls this natively, but a
+        // plain mouse wheel only emits deltaY, so map that onto scrollLeft.
+        // Safe to hijack: <body> is overflow:hidden, so a vertical wheel here
+        // has nothing else to scroll.
+        onWheel={(e) => {
+          const el = e.currentTarget;
+          if (el.scrollWidth <= el.clientWidth) return;
+          if (e.deltaY !== 0 && Math.abs(e.deltaY) > Math.abs(e.deltaX)) {
+            el.scrollLeft += e.deltaY;
+          }
+        }}
+      >
+        <div className="flex w-max flex-nowrap items-center gap-2.5 [&>*]:flex-shrink-0">
+      {(view === "list" || view === "kanban") && (
+        <LeadsGroupByPill value={groupBy} onChange={setGroupBy} />
+      )}
+
+      {view === "list" && (
+        <>
+          <QuickFilterPill
+            label="Rating"
+            options={RATING_OPTIONS}
+            state={filterState}
+            fieldKey="rating"
+            onChange={changeFilter}
+          />
+          <QuickFilterPill
+            label="Status"
+            options={LEAD_STATUS_OPTIONS}
+            state={filterState}
+            fieldKey="leadStatus"
+            onChange={changeFilter}
+          />
+        </>
+      )}
+
+      {view === "kanban" && (
+        <>
+          <QuickFilterPill
+            label="Advisor"
+            options={advisorNameOptions}
+            state={filterState}
+            fieldKey="advisor"
+            onChange={changeFilter}
+            anyLabel="All"
+          />
+          <QuickFilterPill
+            label="Program"
+            options={programOptions}
+            state={filterState}
+            fieldKey="program"
+            onChange={changeFilter}
+            anyLabel="All"
+          />
+        </>
+      )}
+
+      {view === "chart" && (
+        <>
+          <SelectPill label="Measure" options={LEADS_CHART_MEASURES} value={measure} onChange={setMeasure} />
+          <SelectPill
+            label="Advisor"
+            options={advisorNameOptions}
+            value={chartAdvisor}
+            onChange={setChartAdvisor}
+            allValue="all"
+            allLabel="All"
+          />
+          <SelectPill label="Range" options={RANGE_OPTIONS} value={chartRange} onChange={setChartRange} />
+        </>
+      )}
+
+      {view === "calendar" && (
+        <>
+          <SelectPill
+            label="Events"
+            options={TASK_KIND_OPTIONS}
+            value={calKind}
+            onChange={setCalKind}
+            allValue="all"
+            allLabel="All types"
+          />
+          <SelectPill
+            label="Advisor"
+            options={advisorIdOptions}
+            value={calAssignee}
+            onChange={setCalAssignee}
+            allValue="all"
+            allLabel="All"
+          />
+          <SelectPill
+            label="Status"
+            options={TASK_STATUS_OPTIONS}
+            value={calStatus}
+            onChange={setCalStatus}
+            allValue="all"
+            allLabel="Any"
+          />
+        </>
+      )}
+
+      {/* The rule builder only makes sense where there are rows to filter. */}
+      {(view === "list" || view === "kanban") && (
+        <FilterBar fields={fields} state={filterState} onChange={changeFilter} />
+      )}
+        </div>
+      </div>
     </div>
   );
+
+  // Pinned to the right of the toolbar row, outside the scroller — it must stay
+  // reachable however far the filters have scrolled. Same role Export / Columns
+  // play in list mode (they're rendered by PipelineListView's own toolbar row).
+  const toolbarRight = view === "calendar"
+    ? <ScalePill value={calScale} onChange={setCalScale} />
+    : null;
 
   return (
     <>
@@ -614,7 +861,12 @@ export function LeadsBoard({
         />
       ) : (
         <>
-          <div className="mb-4">{toolbar}</div>
+          {/* Mirrors PipelineListView's toolbar row: the slot owns its own
+              scrolling, so no scroller here. */}
+          <div className="mb-4 flex items-center justify-between gap-3">
+            <div className="min-w-0 flex-1">{toolbar}</div>
+            {toolbarRight && <div className="flex-shrink-0">{toolbarRight}</div>}
+          </div>
           {view === "kanban" && (
             <KanbanView
               columns={columns}
@@ -626,10 +878,24 @@ export function LeadsBoard({
             />
           )}
           {view === "chart" && (
-            <ChartView
-              columns={columns}
-              leadsByColumn={leadsByColumn}
-              groupByLabel={GROUP_BY_OPTIONS.find((o) => o.value === axis)?.label ?? ""}
+            <LeadsChartView
+              leads={filtered}
+              measure={measure}
+              advisorFilter={chartAdvisor}
+              range={chartRange}
+            />
+          )}
+          {/* The calendar reads lead_task rows, not leads — so the board's row
+              filter doesn't apply to it and it fetches its own data. Its three
+              pills are its filter. */}
+          {view === "calendar" && (
+            <LeadsCalendarView
+              kindFilter={calKind}
+              assigneeFilter={calAssignee}
+              statusFilter={calStatus}
+              scale={calScale}
+              leadScope={leadScope}
+              leadScopeLabel={leadScopeLabel}
             />
           )}
         </>
@@ -793,6 +1059,187 @@ export function LeadsSearchBox({ leads }: { leads: Lead[] }) {
   );
 }
 
+// ─── LeadsViewSwitcher ────────────────────────────────────────────────
+//
+// PipelineBoard's <ViewSwitcher> has three modes; leads has four. Kept
+// separate rather than adding a "calendar" case there, because /pipeline has
+// no lead_task surface and a dead fourth tab is worse than a little markup.
+function LeadsViewSwitcher({
+  value, onChange,
+}: {
+  value: LeadsViewMode;
+  onChange: (v: LeadsViewMode) => void;
+}) {
+  const items: Array<{ key: LeadsViewMode; label: string; icon: IconName }> = [
+    { key: "list",     label: "List",     icon: "bars" },
+    { key: "kanban",   label: "Kanban",   icon: "agents-grid" },
+    { key: "chart",    label: "Chart",    icon: "chart" },
+    { key: "calendar", label: "Calendar", icon: "calendar" },
+  ];
+  return (
+    <div className="inline-flex rounded-full border border-rule bg-paper p-1 text-[12.5px]">
+      {items.map((it) => (
+        <button
+          key={it.key}
+          type="button"
+          onClick={() => onChange(it.key)}
+          className={cn(
+            "inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 font-semibold transition",
+            value === it.key ? "bg-ink text-white" : "text-ink2 hover:bg-warm",
+          )}
+        >
+          <Icon name={it.icon} size={13} strokeWidth={2} />
+          {it.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+// ─── ScalePill ────────────────────────────────────────────────────────
+//
+// Month / Week. Visually distinct from the filter pills beside it — icon-led,
+// brand-coloured, no "LABEL:" prefix — because it isn't a filter: it reshapes
+// the grid rather than narrowing what lands in it.
+function ScalePill({
+  value, onChange,
+}: {
+  value: CalendarScale;
+  onChange: (v: CalendarScale) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    function onClick(e: MouseEvent) {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    }
+    window.addEventListener("mousedown", onClick);
+    return () => window.removeEventListener("mousedown", onClick);
+  }, [open]);
+
+  const options: Array<{ value: CalendarScale; label: string }> = [
+    { value: "month", label: "Month" },
+    { value: "week",  label: "Week" },
+  ];
+  const label = options.find((o) => o.value === value)?.label ?? "Month";
+
+  return (
+    <div ref={ref} className="relative">
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        className="inline-flex items-center gap-1.5 rounded-full border border-rule bg-paper px-3.5 py-1.5 text-[12.5px] font-semibold text-brand-violet transition hover:border-rule2"
+      >
+        <Icon name="calendar" size={13} strokeWidth={2} />
+        {label}
+      </button>
+      {open && (
+        <AnchoredPopover anchor={ref.current} align="right" className="min-w-[130px]">
+          {options.map((o) => (
+            <button
+              type="button"
+              key={o.value}
+              onClick={() => { onChange(o.value); setOpen(false); }}
+              className={cn(
+                "block w-full px-3 py-1.5 text-left text-[12.5px] hover:bg-warm",
+                value === o.value && "bg-warm font-semibold",
+              )}
+            >
+              {o.label}
+            </button>
+          ))}
+        </AnchoredPopover>
+      )}
+    </div>
+  );
+}
+
+// ─── SelectPill ───────────────────────────────────────────────────────
+//
+// The QuickFilterPill's twin for plain local state. QuickFilterPill reads and
+// writes FilterState — right for Rating/Status/Advisor/Program, which really
+// are row filters. The chart's Measure/Range and the calendar's Events/Status
+// are not: they belong to one view's presentation, so they get their own
+// pill that just owns a value. Same shape so the toolbar reads as one row.
+function SelectPill<T extends string>({
+  label, options, value, onChange, allValue, allLabel = "Any",
+}: {
+  label: string;
+  options: ReadonlyArray<{ value: T; label: string }>;
+  value: T | string;
+  onChange: (v: never) => void;
+  /** When set, prepends an "any" choice carrying this value (e.g. "all"). */
+  allValue?: string;
+  allLabel?: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    function onClick(e: MouseEvent) {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    }
+    window.addEventListener("mousedown", onClick);
+    return () => window.removeEventListener("mousedown", onClick);
+  }, [open]);
+
+  const isAll = allValue !== undefined && value === allValue;
+  const current = isAll
+    ? allLabel
+    : (options.find((o) => o.value === value)?.label ?? String(value));
+
+  // "Active" styling is reserved for a pill that's actually narrowing something.
+  // A Measure/Range pill has no neutral state, so it never lights up — otherwise
+  // the whole toolbar would read as permanently filtered.
+  const active = allValue !== undefined && !isAll;
+
+  const choices: Array<{ value: string; label: string }> = [
+    ...(allValue !== undefined ? [{ value: allValue, label: allLabel }] : []),
+    ...options.map((o) => ({ value: o.value as string, label: o.label })),
+  ];
+
+  return (
+    <div ref={ref} className="relative">
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        className={cn(
+          "inline-flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-[12.5px] font-semibold transition",
+          active
+            ? "border-brand-violet bg-brand-violet/10 text-brand-violet"
+            : "border-rule bg-paper text-ink2 hover:border-rule2 hover:text-ink",
+        )}
+      >
+        <span className="mono-cap text-[9.5px] tracking-[.08em] text-mute">{label}:</span>
+        <span>{current}</span>
+        <span className="text-[9px] text-mute">▾</span>
+      </button>
+      {open && (
+        <AnchoredPopover anchor={ref.current} className="max-h-[320px] min-w-[180px] overflow-y-auto">
+          {choices.map((o, i) => (
+            <div key={o.value}>
+              {allValue !== undefined && i === 1 && <div className="my-1 border-t border-rule" />}
+              <button
+                type="button"
+                onClick={() => { onChange(o.value as never); setOpen(false); }}
+                className={cn(
+                  "block w-full px-3 py-1.5 text-left text-[12.5px] hover:bg-warm",
+                  value === o.value && "bg-warm font-semibold",
+                )}
+              >
+                {o.label}
+              </button>
+            </div>
+          ))}
+        </AnchoredPopover>
+      )}
+    </div>
+  );
+}
+
 // ─── LeadsGroupByPill ─────────────────────────────────────────────────
 //
 // The grouping axis. Deliberately not PipelineBoard's <GroupBySelector>:
@@ -845,7 +1292,7 @@ function LeadsGroupByPill({
         <span className="text-[9px] text-mute">▾</span>
       </button>
       {open && (
-        <div className="absolute left-0 top-full z-30 mt-1 min-w-[160px] overflow-hidden rounded-lg border border-rule bg-paper py-1 shadow-card">
+        <AnchoredPopover anchor={ref.current} className="min-w-[160px]">
           {options.map((o) => (
             <button
               type="button"
@@ -859,7 +1306,7 @@ function LeadsGroupByPill({
               {o.label}
             </button>
           ))}
-        </div>
+        </AnchoredPopover>
       )}
     </div>
   );
@@ -876,13 +1323,16 @@ function LeadsGroupByPill({
 // Multi-select support is deliberately absent; if a user needs "hot OR
 // warm" they use the full FilterBar with is_any_of.
 function QuickFilterPill({
-  label, options, state, fieldKey, onChange,
+  label, options, state, fieldKey, onChange, anyLabel = "Any",
 }: {
   label: string;
   options: ReadonlyArray<{ value: string; label: string }>;
   state: FilterState;
   fieldKey: string;
   onChange: (next: FilterState) => void;
+  /** Wording for the no-rule choice. "Any" reads right for Rating/Status,
+   *  "All" for Advisor/Program — same behaviour either way. */
+  anyLabel?: string;
 }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
@@ -905,7 +1355,7 @@ function QuickFilterPill({
     ? currentRule.value : "";
   const currentLabel = currentVal
     ? (options.find((o) => o.value === currentVal)?.label ?? currentVal)
-    : "Any";
+    : anyLabel;
 
   function pick(value: string) {
     const others = state.rules.filter((r) => r.fieldKey !== fieldKey);
@@ -945,7 +1395,7 @@ function QuickFilterPill({
         <span className="text-[9px] text-mute">▾</span>
       </button>
       {open && (
-        <div className="absolute left-0 top-full z-30 mt-1 min-w-[180px] max-h-[320px] overflow-y-auto rounded-lg border border-rule bg-paper py-1 shadow-card">
+        <AnchoredPopover anchor={ref.current} className="max-h-[320px] min-w-[180px] overflow-y-auto">
           <button
             type="button"
             onClick={() => pick("")}
@@ -954,7 +1404,7 @@ function QuickFilterPill({
               !currentVal && "bg-warm font-semibold",
             )}
           >
-            Any
+            {anyLabel}
           </button>
           <div className="my-1 border-t border-rule" />
           {options.map((o) => (
@@ -970,7 +1420,7 @@ function QuickFilterPill({
               {o.label}
             </button>
           ))}
-        </div>
+        </AnchoredPopover>
       )}
     </div>
   );
