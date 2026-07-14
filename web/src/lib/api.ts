@@ -17,6 +17,7 @@ import type {
   ShareSurface,
   SlackDelivery, SlackRule, SlackRuleInput,
   SlackSharePreview, SlackShareTarget, SlackShareTargetInput, SlackShareTargetsResponse,
+  TwConversationCounts, TwInboxFilter, TwMessageDirection, CallOutcome,
   Stack,
   SummaryResponse,
 } from "./types";
@@ -1183,17 +1184,68 @@ export interface TwConversationFilter {
   limit?:    number;
 }
 
-export async function getTwConversations(
-  filter: TwConversationFilter = {},
-): Promise<TwConversationListItem[]> {
+/** Build the shared query string for the inbox list + its tab counts, so the two
+ *  can never disagree about what they're describing. */
+function inboxQuery(filter: TwInboxFilter): URLSearchParams {
   const qs = new URLSearchParams();
-  if (filter.channel)  qs.set("channel",  filter.channel);
   if (filter.assignee) qs.set("assignee", filter.assignee);
+  if (filter.rating)   qs.set("rating",   filter.rating);
+  if (filter.unread)   qs.set("unread",   "1");
   if (filter.q)        qs.set("q",        filter.q);
-  if (filter.limit)    qs.set("limit",    String(filter.limit));
+  return qs;
+}
+
+export async function getTwConversations(
+  filter: TwInboxFilter = {},
+): Promise<TwConversationListItem[]> {
+  const qs = inboxQuery(filter);
+  if (filter.channel) qs.set("channel", filter.channel);
+  if (filter.sort)    qs.set("sort",    filter.sort);
+  if (filter.limit)   qs.set("limit",   String(filter.limit));
   const path = qs.toString() ? `/twilio/conversations?${qs}` : "/twilio/conversations";
   const { conversations } = await get<{ conversations: TwConversationListItem[] }>(path);
   return conversations;
+}
+
+/** Per-channel totals for the tab strip. Takes the same filter as the list
+ *  (minus `channel`, obviously) so each tab's count matches what clicking it
+ *  would actually show. */
+export async function getTwConversationCounts(
+  filter: TwInboxFilter = {},
+): Promise<TwConversationCounts> {
+  const qs = inboxQuery(filter);
+  const path = qs.toString() ? `/twilio/conversations/counts?${qs}` : "/twilio/conversations/counts";
+  try {
+    return await get<TwConversationCounts>(path);
+  } catch {
+    // Counts are decoration on the tabs — a failure here must not blank the inbox.
+    return { all: 0, allUnread: 0, byChannel: {} };
+  }
+}
+
+/** Staff-only note on a conversation. Never transmitted to the lead. Mirrored
+ *  into the lead's timeline when the conversation is linked to one. */
+export async function addTwConversationNote(id: string, body: string): Promise<void> {
+  await post<{ ok: boolean; id: string }>(
+    `/twilio/conversations/${encodeURIComponent(id)}/notes`,
+    { body },
+  );
+}
+
+/** Log a call that happened outside the system. */
+export async function logTwConversationCall(
+  id: string,
+  input: {
+    outcome: CallOutcome;
+    durationSec?: number | null;
+    notes?: string | null;
+    direction?: TwMessageDirection;
+  },
+): Promise<void> {
+  await post<{ ok: boolean; id: string }>(
+    `/twilio/conversations/${encodeURIComponent(id)}/calls`,
+    input,
+  );
 }
 
 export async function getTwConversation(id: string): Promise<TwConversationDetail> {

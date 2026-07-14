@@ -1,11 +1,9 @@
 "use client";
 
-import { Icon } from "@/components/ui/Icon";
+import { Icon, type IconName } from "@/components/ui/Icon";
 import { cn } from "@/lib/cn";
+import { avatarGradClass, gradFor, initialsOf, ratingStyles } from "@/lib/ui";
 import type { TwChannel, TwConversationListItem } from "@/lib/types";
-
-export type ChannelFilter  = "all" | TwChannel;
-export type AssigneeFilter = "all" | "me" | "unassigned";
 
 export function ThreadList({
   threads, activeId, onSelect,
@@ -35,6 +33,13 @@ export function ThreadList({
   );
 }
 
+const CHANNEL_BADGE: Record<TwChannel, { bg: string; icon: IconName; label: string }> = {
+  whatsapp: { bg: "bg-state-ok",      icon: "chat",           label: "WhatsApp" },
+  voice:    { bg: "bg-brand-magenta", icon: "phone",          label: "Voice call" },
+  email:    { bg: "bg-brand-blue",    icon: "mail",           label: "Email" },
+  sms:      { bg: "bg-mute",          icon: "message-square", label: "SMS" },
+};
+
 function ThreadRow({
   thread, active, onClick,
 }: {
@@ -42,67 +47,121 @@ function ThreadRow({
   active: boolean;
   onClick: () => void;
 }) {
-  const chanLabel  = thread.channel === "whatsapp" ? "WhatsApp" : thread.channel === "voice" ? "Voice call" : "SMS";
-  const chanBadge  = thread.channel === "whatsapp" ? "WA"       : thread.channel === "voice" ? "Call"       : "SMS";
-  const chanColor  = thread.channel === "whatsapp" ? "bg-state-ok"
-                    : thread.channel === "voice"    ? "bg-brand-violet"
-                    : "bg-brand-blue";
+  const badge  = CHANNEL_BADGE[thread.channel];
+  const unread = thread.unreadCount > 0;
+  const rating = thread.leadRating ? ratingStyles[thread.leadRating] : null;
+
   return (
     <button
       type="button"
       onClick={onClick}
       className={cn(
-        "flex w-full items-start gap-3 border-b border-rule/60 px-4 py-3 text-left transition",
-        active ? "bg-brand-violet/[.06]" : "hover:bg-warm/40",
+        // The inactive border is transparent rather than absent so selecting a
+        // row doesn't shove its content 3px to the right.
+        "flex w-full items-start gap-3 border-b border-rule/60 border-l-[3px] px-3 py-3 text-left transition",
+        active
+          ? "border-l-brand-violet bg-warm"
+          : "border-l-transparent hover:bg-warm/40",
       )}
     >
-      <span
-        className={cn(
-          "mt-0.5 flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-full text-[11px] font-bold text-white",
-          chanColor,
-        )}
-        title={chanLabel}
-      >
-        {initials(thread.partyName)}
+      <span className="relative mt-0.5 flex-shrink-0">
+        <span
+          className={cn(
+            "flex h-10 w-10 items-center justify-center rounded-full text-[12px] font-bold text-white",
+            avatarGradClass[gradFor(thread.partyId)],
+          )}
+        >
+          {initialsOf(thread.partyName)}
+        </span>
+        <span
+          title={badge.label}
+          className={cn(
+            "absolute -bottom-0.5 -left-0.5 flex h-[15px] w-[15px] items-center justify-center rounded-full text-white ring-2 ring-paper",
+            badge.bg,
+          )}
+        >
+          <Icon name={badge.icon} size={8} strokeWidth={2.6} />
+        </span>
       </span>
+
       <div className="min-w-0 flex-1">
-        <div className="flex items-center gap-2">
-          <span className="truncate text-[13px] font-semibold text-ink">{thread.partyName}</span>
-          <span className="mono-cap flex-shrink-0 rounded-full bg-warm2 px-1.5 py-0.5 text-[8.5px] font-semibold tracking-[.08em] text-mute">
-            {chanBadge}
+        <div className="flex items-baseline gap-2">
+          <span
+            className={cn(
+              "truncate text-[13px]",
+              unread ? "font-bold text-ink" : "font-semibold text-ink2",
+            )}
+          >
+            {thread.partyName}
           </span>
-          {thread.leadNumber && (
-            <span className="mono-cap flex-shrink-0 rounded-full bg-brand-violet/10 px-1.5 py-0.5 text-[8.5px] font-semibold tracking-[.08em] text-brand-violet">
-              {thread.leadNumber}
-            </span>
-          )}
-          {thread.isUnlinked && (
-            <span className="mono-cap flex-shrink-0 rounded-full bg-state-amber/15 px-1.5 py-0.5 text-[8.5px] font-semibold tracking-[.08em] text-state-amber">
-              UNLINKED
-            </span>
-          )}
+          <span className="ml-auto flex-shrink-0 text-[10.5px] text-mute">
+            {fmtRelative(thread.lastMessageAt)}
+          </span>
         </div>
-        <div className="mt-0.5 truncate text-[12px] text-ink2">
+
+        <div className="mt-0.5 truncate text-[12px] text-mute">
           {thread.lastMessageText ?? <span className="italic text-hint">no messages yet</span>}
         </div>
-        <div className="mt-0.5 flex items-center gap-2 text-[10.5px] text-mute">
-          <span>{thread.partyPhone ?? "—"}</span>
-          <span>·</span>
-          <span>{thread.lastMessageAt ? new Date(thread.lastMessageAt).toLocaleString() : "—"}</span>
-        </div>
+
+        {(rating || thread.isUnlinked) && (
+          <div className="mt-1.5 flex items-center gap-1.5">
+            {thread.isUnlinked ? (
+              <span className="mono-cap inline-flex items-center rounded-full bg-state-amber/15 px-1.5 py-0.5 text-[8.5px] font-semibold tracking-[.08em] text-state-amber">
+                UNLINKED
+              </span>
+            ) : rating ? (
+              <span
+                className={cn(
+                  "inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 text-[10px] font-semibold",
+                  rating.bg, rating.text,
+                )}
+              >
+                <span className={cn("h-1.5 w-1.5 rounded-full", rating.dot)} />
+                {rating.label}
+              </span>
+            ) : null}
+          </div>
+        )}
       </div>
-      {thread.unreadCount > 0 && (
-        <span className="mt-1 rounded-full bg-brand-magenta px-1.5 py-0.5 font-mono text-[10px] font-bold text-white">
-          {thread.unreadCount}
-        </span>
+
+      {unread && (
+        <span
+          className="mt-1.5 h-2 w-2 flex-shrink-0 rounded-full bg-brand-magenta"
+          title={`${thread.unreadCount} unread`}
+        />
       )}
-      {active && <Icon name="chevron-down" size={14} className="text-brand-violet -rotate-90 mt-1" />}
     </button>
   );
 }
 
-function initials(name: string): string {
-  const parts = (name ?? "").trim().split(/\s+/).filter(Boolean);
-  if (!parts.length) return "??";
-  return (parts[0]![0]! + (parts[1]?.[0] ?? "")).toUpperCase();
+// Relative timestamps, pinned to IST — same reasoning as lib/ui.ts: every user
+// is in India, and a zone-dependent "Yest" is worse than a wrong-but-consistent
+// one when the list is polled and re-rendered constantly.
+const IST = "Asia/Kolkata";
+const istDayFmt     = new Intl.DateTimeFormat("en-CA", { timeZone: IST, year: "numeric", month: "2-digit", day: "2-digit" });
+const istTimeFmt    = new Intl.DateTimeFormat("en-IN", { timeZone: IST, hour: "numeric", minute: "2-digit", hour12: true });
+const istWeekdayFmt = new Intl.DateTimeFormat("en-IN", { timeZone: IST, weekday: "short" });
+const istShortFmt   = new Intl.DateTimeFormat("en-IN", { timeZone: IST, day: "numeric", month: "short" });
+
+function istDayStart(d: Date): number {
+  return Date.parse(istDayFmt.format(d));
+}
+
+/** "11:20a" (today) · "Yest" · "Thu" (this week) · "12 Jul" (older). */
+function fmtRelative(iso: string | null): string {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "—";
+
+  const days = Math.round((istDayStart(new Date()) - istDayStart(d)) / 86_400_000);
+
+  if (days <= 0) {
+    const parts = istTimeFmt.formatToParts(d);
+    const get = (type: Intl.DateTimeFormatPartTypes) => parts.find((p) => p.type === type)?.value ?? "";
+    const suffix = get("dayPeriod").toLowerCase().startsWith("a") ? "a" : "p";
+    return `${get("hour")}:${get("minute")}${suffix}`;
+  }
+  if (days === 1) return "Yest";
+  if (days < 7) return istWeekdayFmt.format(d);
+  return istShortFmt.format(d);
 }

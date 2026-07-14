@@ -1,13 +1,17 @@
 import { Topbar } from "@/components/shell/Topbar";
-import { getCurrentUser, getTwConversations } from "@/lib/api";
+import { getCatalog, getCurrentUser, getTwConversations } from "@/lib/api";
 import { requirePagePermission } from "@/lib/guards";
 import { InboxShell } from "@/components/inbox/InboxShell";
 
 export default async function InboxPage() {
   await requirePagePermission("messaging.read");
-  const [conversations, me] = await Promise.all([
+  const [conversations, me, catalog] = await Promise.all([
     getTwConversations(),
     getCurrentUser(),
+    // Feeds the inbox's ADVISOR filter pill. Failing the whole page over a
+    // dropdown's options would be a bad trade — an empty list just means the
+    // pill only offers "All".
+    getCatalog().catch(() => null),
   ]);
   const canSend    = me?.permissions.includes("messaging.send") ?? false;
   const canPromote = me?.permissions.includes("leads.write") ?? false;
@@ -23,6 +27,7 @@ export default async function InboxPage() {
       <div className="px-6 pb-6 pt-6">
         <InboxShell
           initialConversations={conversations}
+          advisors={(catalog?.advisors ?? []).map((a) => ({ id: a.id, name: a.name }))}
           canSend={canSend}
           canPromote={canPromote}
           canUpload={canUpload}

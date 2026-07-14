@@ -1,27 +1,89 @@
 "use client";
 
-// Thread pane: header + message bubbles + reply box.
+// Thread pane: header + transcript + composer.
 // Polls thread detail every 10s while active + tab visible.
+//
+// The transcript holds three kinds of entry (tw_message.kind):
+//   'message'  — actually transmitted, rendered as a chat bubble
+//   'note'     — staff-only annotation, rendered as a centered callout
+//   'call_log' — a call that happened off-platform, also a callout
+// Rows written before post-0074 have no `kind` at all, so every read of it goes
+// through `kindOf()` and defaults to 'message'.
 
 import Link from "next/link";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Icon } from "@/components/ui/Icon";
 import { cn } from "@/lib/cn";
 import {
+  assignTwConversation,
+  getCatalog,
   getTwConversation,
   markTwConversationRead,
   promoteTwConversationToLead,
 } from "@/lib/api";
-import type { TwConversationDetail, TwConversationListItem, TwMessage } from "@/lib/types";
-import { ReplyBox } from "./ReplyBox";
-import { EmailComposer } from "./EmailComposer";
+import type {
+  CallLogMeta,
+  CatalogResponse,
+  TwConversationDetail,
+  TwConversationListItem,
+  TwMessage,
+  TwMessageKind,
+} from "@/lib/types";
+import { avatarGradClass, gradFor, initialsOf } from "@/lib/ui";
 import { MessageMediaGallery } from "@/components/media/MessageMediaGallery";
 import { linkify } from "./linkify";
-import { CHAT_BG_DATA_URL } from "./chatBg";
+import { CALL_OUTCOME_LABELS, InboxComposer, formatCallDuration } from "./InboxComposer";
 import { NewLeadDialog } from "@/components/leads/NewLeadDialog";
 import { CallButton } from "@/components/record/CallButton";
 
 const DETAIL_POLL_MS = 10_000;
+
+// Everyone is in India, and this component server-renders then hydrates, so the
+// clock must not depend on the runtime's zone — see the same reasoning in lib/ui.ts.
+const IST = "Asia/Kolkata";
+const istDayKeyFmt   = new Intl.DateTimeFormat("en-CA", { timeZone: IST, year: "numeric", month: "2-digit", day: "2-digit" });
+const istDayFmt      = new Intl.DateTimeFormat("en-GB", { timeZone: IST, day: "2-digit", month: "short" });
+const istDayYearFmt  = new Intl.DateTimeFormat("en-GB", { timeZone: IST, day: "2-digit", month: "short", year: "numeric" });
+const istClockFmt    = new Intl.DateTimeFormat("en-IN", { timeZone: IST, hour: "numeric", minute: "2-digit", hour12: true });
+
+/** "10:47 am" — assembled from parts so an ICU version difference between the
+ *  server and the browser (U+202F vs a plain space before the day period)
+ *  can't produce a hydration mismatch. */
+function istClock(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "";
+  const parts = istClockFmt.formatToParts(d);
+  const get = (t: Intl.DateTimeFormatPartTypes) => parts.find((p) => p.type === t)?.value ?? "";
+  return `${get("hour")}:${get("minute")} ${get("dayPeriod").toLowerCase()}`;
+}
+
+/** Pre-migration rows carry no `kind`. Everything that branches on it comes
+ *  through here so those rows keep rendering as ordinary messages. */
+function kindOf(m: TwMessage): TwMessageKind {
+  return m.kind ?? "message";
+}
+
+/** Only kind='call_log' rows carry a populated meta block; `{}` otherwise.
+ *  `Record<string, never>` has an index signature, so an `in` check can't
+ *  narrow the union — the cast is checked by the `outcome` guard below it. */
+function callMeta(m: TwMessage): CallLogMeta | null {
+  const meta = m.meta as Partial<CallLogMeta> | undefined;
+  if (!meta?.outcome) return null;
+  return {
+    outcome: meta.outcome,
+    durationSec: meta.durationSec ?? null,
+    direction: meta.direction ?? m.direction,
+  };
+}
+
+// The staff list is the same for every thread and changes about once a month,
+// so it's fetched once per page load rather than on every thread open. It backs
+// both the assign menu and the author names on notes/call logs.
+let catalogOnce: Promise<CatalogResponse> | null = null;
+function staffCatalog(): Promise<CatalogResponse> {
+  catalogOnce ??= getCatalog();
+  return catalogOnce;
+}
 
 export function ThreadView({
   threadId, summary, canSend, canPromote, canUpload = false, canAddToLibrary = false, onRefreshList,
@@ -37,6 +99,7 @@ export function ThreadView({
   const [detail, setDetail] = useState<TwConversationDetail | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [promoteOpen, setPromoteOpen] = useState(false);
+  const [staff, setStaff] = useState<CatalogResponse["staff"]>([]);
   const scrollRef = useRef<HTMLDivElement>(null);
 
   const fetchDetail = useCallback(async () => {
@@ -54,6 +117,14 @@ export function ThreadView({
     void fetchDetail();
     void markTwConversationRead(threadId).catch(() => {});
   }, [fetchDetail, threadId]);
+
+  useEffect(() => {
+    let alive = true;
+    staffCatalog()
+      .then((c) => { if (alive) setStaff(c.staff); })
+      .catch(() => {});
+    return () => { alive = false; };
+  }, []);
 
   // Poll every 10s while tab is visible.
   useEffect(() => {
@@ -89,7 +160,9 @@ export function ThreadView({
   // The newest email in the thread — the default reply target, since replying
   // to it is what keeps our reply inside the same Gmail thread AND inside the
   // recipient's mail-client thread.
-  const lastEmail = [...messages].reverse().find((m) => m.channel === "email") ?? null;
+  const lastEmail = [...messages].reverse().find(
+    (m) => m.channel === "email" && kindOf(m) === "message",
+  ) ?? null;
 
   // Composer target. `composeNew` means "start a fresh thread with a new
   // subject"; otherwise we reply to `replyToId`, defaulting to the newest mail.
@@ -107,68 +180,87 @@ export function ThreadView({
     setComposeNew(false);
   }, [threadId]);
 
+  const authorName = useCallback(
+    (userId: string | null) => staff.find((s) => s.id === userId)?.name ?? null,
+    [staff],
+  );
+
+  const contactLine = summary.channel === "email"
+    ? summary.partyEmail ?? summary.partyPhone
+    : summary.partyPhone ?? summary.partyEmail;
+
+  // A thread is dialable when we know who to call and where — the CallButton
+  // resolves the number server-side from the lead.
+  const canCall = canSend && !!summary.leadNumber && !!summary.partyPhone;
+
   return (
     <div className="flex h-full flex-col">
       {/* Header */}
-      <div className="flex items-start gap-3 border-b border-rule px-5 py-4">
+      <div className="flex items-center gap-3 border-b border-rule bg-paper px-5 py-3.5">
         <span
           className={cn(
             "flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-full text-[12px] font-bold text-white",
-            summary.channel === "whatsapp" ? "bg-state-ok" :
-            summary.channel === "voice"    ? "bg-brand-violet" :
-            "bg-brand-blue",
+            avatarGradClass[gradFor(summary.partyName || summary.partyId)],
           )}
         >
-          {initials(summary.partyName)}
+          {initialsOf(summary.partyName)}
         </span>
+
         <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-2">
-            <h2 className="truncate text-[16px] font-bold tracking-[-.005em]">{summary.partyName}</h2>
-            <span className="mono-cap rounded-full bg-warm2 px-2 py-0.5 text-[9px] font-semibold tracking-[.08em] text-mute">
-              {summary.channel === "whatsapp" ? "WhatsApp"
-                : summary.channel === "voice"    ? "Voice"
-                : summary.channel === "email"    ? "Email"
-                : "SMS"}
-            </span>
+          <h2 className="truncate text-[16px] font-bold tracking-[-.005em]">{summary.partyName}</h2>
+          <div className="mt-0.5 flex flex-wrap items-center gap-1.5 text-[11.5px] text-mute">
+            <span className={cn("h-1.5 w-1.5 flex-shrink-0 rounded-full", CHANNEL_DOT[summary.channel])} />
+            <span>{CHANNEL_LABEL[summary.channel]}</span>
+            {contactLine && (
+              <>
+                <span aria-hidden>·</span>
+                <span className="truncate">{contactLine}</span>
+              </>
+            )}
             {summary.leadNumber && (
-              <Link
-                href={`/records/${summary.leadNumber}`}
-                className="mono-cap rounded-full bg-brand-violet/10 px-2 py-0.5 text-[9px] font-semibold tracking-[.08em] text-brand-violet hover:underline"
-              >
-                {summary.leadNumber}
-              </Link>
+              <>
+                <span aria-hidden>·</span>
+                <Link
+                  href={`/records/${summary.leadNumber}`}
+                  className="font-mono text-[10.5px] font-semibold text-brand-violet hover:underline"
+                >
+                  {summary.leadNumber}
+                </Link>
+              </>
             )}
           </div>
-          <div className="mt-0.5 text-[12px] text-mute">
-            {summary.channel === "email"
-              ? summary.partyEmail ?? "—"
-              : summary.partyPhone ?? "—"}
-          </div>
         </div>
-        {summary.isUnlinked && canPromote && (
-          <button
-            type="button"
-            onClick={() => setPromoteOpen(true)}
-            className="rounded-md border border-brand-violet bg-brand-violet px-3 py-1.5 text-[12px] font-semibold text-white transition hover:bg-brand-violet/90"
-          >
-            Promote to lead
-          </button>
-        )}
-        {/* Voice threads get a "Call again" affordance in the header so
-            you don't need to bounce to the record page to redial. */}
-        {summary.channel === "voice" && canSend && summary.leadNumber && summary.partyPhone && (
-          <CallButton leadNumber={summary.leadNumber} leadPhone={summary.partyPhone} />
-        )}
+
+        <div className="flex flex-shrink-0 items-center gap-1.5">
+          {canCall && (
+            <CallButton
+              leadNumber={summary.leadNumber!}
+              leadPhone={summary.partyPhone}
+              className="!px-2 !py-2"
+            />
+          )}
+          <AssignMenu
+            conversationId={threadId}
+            staff={staff}
+            assignedUserId={summary.assignedUserId}
+            assignedName={summary.advisorName}
+            onAssigned={() => { void fetchDetail(); onRefreshList(); }}
+          />
+          {summary.leadNumber ? (
+            <Link href={`/records/${summary.leadNumber}`} className="btn-primary !px-3 !py-2 !text-[12px]">
+              Open lead
+              <Icon name="arrow-right" size={12} strokeWidth={2.2} />
+            </Link>
+          ) : canPromote ? (
+            <button type="button" onClick={() => setPromoteOpen(true)} className="btn-primary !px-3 !py-2 !text-[12px]">
+              Promote to lead
+            </button>
+          ) : null}
+        </div>
       </div>
 
-      {/* Messages — WhatsApp-style chat scroll. Light theme + subtle
-          doodle tile. Content is inset via px-6 so bubbles don't crowd
-          the edges even on narrow columns. */}
-      <div
-        ref={scrollRef}
-        className="flex-1 overflow-y-auto bg-[#f7f4ef] px-6 py-5"
-        style={{ backgroundImage: CHAT_BG_DATA_URL, backgroundRepeat: "repeat" }}
-      >
+      {/* Transcript */}
+      <div ref={scrollRef} className="flex-1 overflow-y-auto bg-warm px-6 py-5">
         {loadError && (
           <div className="mb-3 rounded-lg border border-state-warn/30 bg-state-warn/10 px-3 py-2 text-[12.5px] text-state-warn">
             {loadError}
@@ -181,48 +273,31 @@ export function ThreadView({
           messages={messages}
           replyingToId={replyTarget?.id ?? null}
           onReplyTo={canSend ? (id) => { setComposeNew(false); setReplyToId(id); } : undefined}
+          authorName={authorName}
         />
       </div>
 
-      {/* Reply — text on SMS/WA, Call button on voice, composer on email. */}
-      <div className="border-t border-rule bg-[#f0ece5] p-2.5">
-        {!canSend ? (
-          <div className="rounded-md border border-dashed border-rule px-3 py-2 text-center text-[12px] text-mute">
-            Read-only — you don&apos;t have the <code>messaging.send</code> permission.
-          </div>
-        ) : summary.channel === "voice" ? (
-          <div className="flex items-center justify-center gap-2 py-2 text-[12.5px] text-mute">
-            <span>Voice thread — no text replies.</span>
-            {summary.leadNumber && summary.partyPhone && (
-              <CallButton leadNumber={summary.leadNumber} leadPhone={summary.partyPhone} />
-            )}
-          </div>
-        ) : summary.channel === "email" ? (
-          // `to` prefers the party's address over the lead number — an unlinked
-          // thread has no lead number at all.
-          <EmailComposer
-            to={summary.partyEmail ?? summary.leadNumber ?? ""}
-            replyTo={replyTarget ? { id: replyTarget.id, subject: replyTarget.subject ?? null } : null}
-            hasThread={!!lastEmail}
-            onStartNew={() => { setComposeNew(true); setReplyToId(null); }}
-            onReplyToLatest={() => { setComposeNew(false); setReplyToId(null); }}
-            onSent={() => {
-              setComposeNew(false);
-              setReplyToId(null);
-              void fetchDetail();
-              onRefreshList();
-            }}
-          />
-        ) : (
-          <ReplyBox
-            conversationId={threadId}
-            channel={summary.channel}
-            canUpload={canUpload}
-            canAddToLibrary={canAddToLibrary}
-            onSent={() => { void fetchDetail(); onRefreshList(); }}
-          />
-        )}
-      </div>
+      <InboxComposer
+        conversationId={threadId}
+        channel={summary.channel}
+        canSend={canSend}
+        canUpload={canUpload}
+        canAddToLibrary={canAddToLibrary}
+        // `to` prefers the party's address over the lead number — an unlinked
+        // thread has no lead number at all.
+        emailTo={summary.partyEmail ?? summary.leadNumber ?? ""}
+        emailReplyTo={replyTarget ? { id: replyTarget.id, subject: replyTarget.subject ?? null } : null}
+        hasEmailThread={!!lastEmail}
+        onStartNewEmail={() => { setComposeNew(true); setReplyToId(null); }}
+        onReplyToLatestEmail={() => { setComposeNew(false); setReplyToId(null); }}
+        onSent={() => {
+          setComposeNew(false);
+          setReplyToId(null);
+          void fetchDetail();
+          onRefreshList();
+        }}
+        onRefresh={() => { void fetchDetail(); }}
+      />
 
       {promoteOpen && (() => {
         const split = splitPhone(summary.partyPhone);
@@ -254,36 +329,162 @@ export function ThreadView({
   );
 }
 
+const CHANNEL_LABEL: Record<TwConversationListItem["channel"], string> = {
+  whatsapp: "WhatsApp",
+  sms: "SMS",
+  voice: "Voice",
+  email: "Email",
+};
+
+const CHANNEL_DOT: Record<TwConversationListItem["channel"], string> = {
+  whatsapp: "bg-state-ok",
+  sms: "bg-brand-magenta",
+  voice: "bg-brand-violet",
+  email: "bg-brand-blue",
+};
+
+// ─── Assign ──────────────────────────────────────────────────────────────
+
+/** Reassign the thread's owner. Renders nothing until the staff list has
+ *  loaded — an assign button with no one to assign to is a dead button. */
+function AssignMenu({
+  conversationId, staff, assignedUserId, assignedName, onAssigned,
+}: {
+  conversationId: string;
+  staff: CatalogResponse["staff"];
+  assignedUserId: string | null;
+  assignedName: string | null;
+  onAssigned: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  if (staff.length === 0) return null;
+
+  async function assign(userId: string | null) {
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await assignTwConversation(conversationId, userId);
+      setOpen(false);
+      onAssigned();
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="relative">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        title={assignedName ? `Assigned to ${assignedName}` : "Unassigned — click to assign"}
+        aria-label="Assign conversation"
+        className={cn(
+          "inline-flex h-[34px] w-[34px] items-center justify-center rounded-[9px] border border-rule bg-paper transition hover:border-brand-violet hover:text-brand-violet",
+          assignedUserId ? "text-brand-violet" : "text-ink-2",
+        )}
+      >
+        <Icon name="user-plus" size={14} strokeWidth={2} />
+      </button>
+
+      {open && (
+        <>
+          {/* Click-away layer — keeps the menu from needing a document listener. */}
+          <button
+            type="button"
+            aria-label="Close assign menu"
+            className="fixed inset-0 z-40 cursor-default"
+            onClick={() => setOpen(false)}
+          />
+          <div className="absolute right-0 top-[calc(100%+6px)] z-50 w-[220px] overflow-hidden rounded-[10px] border border-rule bg-paper py-1 shadow-card">
+            <div className="mono-cap px-3 py-1.5 text-[9px] tracking-[.12em] text-hint">Assign to</div>
+            <AssignRow label="Unassigned" active={!assignedUserId} disabled={busy} onClick={() => void assign(null)} />
+            {staff.map((s) => (
+              <AssignRow
+                key={s.id}
+                label={s.name || s.email}
+                active={s.id === assignedUserId}
+                disabled={busy}
+                onClick={() => void assign(s.id)}
+              />
+            ))}
+            {error && <div className="px-3 py-1.5 text-[11px] text-state-warn">{error}</div>}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+function AssignRow({
+  label, active, disabled, onClick,
+}: {
+  label: string;
+  active: boolean;
+  disabled: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      className={cn(
+        "flex w-full items-center justify-between gap-2 px-3 py-1.5 text-left text-[12.5px] transition hover:bg-warm disabled:opacity-50",
+        active ? "font-semibold text-brand-violet" : "text-ink-2",
+      )}
+    >
+      <span className="truncate">{label}</span>
+      {active && <Icon name="check" size={12} strokeWidth={2.4} className="flex-shrink-0" />}
+    </button>
+  );
+}
+
 // ─── Message list with date separators + consecutive-bubble grouping ─────
 
 function MessageList({
-  messages, replyingToId, onReplyTo,
+  messages, replyingToId, onReplyTo, authorName,
 }: {
   messages: TwMessage[];
   /** Highlights whichever message the composer is currently aimed at. */
   replyingToId?: string | null;
   /** Undefined when the user can't send — the Reply buttons then don't render. */
   onReplyTo?: (messageId: string) => void;
+  authorName: (userId: string | null) => string | null;
 }) {
-  // Group by day (Today / Yesterday / dd MMM) with a subtle pill separator
-  // between groups, matching WhatsApp's chat rhythm.
-  const groups = groupByDay(messages);
+  const groups = useMemo(() => groupByDay(messages), [messages]);
   return (
     <div className="flex flex-col gap-1">
       {groups.map((g) => (
         <div key={g.key} className="flex flex-col gap-0.5">
           <DateSeparator label={g.label} />
           {g.items.map((m, i) => {
+            const kind = kindOf(m);
+            if (kind === "note") {
+              return <NoteCallout key={m.id} msg={m} authorName={authorName} />;
+            }
+            if (kind === "call_log") {
+              return <CallLogCallout key={m.id} msg={m} authorName={authorName} />;
+            }
+
             const prev = i > 0 ? g.items[i - 1]! : null;
-            const nextSameSender =
-              prev && prev.direction === m.direction &&
-              // If < 1 minute since previous, treat as same "burst" — no tail.
+            // A note or call log between two messages breaks the burst — the
+            // second one starts a fresh bubble with its own tail.
+            const sameBurst =
+              !!prev &&
+              kindOf(prev) === "message" &&
+              prev.direction === m.direction &&
               (new Date(m.sentAt).getTime() - new Date(prev.sentAt).getTime()) < 60_000;
             return (
               <MessageBubble
                 key={m.id}
                 msg={m}
-                attachTail={!nextSameSender}
+                attachTail={!sameBurst}
                 isReplyTarget={m.id === replyingToId}
                 onReplyTo={onReplyTo}
               />
@@ -299,42 +500,115 @@ interface DayGroup { key: string; label: string; items: TwMessage[]; }
 
 function groupByDay(messages: TwMessage[]): DayGroup[] {
   const now = new Date();
+  const todayKey = istDayKeyFmt.format(now);
+  const yesterdayKey = istDayKeyFmt.format(new Date(now.getTime() - 86_400_000));
+  const thisYear = todayKey.slice(0, 4);
+
   const groups = new Map<string, DayGroup>();
   for (const m of messages) {
     const d = new Date(m.sentAt);
-    const key = `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
+    if (Number.isNaN(d.getTime())) continue;
+    const key = istDayKeyFmt.format(d);
     let label: string;
-    if (isSameDay(d, now)) label = "Today";
-    else if (isSameDay(d, addDays(now, -1))) label = "Yesterday";
-    else if (d.getFullYear() === now.getFullYear()) {
-      label = d.toLocaleDateString("en-GB", { day: "2-digit", month: "short" });
-    } else {
-      label = d.toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" });
-    }
+    if (key === todayKey) label = `Today · ${istDayFmt.format(d)}`;
+    else if (key === yesterdayKey) label = `Yesterday · ${istDayFmt.format(d)}`;
+    else if (key.slice(0, 4) === thisYear) label = istDayFmt.format(d);
+    else label = istDayYearFmt.format(d);
+
     if (!groups.has(key)) groups.set(key, { key, label, items: [] });
     groups.get(key)!.items.push(m);
   }
   return [...groups.values()];
 }
 
-function isSameDay(a: Date, b: Date): boolean {
-  return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
-}
-function addDays(d: Date, n: number): Date {
-  const copy = new Date(d);
-  copy.setDate(copy.getDate() + n);
-  return copy;
-}
-
 function DateSeparator({ label }: { label: string }) {
   return (
     <div className="my-3 flex justify-center">
-      <span className="rounded-md bg-white/80 px-2.5 py-0.5 font-mono text-[10.5px] uppercase tracking-[.08em] text-mute shadow-sm">
+      <span className="mono-cap rounded-full border border-rule bg-paper px-3 py-1 text-[9.5px] tracking-[.1em] text-mute">
         {label}
       </span>
     </div>
   );
 }
+
+// ─── Non-transmitted entries: internal notes + logged calls ──────────────
+
+/** A note never left the building. It's deliberately NOT a bubble — a bubble
+ *  reads as "someone said this to someone", which is exactly the wrong thing
+ *  to imply about a staff-only annotation. */
+function NoteCallout({
+  msg, authorName,
+}: {
+  msg: TwMessage;
+  authorName: (userId: string | null) => string | null;
+}) {
+  const who = authorName(msg.senderUserId);
+  return (
+    <div className="my-1.5 flex justify-center">
+      <div className="w-full max-w-[88%] rounded-[10px] border border-state-amber/40 bg-[rgba(224,138,30,.07)] px-3.5 py-2.5">
+        <div className="mb-1 flex items-center justify-between gap-2">
+          <span className="mono-cap text-[9px] tracking-[.12em] text-state-amber">Internal note</span>
+          <span className="text-[9px] font-semibold uppercase tracking-[.08em] text-state-amber/80">
+            Staff only
+          </span>
+        </div>
+        <p className="whitespace-pre-wrap break-words text-[12.5px] leading-[1.45] text-ink-2">
+          {msg.body}
+        </p>
+        <div className="mt-1.5 text-[10px] text-hint">
+          {who ? `${who} · ` : ""}{istClock(msg.sentAt)} · never sent to the lead
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** A call that happened on a phone, not in the CRM. Violet-toned so it reads as
+ *  "system record" rather than "conversation". */
+function CallLogCallout({
+  msg, authorName,
+}: {
+  msg: TwMessage;
+  authorName: (userId: string | null) => string | null;
+}) {
+  const meta = callMeta(msg);
+  const who = authorName(msg.senderUserId);
+  const inbound = (meta?.direction ?? msg.direction) === "inbound";
+  const label = meta ? CALL_OUTCOME_LABELS[meta.outcome] : "Call logged";
+  const duration = formatCallDuration(meta?.durationSec);
+  // The API stores the free-text notes in `body`; meta carries only the
+  // structured fields.
+  const notes = msg.body?.trim();
+
+  return (
+    <div className="my-1.5 flex justify-center">
+      <div className="w-full max-w-[88%] rounded-[10px] border border-brand-violet/25 bg-[rgba(107,31,184,.05)] px-3.5 py-2.5">
+        <div className="mono-cap mb-1 text-[9px] tracking-[.12em] text-brand-violet">Call logged</div>
+        <div className="flex items-center gap-1.5 text-[12.5px] font-semibold text-ink-2">
+          <Icon
+            name="arrow-right"
+            size={12}
+            strokeWidth={2.2}
+            className={cn("flex-shrink-0 text-brand-violet", inbound && "rotate-180")}
+            aria-hidden
+          />
+          <span>{inbound ? "Inbound" : "Outbound"} · {label}</span>
+          {duration && <span className="font-normal text-mute">· {duration}</span>}
+        </div>
+        {notes && (
+          <p className="mt-1 whitespace-pre-wrap break-words text-[12.5px] leading-[1.45] text-ink-2">
+            {notes}
+          </p>
+        )}
+        <div className="mt-1.5 text-[10px] text-hint">
+          {who ? `${who} · ` : ""}{istClock(msg.sentAt)}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Transmitted messages ────────────────────────────────────────────────
 
 function MessageBubble({
   msg, attachTail, isReplyTarget = false, onReplyTo,
@@ -359,18 +633,18 @@ function MessageBubble({
       )}
       <div
         className={cn(
-          "relative min-w-[80px] px-2.5 py-[6px] text-[13.5px] leading-[1.35] shadow-sm",
+          "relative min-w-[80px] rounded-[12px] px-2.5 py-[6px] text-[13.5px] leading-[1.35]",
           // Email carries subject lines, signatures and quoted history, so a
           // 70% chat bubble squeezes it into a column. Give it more room.
           isEmail ? "max-w-[88%]" : "max-w-[70%]",
-          outbound
-            ? attachTail ? "rounded-[10px] rounded-tr-[4px]" : "rounded-[10px]"
-            : attachTail ? "rounded-[10px] rounded-tl-[4px]" : "rounded-[10px]",
+          // Square off the corner nearest the sender on the first bubble of a
+          // burst, so a run of messages reads as one utterance.
+          attachTail && (outbound ? "rounded-tr-[4px]" : "rounded-tl-[4px]"),
           outbound
             ? failed
-              ? "bg-[#fde7e7] text-ink ring-1 ring-state-warn/40"
-              : isEmail ? "bg-[#e8eefc] text-ink" : "bg-[#dcf8c6] text-ink"
-            : "bg-white text-ink",
+              ? "bg-[#FDE7E7] text-ink ring-1 ring-state-warn/40"
+              : isEmail ? "bg-[#E8EEFC] text-ink" : "bg-[#DCF3E4] text-ink"
+            : "border border-rule bg-paper text-ink",
           isReplyTarget && "ring-2 ring-brand-blue/45",
         )}
       >
@@ -396,20 +670,16 @@ function MessageBubble({
             <MessageMediaGallery media={msg.media!} outbound={outbound} />
           </div>
         )}
-        {/* Full date + time + status on its own line. Right-aligned so
-            it visually anchors like a stamp under the message body. */}
         <div
           className={cn(
-            "mt-1 flex items-center justify-end gap-1.5 px-1 font-mono text-[10px] leading-none",
-            failed ? "text-state-warn" : outbound && !failed ? "text-[#6a6a6a]" : "text-mute",
+            "mt-1 flex items-center justify-end gap-1 px-1 text-[10px] leading-none",
+            failed ? "text-state-warn" : "text-mute",
           )}
           title={new Date(msg.sentAt).toLocaleString()}
         >
-          <span>{formatFullStamp(msg.sentAt)}</span>
+          <span>{istClock(msg.sentAt)}</span>
           {outbound && !failed && (
             <>
-              <span aria-hidden>·</span>
-              <span className="lowercase">{msg.status}</span>
               {msg.status === "read" && <ReadTicks doubleCheck read />}
               {msg.status === "delivered" && <ReadTicks doubleCheck />}
               {msg.status === "sent" && <ReadTicks />}
@@ -449,7 +719,7 @@ function ReplyToButton({ active, onClick }: { active: boolean; onClick: () => vo
         "flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-full border transition",
         active
           ? "border-brand-blue bg-brand-blue text-white opacity-100"
-          : "border-rule bg-white/80 text-mute opacity-0 hover:text-ink group-hover/bubble:opacity-100 focus-visible:opacity-100",
+          : "border-rule bg-paper text-mute opacity-0 hover:text-ink group-hover/bubble:opacity-100 focus-visible:opacity-100",
       )}
     >
       <Icon name="reply" size={12} strokeWidth={2.2} />
@@ -628,28 +898,9 @@ function ReadTicks({ doubleCheck = false, read = false }: { doubleCheck?: boolea
   const cls = read ? "text-blue-500" : "text-mute";
   return (
     <span className={cn("inline-flex items-center", cls)}>
-      <svg width="10" height="10" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
         <path d={doubleCheck ? "M1 6l2 2 5-5M5 6l2 2 5-5" : "M1 6l3 3 7-7"} />
       </svg>
     </span>
   );
-}
-
-function formatFullStamp(iso: string): string {
-  const d = new Date(iso);
-  if (isNaN(d.getTime())) return "";
-  // Format: "7/10/2026, 10:43:39 AM"
-  // Pinned to en-US so we get the M/D/YYYY, h:mm:ss AM/PM layout the
-  // designs mocked — same shape on server and client so hydration matches.
-  return d.toLocaleString("en-US", {
-    month: "numeric", day: "numeric", year: "numeric",
-    hour: "numeric", minute: "2-digit", second: "2-digit",
-    hour12: true,
-  });
-}
-
-function initials(name: string): string {
-  const parts = (name ?? "").trim().split(/\s+/).filter(Boolean);
-  if (!parts.length) return "??";
-  return (parts[0]![0]! + (parts[1]?.[0] ?? "")).toUpperCase();
 }

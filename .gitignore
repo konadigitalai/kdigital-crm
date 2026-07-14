@@ -42,3 +42,11 @@ dev.log
 ~$*
 Product Documents/
 
+
+# local scratch / probes / dumps — never commit
+api/_*.mjs
+api/check-prod-state.mjs
+api/peek-leads.mjs
+api/backups/
+api/*.csv
+api/import-plan-*.json

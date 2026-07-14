@@ -25,14 +25,63 @@ export interface TwConversationListItem {
   partyPhone: string | null;
   partyEmail: string | null;
   leadNumber: string | null;
+  /** Joined from the party's newest lead (post-inbox-redesign). Null when the
+   *  conversation isn't linked to a lead, or the lead has been converted away. */
+  leadRating: LeadRating | null;
+  advisorId: string | null;
+  advisorName: string | null;
+}
+
+/** Feeds the inbox channel tabs. The client can't derive these — it only ever
+ *  holds one channel's threads at a time. */
+export interface TwConversationCounts {
+  all: number;
+  allUnread: number;
+  byChannel: Partial<Record<TwChannel, { total: number; unread: number }>>;
+}
+
+/** Everything the inbox list can be narrowed by. Mirrors GET /twilio/conversations. */
+export interface TwInboxFilter {
+  channel?: TwChannel;
+  /** "me" | "unassigned" | app_user.id */
+  assignee?: string;
+  rating?: LeadRating;
+  unread?: boolean;
+  sort?: "newest" | "oldest" | "unread";
+  q?: string;
+  limit?: number;
+}
+
+// ── Inbox: internal notes + logged calls (post-0074) ─────────────────────
+//
+// Both are tw_message rows with kind <> 'message', so they sit in the thread in
+// time order but were never transmitted to the lead.
+
+export type TwMessageKind = "message" | "note" | "call_log";
+
+export const CALL_OUTCOMES = [
+  "connected", "no_answer", "busy", "voicemail", "wrong_number", "not_interested",
+] as const;
+export type CallOutcome = (typeof CALL_OUTCOMES)[number];
+
+export interface CallLogMeta {
+  outcome: CallOutcome;
+  durationSec: number | null;
+  direction: TwMessageDirection;
 }
 
 export interface TwMessage {
   id: string;
   direction: TwMessageDirection;
   channel: TwChannel;
-  fromNumber: string;
-  toNumber: string;
+  /** post-0074. Absent on rows written before the migration → treat as "message". */
+  kind?: TwMessageKind;
+  /** Structured detail for kind='call_log'; `{}` otherwise. */
+  meta?: CallLogMeta | Record<string, never>;
+  /** Null for kind='note' / 'call_log' — those have no addresses. For email rows
+   *  these hold email ADDRESSES, not phone numbers (a Twilio-era legacy). */
+  fromNumber: string | null;
+  toNumber: string | null;
   body: string | null;
   providerMessageId: string | null;
   status: TwMessageStatus;

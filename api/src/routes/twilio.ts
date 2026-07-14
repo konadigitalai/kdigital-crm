@@ -225,12 +225,46 @@ twilioRouter.post("/send", requirePermission("messaging.send"), async (req, res,
 // ─── GET /twilio/conversations ───────────────────────────────────────────
 // Query: ?channel=sms|whatsapp&assignee=me|unassigned|<userId>&q=<text>&limit=100
 
+// The lead a party is currently in conversation about, plus the bits the inbox
+// list renders as chips: its rating and its owning advisor. A LATERAL because a
+// party can have several leads over time and we only want the newest.
+//
+// `lead` is LEFT-joined, not inner-joined: a work_item whose lead row has been
+// converted away still has a number worth showing, it just has no rating.
+const LEAD_LATERAL = sql`
+  LEFT JOIN LATERAL (
+    SELECT
+      wi.number  AS number,
+      l.rating   AS rating,
+      au.id      AS advisor_id,
+      au.name    AS advisor_name
+    FROM work_item wi
+    LEFT JOIN lead l      ON l.work_item_id = wi.id
+    LEFT JOIN app_user au ON au.party_id = l.advisor_id
+    WHERE wi.party_id = p.id AND wi.type = 'lead'
+    ORDER BY wi.created_at DESC
+    LIMIT 1
+  ) wi ON TRUE
+`;
+
 twilioRouter.get("/conversations", requirePermission("messaging.read"), async (req, res, next) => {
   try {
     const q        = String(req.query.q ?? "").trim();
     const channel  = String(req.query.channel ?? "").trim().toLowerCase();
     const assignee = String(req.query.assignee ?? "").trim();
+    const rating   = String(req.query.rating ?? "").trim().toLowerCase();
+    // "1" rather than "true" so an absent param and an explicit false behave the
+    // same — the inbox only ever asks for unread-only, never for read-only.
+    const unread   = String(req.query.unread ?? "") === "1";
+    const sort     = String(req.query.sort ?? "newest").trim().toLowerCase();
     const limit    = Math.min(Number(req.query.limit ?? 200), 500);
+
+    // Whitelisted, because it interpolates into ORDER BY. Never take a sort
+    // key straight from the query string.
+    const orderBy =
+      sort === "oldest" ? sql`c.last_message_at ASC NULLS LAST, c.updated_at ASC`
+      : sort === "unread" ? sql`c.unread_count DESC, c.last_message_at DESC NULLS LAST`
+      : sql`c.last_message_at DESC NULLS LAST, c.updated_at DESC`;
 
     const rows = await withTenant(req.tenantId!, async (db) => {
       const r = await db.execute(sql`
@@ -247,14 +281,13 @@ twilioRouter.get("/conversations", requirePermission("messaging.read"), async (r
           p.name              AS "partyName",
           p.phone             AS "partyPhone",
           p.email             AS "partyEmail",
-          wi.number           AS "leadNumber"
+          wi.number           AS "leadNumber",
+          wi.rating           AS "leadRating",
+          wi.advisor_id       AS "advisorId",
+          wi.advisor_name     AS "advisorName"
         FROM tw_conversation c
         JOIN party p ON p.id = c.party_id
-        LEFT JOIN LATERAL (
-          SELECT number FROM work_item
-          WHERE party_id = p.id AND type = 'lead'
-          ORDER BY created_at DESC LIMIT 1
-        ) wi ON TRUE
+        ${LEAD_LATERAL}
         WHERE (${channel} = '' OR c.channel = ${channel})
           AND (${assignee} = '' OR
                (${assignee} = 'unassigned' AND c.assigned_user_id IS NULL) OR
@@ -262,13 +295,65 @@ twilioRouter.get("/conversations", requirePermission("messaging.read"), async (r
                   SELECT party_id FROM app_user WHERE id = ${req.userId!}
                )) OR
                c.assigned_user_id::text = ${assignee})
+          AND (${rating} = '' OR wi.rating = ${rating})
+          AND (${unread} = FALSE OR c.unread_count > 0)
           AND (${q} = '' OR p.name ILIKE ${"%" + q + "%"} OR p.phone ILIKE ${"%" + q + "%"} OR p.email ILIKE ${"%" + q + "%"} OR c.last_message_text ILIKE ${"%" + q + "%"})
-        ORDER BY c.last_message_at DESC NULLS LAST, c.updated_at DESC
+        ORDER BY ${orderBy}
         LIMIT ${limit}
       `);
       return r.rows;
     });
     return res.json({ conversations: rows });
+  } catch (err) { next(err); }
+});
+
+// ─── GET /twilio/conversations/counts ────────────────────────────────────
+//
+// Feeds the channel tabs ("All 18 · WhatsApp 9 · Email 6 · Calls 3"). The client
+// can't compute these itself: it only ever holds one channel's threads at a
+// time, so it has no idea what the others contain.
+//
+// Honours the same q / assignee / unread / rating filters as the list, so the
+// tab counts always describe the list you'd actually get by clicking the tab.
+twilioRouter.get("/conversations/counts", requirePermission("messaging.read"), async (req, res, next) => {
+  try {
+    const q        = String(req.query.q ?? "").trim();
+    const assignee = String(req.query.assignee ?? "").trim();
+    const rating   = String(req.query.rating ?? "").trim().toLowerCase();
+    const unread   = String(req.query.unread ?? "") === "1";
+
+    const rows = await withTenant(req.tenantId!, async (db) => {
+      const r = await db.execute(sql`
+        SELECT
+          c.channel,
+          COUNT(*)::int                                        AS total,
+          COALESCE(SUM(CASE WHEN c.unread_count > 0 THEN 1 ELSE 0 END), 0)::int AS unread
+        FROM tw_conversation c
+        JOIN party p ON p.id = c.party_id
+        ${LEAD_LATERAL}
+        WHERE (${assignee} = '' OR
+               (${assignee} = 'unassigned' AND c.assigned_user_id IS NULL) OR
+               (${assignee} = 'me' AND c.assigned_user_id IS NOT NULL AND c.assigned_user_id = (
+                  SELECT party_id FROM app_user WHERE id = ${req.userId!}
+               )) OR
+               c.assigned_user_id::text = ${assignee})
+          AND (${rating} = '' OR wi.rating = ${rating})
+          AND (${unread} = FALSE OR c.unread_count > 0)
+          AND (${q} = '' OR p.name ILIKE ${"%" + q + "%"} OR p.phone ILIKE ${"%" + q + "%"} OR p.email ILIKE ${"%" + q + "%"} OR c.last_message_text ILIKE ${"%" + q + "%"})
+        GROUP BY c.channel
+      `);
+      return r.rows as Array<{ channel: string; total: number; unread: number }>;
+    });
+
+    const byChannel: Record<string, { total: number; unread: number }> = {};
+    let all = 0;
+    let allUnread = 0;
+    for (const r of rows) {
+      byChannel[r.channel] = { total: r.total, unread: r.unread };
+      all += r.total;
+      allUnread += r.unread;
+    }
+    return res.json({ all, allUnread, byChannel });
   } catch (err) { next(err); }
 });
 
@@ -294,14 +379,13 @@ twilioRouter.get("/conversations/:id", requirePermission("messaging.read"), asyn
           p.phone AS "partyPhone",
           p.email AS "partyEmail",
           p.city  AS "partyCity",
-          wi.number AS "leadNumber"
+          wi.number       AS "leadNumber",
+          wi.rating       AS "leadRating",
+          wi.advisor_id   AS "advisorId",
+          wi.advisor_name AS "advisorName"
         FROM tw_conversation c
         JOIN party p ON p.id = c.party_id
-        LEFT JOIN LATERAL (
-          SELECT number FROM work_item
-          WHERE party_id = p.id AND type = 'lead'
-          ORDER BY created_at DESC LIMIT 1
-        ) wi ON TRUE
+        ${LEAD_LATERAL}
         WHERE c.id = ${id}
         LIMIT 1
       `);
@@ -310,6 +394,10 @@ twilioRouter.get("/conversations/:id", requirePermission("messaging.read"), asyn
       const mR = await db.execute(sql`
         SELECT
           m.id, m.direction, m.channel,
+          -- post-0074: 'message' | 'note' | 'call_log'. The thread renders all
+          -- three; only 'message' was ever sent to a provider.
+          m.kind,
+          m.meta,
           m.from_number  AS "fromNumber",
           m.to_number    AS "toNumber",
           m.body,
@@ -506,6 +594,188 @@ twilioRouter.post("/conversations/:id/read", requirePermission("messaging.read")
     return res.json({ ok: true });
   } catch (err) { next(err); }
 });
+
+// ─── Internal notes + logged calls (post-0074) ───────────────────────────
+//
+// Both write a tw_message with kind <> 'message', so they land in the thread in
+// chronological order alongside real messages but are never transmitted — the
+// send pipeline only ever inserts kind='message'.
+//
+// Both are gated on messaging.read, not messaging.send: writing a note to your
+// own CRM isn't sending anything to the lead, and an advisor who can read the
+// thread should be able to annotate it.
+//
+// When the conversation is linked to a lead, we ALSO mirror a row into
+// `activity` so the record page's timeline shows it — the same trick used by
+// leads.ts notes and routes/tasks.ts.
+
+/** Resolve a conversation to its party + newest linked lead work_item, if any. */
+async function conversationContext(
+  db: Parameters<Parameters<typeof withTenant>[1]>[0],
+  conversationId: string,
+) {
+  const r = await db.execute(sql`
+    SELECT c.id, c.party_id, c.channel, wi.id AS work_item_id
+    FROM tw_conversation c
+    LEFT JOIN LATERAL (
+      SELECT id FROM work_item
+      WHERE party_id = c.party_id AND type = 'lead'
+      ORDER BY created_at DESC LIMIT 1
+    ) wi ON TRUE
+    WHERE c.id = ${conversationId}
+  `);
+  return (r.rows[0] as
+    | { id: string; party_id: string; channel: string; work_item_id: string | null }
+    | undefined) ?? null;
+}
+
+// POST /twilio/conversations/:id/notes — staff-only note, never sent.
+twilioRouter.post("/conversations/:id/notes", requirePermission("messaging.read"), async (req, res, next) => {
+  try {
+    const id   = String(req.params.id);
+    const body = String(req.body?.body ?? "").trim();
+    if (!body) return res.status(400).json({ error: "body required" });
+
+    const actorName = req.user?.name?.trim() || "You";
+    const actorId   = req.userId ?? null;
+
+    const out = await withTenant(req.tenantId!, async (db) => {
+      const ctx = await conversationContext(db, id);
+      if (!ctx) return null;
+      const actorPartyId = await resolveActorPartyId(db, req.tenantId!, actorId);
+
+      const ins = await db.execute(sql`
+        INSERT INTO tw_message (
+          tenant_id, conversation_id, direction, channel, kind,
+          body, status, sender_user_id, sent_at
+        )
+        VALUES (
+          current_tenant(), ${id}, 'outbound', ${ctx.channel}, 'note',
+          ${body}, 'sent', ${actorPartyId}, NOW()
+        )
+        RETURNING id
+      `);
+
+      // Deliberately does NOT touch last_message_text / last_message_at: an
+      // internal note is not something the lead said or heard, so it must not
+      // masquerade as the conversation's latest message in the list preview.
+
+      if (ctx.work_item_id) {
+        await db.execute(sql`
+          INSERT INTO activity (
+            tenant_id, work_item_id, party_id, actor_type, actor_party_id,
+            actor_name, verb, detail, tag, payload, ts
+          )
+          VALUES (
+            current_tenant(), ${ctx.work_item_id}, ${ctx.party_id}, 'user', ${actorPartyId},
+            ${actorName}, 'Internal note', ${body}, 'you',
+            ${JSON.stringify({ kind: "note", source: "inbox", conversationId: id, byUserId: actorId })}::jsonb,
+            NOW()
+          )
+        `);
+      }
+      return (ins.rows[0] as { id: string }).id;
+    });
+
+    if (!out) return res.status(404).json({ error: "Conversation not found" });
+    return res.status(201).json({ ok: true, id: out });
+  } catch (err) { next(err); }
+});
+
+const CALL_OUTCOMES = new Set([
+  "connected", "no_answer", "busy", "voicemail", "wrong_number", "not_interested",
+]);
+
+// POST /twilio/conversations/:id/calls — log a call made outside the system.
+twilioRouter.post("/conversations/:id/calls", requirePermission("messaging.read"), async (req, res, next) => {
+  try {
+    const id       = String(req.params.id);
+    const outcome  = String(req.body?.outcome ?? "").trim();
+    const notes    = req.body?.notes ? String(req.body.notes).trim() : null;
+    const direction = req.body?.direction === "inbound" ? "inbound" : "outbound";
+    const durationRaw = req.body?.durationSec;
+    const durationSec = durationRaw == null || durationRaw === "" ? null : Number(durationRaw);
+
+    if (!CALL_OUTCOMES.has(outcome)) {
+      return res.status(400).json({ error: `outcome must be one of: ${[...CALL_OUTCOMES].join(", ")}` });
+    }
+    if (durationSec !== null && (!Number.isFinite(durationSec) || durationSec < 0 || durationSec > 86_400)) {
+      return res.status(400).json({ error: "durationSec must be 0..86400" });
+    }
+
+    const actorName = req.user?.name?.trim() || "You";
+    const actorId   = req.userId ?? null;
+
+    const out = await withTenant(req.tenantId!, async (db) => {
+      const ctx = await conversationContext(db, id);
+      if (!ctx) return null;
+      const actorPartyId = await resolveActorPartyId(db, req.tenantId!, actorId);
+
+      const meta = { outcome, durationSec, direction };
+      const summary = callSummary(outcome, durationSec, notes);
+
+      const ins = await db.execute(sql`
+        INSERT INTO tw_message (
+          tenant_id, conversation_id, direction, channel, kind,
+          body, meta, status, sender_user_id, sent_at
+        )
+        VALUES (
+          current_tenant(), ${id}, ${direction}, ${ctx.channel}, 'call_log',
+          ${notes}, ${JSON.stringify(meta)}::jsonb, 'sent', ${actorPartyId}, NOW()
+        )
+        RETURNING id
+      `);
+
+      // A logged call IS a real interaction with the lead, so unlike a note it
+      // does update the conversation preview.
+      await db.execute(sql`
+        UPDATE tw_conversation
+        SET last_message_text = ${summary}, last_message_at = NOW(), updated_at = NOW()
+        WHERE id = ${id}
+      `);
+
+      if (ctx.work_item_id) {
+        await db.execute(sql`
+          INSERT INTO activity (
+            tenant_id, work_item_id, party_id, actor_type, actor_party_id,
+            actor_name, verb, detail, tag, payload, ts
+          )
+          VALUES (
+            current_tenant(), ${ctx.work_item_id}, ${ctx.party_id}, 'user', ${actorPartyId},
+            ${actorName}, 'Call logged', ${summary}, 'you',
+            ${JSON.stringify({ kind: "call_log", source: "inbox", conversationId: id, ...meta, byUserId: actorId })}::jsonb,
+            NOW()
+          )
+        `);
+      }
+      return (ins.rows[0] as { id: string }).id;
+    });
+
+    if (!out) return res.status(404).json({ error: "Conversation not found" });
+    return res.status(201).json({ ok: true, id: out });
+  } catch (err) { next(err); }
+});
+
+const CALL_OUTCOME_LABEL: Record<string, string> = {
+  connected:      "Call completed",
+  no_answer:      "No answer",
+  busy:           "Busy",
+  voicemail:      "Left voicemail",
+  wrong_number:   "Wrong number",
+  not_interested: "Marked not interested",
+};
+
+/** "Call completed · 4m 12s · asked for fee structure" — the list preview. */
+function callSummary(outcome: string, durationSec: number | null, notes: string | null): string {
+  const parts = [CALL_OUTCOME_LABEL[outcome] ?? "Call logged"];
+  if (durationSec != null && durationSec > 0) {
+    const m = Math.floor(durationSec / 60);
+    const s = durationSec % 60;
+    parts.push(m > 0 ? `${m}m ${s}s` : `${s}s`);
+  }
+  if (notes) parts.push(notes);
+  return parts.join(" · ");
+}
 
 // ─── POST /twilio/conversations/:id/assign ──────────────────────────────
 

@@ -72,7 +72,7 @@ export function ReplyBox({
           className="mb-2 px-1"
         />
       )}
-      <div className="flex items-end gap-2 rounded-full bg-white px-3 py-2 shadow-sm focus-within:shadow">
+      <div className="flex items-end gap-2 rounded-full border border-rule bg-paper px-3 py-2 transition focus-within:border-state-ok/50">
         {canUpload && (
           <button
             type="button"
@@ -90,7 +90,7 @@ export function ReplyBox({
           onChange={(e) => setText(e.target.value)}
           onKeyDown={onKeyDown}
           rows={1}
-          placeholder="Type a message"
+          placeholder="Type a message…"
           className="max-h-[160px] min-h-[24px] flex-1 resize-none bg-transparent py-1.5 text-[14px] leading-[1.35] text-ink placeholder:text-mute outline-none"
           disabled={busy}
         />

@@ -1382,8 +1382,15 @@ export const twMessage = pgTable(
                            .references(() => twConversation.id, { onDelete: "cascade" }),
     direction:           text("direction").notNull(),
     channel:             text("channel").notNull(),
-    fromNumber:          text("from_number").notNull(),
-    toNumber:            text("to_number").notNull(),
+    // post-0074: 'message' | 'note' | 'call_log'. Only 'message' is ever sent to
+    // a provider — an internal note is staff-only and never transmitted.
+    kind:                text("kind").notNull().default("message"),
+    // Structured detail for call_log rows (outcome, durationSec, …). Empty {}
+    // for everything else.
+    meta:                jsonb("meta").notNull().default({}),
+    // Nullable since post-0074: notes and call logs have no addresses.
+    fromNumber:          text("from_number"),
+    toNumber:            text("to_number"),
     body:                text("body"),
     providerMessageId:   text("provider_message_id"),
     status:              text("status").notNull().default("queued"),

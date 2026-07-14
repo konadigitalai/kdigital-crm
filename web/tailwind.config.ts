@@ -6,6 +6,11 @@ const config: Config = {
     extend: {
       colors: {
         ink: { DEFAULT: "#0E0A14", 2: "#3B2E4A" },
+        // `ink: { 2: … }` only ever generated `text-ink-2`, but the codebase has
+        // always written `text-ink2` (207 usages) — which Tailwind emitted no rule
+        // for, so every "secondary" text silently fell back to inherited full-ink.
+        // Aliasing it here fixes them all at once; `text-ink-2` keeps working too.
+        ink2: "#3B2E4A",
         mute: "#6B5E74",
         hint: "#A89DAC",
         paper: "#FFFFFF",
