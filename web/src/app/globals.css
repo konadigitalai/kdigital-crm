@@ -153,6 +153,20 @@ body::before {
 }
 .live-dot { animation: pulse-soft 2s infinite; }
 
+/* Inbound-notification toast (NotificationToaster) — slides in from the right,
+ * slides out when its 5s window ends. The bell count is separate and persists;
+ * this is only the transient popup. */
+@keyframes toast-in {
+  from { opacity: 0; transform: translateX(28px) scale(0.98); }
+  to   { opacity: 1; transform: translateX(0)    scale(1); }
+}
+@keyframes toast-out {
+  from { opacity: 1; transform: translateX(0); }
+  to   { opacity: 0; transform: translateX(28px); }
+}
+.toast-enter { animation: toast-in 220ms cubic-bezier(.16,1,.3,1) both; }
+.toast-leave { animation: toast-out 200ms ease-in both; }
+
 /* Rail tooltips are rendered via portal in IconRail.tsx (RailTooltip).
  * The old .rail-tip / .rail-btn CSS classes used to live here, but they
  * relied on absolute positioning inside the rail — which gets clipped once

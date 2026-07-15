@@ -1063,6 +1063,26 @@ export const leadTask = pgTable(
   }),
 );
 
+// ─── Message templates (post-0075) — saved canned replies ────────────────
+
+export const messageTemplate = pgTable(
+  "message_template",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    tenantId: uuid("tenant_id").notNull().references(() => tenant.id),
+    title: text("title").notNull(),
+    body: text("body").notNull(),
+    createdByPartyId: uuid("created_by_party_id").references(() => party.id, { onDelete: "set null" }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    tenantTitleIdx: index("message_template_tenant_title_idx").on(t.tenantId, t.title),
+    titleLen: check("message_template_title_len", sql`char_length(${t.title}) BETWEEN 1 AND 120`),
+    bodyLen: check("message_template_body_len", sql`char_length(${t.body}) BETWEEN 1 AND 4000`),
+  }),
+);
+
 // ─── Audit log (insert-only — enforced via GRANTs in raw SQL) ─────────────
 
 export const auditLog = pgTable(

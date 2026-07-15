@@ -11,6 +11,7 @@ import { useEffect, useState } from "react";
 import { IconRail } from "./IconRail";
 import { Sidebar } from "./Sidebar";
 import { NotificationProvider } from "./NotificationProvider";
+import { NotificationToaster } from "./NotificationToaster";
 import type { CurrentUser, RecentRun, SummaryResponse } from "@/lib/types";
 
 const STORAGE_KEY = "decrm_sidebar_collapsed";
@@ -112,7 +113,11 @@ export function AppShellClient({
           page's Topbar) can read the shared count. It lives here, not per-page,
           so the count survives client-side navigation between pages. */}
       <main className="relative min-h-0 overflow-y-auto">
-        <NotificationProvider enabled={canSeeInbox}>{children}</NotificationProvider>
+        <NotificationProvider enabled={canSeeInbox}>
+          {/* Portals to <body>, so it floats over every page. */}
+          <NotificationToaster />
+          {children}
+        </NotificationProvider>
       </main>
     </div>
   );

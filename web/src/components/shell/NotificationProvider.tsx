@@ -28,6 +28,8 @@ interface NotificationState {
   events: InboundEvent[];
   /** Zero the badge (called when the dropdown opens). */
   markAllSeen: () => void;
+  /** Empty the list and the badge ("Clear all"). */
+  clearAll: () => void;
 }
 
 const Ctx = createContext<NotificationState>({
@@ -35,6 +37,7 @@ const Ctx = createContext<NotificationState>({
   unread: 0,
   events: [],
   markAllSeen: () => {},
+  clearAll: () => {},
 });
 
 export function useNotifications() {
@@ -57,6 +60,7 @@ export function NotificationProvider({
   const seenIdsRef = useRef<Set<string>>(new Set());
 
   const markAllSeen = useCallback(() => setUnread(0), []);
+  const clearAll = useCallback(() => { setEvents([]); setUnread(0); }, []);
 
   useEffect(() => {
     if (!enabled) return;
@@ -96,7 +100,7 @@ export function NotificationProvider({
   }, [enabled]);
 
   return (
-    <Ctx.Provider value={{ enabled, unread, events, markAllSeen }}>
+    <Ctx.Provider value={{ enabled, unread, events, markAllSeen, clearAll }}>
       {children}
     </Ctx.Provider>
   );

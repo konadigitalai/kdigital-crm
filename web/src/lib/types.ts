@@ -179,6 +179,16 @@ export interface InboundEvent {
   leadRating: LeadRating | null;
 }
 
+/** A saved message (canned reply) for the inbox composer. Text lives in
+ *  Postgres — see post-0075. */
+export interface MessageTemplate {
+  id: string;
+  title: string;
+  body: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface TwConversationDetail {
   conversation: TwConversationListItem & {
     partyEmail: string | null;

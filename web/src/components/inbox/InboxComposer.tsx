@@ -113,6 +113,7 @@ export function InboxComposer({
           <ReplyBox
             conversationId={conversationId}
             channel={channel}
+            canSend={canSend}
             canUpload={canUpload}
             canAddToLibrary={canAddToLibrary}
             onSent={onSent}

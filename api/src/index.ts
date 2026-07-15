@@ -29,6 +29,7 @@ import { groupsRouter } from "./routes/groups.js";
 import { leavesRouter } from "./routes/leaves.js";
 import { eventsRouter } from "./routes/events.js";
 import { tasksRouter } from "./routes/tasks.js";
+import { messageTemplatesRouter } from "./routes/message-templates.js";
 import { batchesRouter } from "./routes/batches.js";
 import { viewsRouter } from "./routes/views.js";
 import { integrationsRouter } from "./routes/integrations.js";
@@ -219,6 +220,9 @@ app.use("/events",      eventsRouter);
 // against it. DELETE lands on leads.write (not leads.delete) — dropping a
 // scheduled call is an edit, not a destruction of the lead.
 app.use("/tasks",       readWrite("leads.read", "leads.write"), tasksRouter);
+// Saved messages (canned replies) for the inbox composer — text in Postgres.
+// Read to list them, send-permission to create/edit/delete.
+app.use("/message-templates", readWrite("messaging.read", "messaging.send"), messageTemplatesRouter);
 app.use("/batches",     batchesRouter);
 // Saved views — gated per-handler against the surface's read perm
 // (pipeline_list ⇒ pipeline.read for GET, etc.). The router itself does

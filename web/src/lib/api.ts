@@ -11,6 +11,7 @@ import type {
   CreateCaseInput, DeletedLead, EdifyAnswer, EdifySessionSummary, EnrolmentStatus, EventRsvp, FeedItem,
   ForecastSnapshot, GroupsResponse, InboundEvent, Lead, LeadTask, LeadTaskKind, LeadTaskStatus,
   LeaveDay, LeaveHalfDay, LeaveKind, LearnerFeeInput, LearnerRecord, LearnerSummary,
+  MessageTemplate,
   PaymentStatus,
   PipelineColumn, Program, ProgramInput, RecentRun, RecordResponse,
   SavedView, SavedViewInput, SavedViewScope,
@@ -1263,6 +1264,35 @@ export async function getInboundEvents(since: string): Promise<InboundEvent[]> {
   } catch {
     return [];
   }
+}
+
+// ─── Saved messages (canned replies) ─────────────────────────────────────
+
+export async function getMessageTemplates(): Promise<MessageTemplate[]> {
+  try {
+    const { templates } = await get<{ templates: MessageTemplate[] }>("/message-templates");
+    return templates;
+  } catch {
+    // The composer degrades to "no saved messages" rather than erroring.
+    return [];
+  }
+}
+
+export async function createMessageTemplate(input: { title: string; body: string }): Promise<MessageTemplate> {
+  const { template } = await post<{ template: MessageTemplate }>("/message-templates", input);
+  return template;
+}
+
+export async function updateMessageTemplate(
+  id: string,
+  input: { title: string; body: string },
+): Promise<MessageTemplate> {
+  const { template } = await send<{ template: MessageTemplate }>("PATCH", `/message-templates/${id}`, input);
+  return template;
+}
+
+export async function deleteMessageTemplate(id: string): Promise<void> {
+  await send<void>("DELETE", `/message-templates/${id}`);
 }
 
 /** Fetch a provider-hosted media asset's BYTES through the authenticated proxy

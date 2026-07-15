@@ -7,13 +7,16 @@ import { sendTwMessageInThread } from "@/lib/api";
 import type { MediaAsset, TwChannel } from "@/lib/types";
 import { AttachmentPicker } from "@/components/media/AttachmentPicker";
 import { StagedStrip } from "@/components/media/StagedStrip";
+import { MessagePicker } from "./MessagePicker";
 
 export function ReplyBox({
-  conversationId, channel, canUpload = false, canAddToLibrary = false, onSent,
+  conversationId, channel, canSend = false, canUpload = false, canAddToLibrary = false, onSent,
 }: {
   conversationId: string;
   /** Thread's channel — used for per-channel media validation. */
   channel: TwChannel;
+  /** messaging.send — gates managing (create/edit/delete) saved messages. */
+  canSend?: boolean;
   canUpload?: boolean;
   canAddToLibrary?: boolean;
   onSent: () => void;
@@ -23,7 +26,28 @@ export function ReplyBox({
   const [error, setError] = useState<string | null>(null);
   const [staged, setStaged] = useState<MediaAsset[]>([]);
   const [pickerOpen, setPickerOpen] = useState(false);
+  const [msgPickerOpen, setMsgPickerOpen] = useState(false);
   const taRef = useRef<HTMLTextAreaElement>(null);
+
+  // Drop a saved message in at the caret (or append), so it composes with
+  // whatever the user already typed rather than replacing it.
+  function insertMessage(body: string) {
+    setMsgPickerOpen(false);
+    const ta = taRef.current;
+    setText((prev) => {
+      if (!ta) return prev ? `${prev}\n${body}` : body;
+      const start = ta.selectionStart ?? prev.length;
+      const end = ta.selectionEnd ?? prev.length;
+      const next = prev.slice(0, start) + body + prev.slice(end);
+      // Restore the caret after the inserted text on the next paint.
+      requestAnimationFrame(() => {
+        ta.focus();
+        const pos = start + body.length;
+        ta.setSelectionRange(pos, pos);
+      });
+      return next;
+    });
+  }
 
   async function submit() {
     const body = text.trim();
@@ -84,6 +108,15 @@ export function ReplyBox({
             <Icon name="plus" size={18} strokeWidth={2} />
           </button>
         )}
+        <button
+          type="button"
+          onClick={() => setMsgPickerOpen(true)}
+          className="mb-0.5 flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full text-mute transition hover:bg-warm hover:text-brand-violet"
+          aria-label="Insert saved message"
+          title="Insert a saved message"
+        >
+          <Icon name="message-square" size={16} strokeWidth={2} />
+        </button>
         <textarea
           ref={taRef}
           value={text}
@@ -125,6 +158,13 @@ export function ReplyBox({
             setPickerOpen(false);
           }}
           onClose={() => setPickerOpen(false)}
+        />
+      )}
+      {msgPickerOpen && (
+        <MessagePicker
+          canManage={canSend}
+          onPick={insertMessage}
+          onClose={() => setMsgPickerOpen(false)}
         />
       )}
     </div>
