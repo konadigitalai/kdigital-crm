@@ -10,22 +10,12 @@
 //
 // Esc closes. Click backdrop closes. Focus is trapped on the close button.
 
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Icon } from "@/components/ui/Icon";
 import { cn } from "@/lib/cn";
 import type { MediaAsset } from "@/lib/types";
+import { fetchMediaBlobUrl } from "@/lib/api";
 import { familyFromMime, humanBytes } from "./mediaShared";
-
-// Proxy URL — same one MessageMediaGallery uses. Ensures inbound Twilio
-// media (Basic-auth gated) works through the same UI.
-const API_URL = (() => {
-  if (typeof window === "undefined") {
-    return process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4000";
-  }
-  return process.env.NODE_ENV === "production"
-    ? "/api"
-    : (process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4000");
-})();
 
 export function AssetPreview({
   asset, onClose,
@@ -41,12 +31,42 @@ export function AssetPreview({
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
 
-  const url = useMemo(() => {
-    // Provider-hosted (Twilio) always through proxy. Vercel Blob public URLs
-    // work direct AND through proxy — using proxy keeps the network hop the
-    // same everywhere.
-    return `${API_URL}/media/proxy/${encodeURIComponent(asset.id)}`;
-  }, [asset.id]);
+  // Resolve the URL the <iframe>/<img>/<a> actually loads.
+  //
+  // A raw browser tag can't send an Authorization header, so it must never
+  // point at /media/proxy (that endpoint 401s "Missing bearer token" without a
+  // bearer — the reason library previews were broken).
+  //
+  //  - user_upload  → blobUrl is a PUBLIC Vercel Blob URL: load it directly.
+  //  - provider-hosted (Twilio / Exotel / Gmail) → the bytes live behind
+  //    credentials only the server holds, so we fetch() them WITH auth and hand
+  //    the tag a blob: object URL. Revoked on unmount.
+  const [proxiedUrl, setProxiedUrl] = useState<string | null>(null);
+  const [proxyError, setProxyError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!asset.providerHosted) return;
+    let objectUrl: string | null = null;
+    let cancelled = false;
+    setProxiedUrl(null);
+    setProxyError(null);
+    fetchMediaBlobUrl(asset.id)
+      .then((u) => {
+        if (cancelled) { URL.revokeObjectURL(u); return; }
+        objectUrl = u;
+        setProxiedUrl(u);
+      })
+      .catch((e: Error) => { if (!cancelled) setProxyError(e.message); });
+    return () => {
+      cancelled = true;
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [asset.id, asset.providerHosted]);
+
+  const url = useMemo(
+    () => (asset.providerHosted ? proxiedUrl : asset.blobUrl),
+    [asset.providerHosted, asset.blobUrl, proxiedUrl],
+  );
 
   const fam = familyFromMime(asset.contentType);
   const canPreviewInline = fam === "image" || fam === "video" || fam === "audio" || asset.contentType === "application/pdf";
@@ -72,9 +92,13 @@ export function AssetPreview({
           </div>
           <div className="flex items-center gap-2">
             <a
-              href={url}
+              href={url ?? undefined}
               download={asset.filename}
-              className="inline-flex items-center gap-1.5 rounded-md border border-rule bg-paper px-3 py-1.5 text-[12.5px] font-semibold text-ink2 hover:border-brand-violet hover:text-brand-violet"
+              aria-disabled={!url}
+              className={cn(
+                "inline-flex items-center gap-1.5 rounded-md border border-rule bg-paper px-3 py-1.5 text-[12.5px] font-semibold text-ink2 hover:border-brand-violet hover:text-brand-violet",
+                !url && "pointer-events-none opacity-50",
+              )}
               title="Download"
             >
               <Icon name="doc" size={12} strokeWidth={2.2} />
@@ -93,6 +117,14 @@ export function AssetPreview({
 
         {/* Body */}
         <div className="flex flex-1 items-center justify-center overflow-auto bg-warm/40 p-4">
+          {proxyError ? (
+            <div className="p-10 text-center text-[13px] text-state-warn">
+              Couldn’t load this file: {proxyError}
+            </div>
+          ) : !url ? (
+            <div className="p-10 text-center text-[13px] text-mute">Loading…</div>
+          ) : (
+          <>
           {fam === "image" && (
             <img
               src={url}
@@ -128,6 +160,8 @@ export function AssetPreview({
           )}
           {!canPreviewInline && (
             <NonPreviewable asset={asset} url={url} />
+          )}
+          </>
           )}
         </div>
       </div>

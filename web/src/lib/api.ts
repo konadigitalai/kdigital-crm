@@ -1252,6 +1252,26 @@ export async function getTwConversation(id: string): Promise<TwConversationDetai
   return await get<TwConversationDetail>(`/twilio/conversations/${encodeURIComponent(id)}`);
 }
 
+/** Fetch a provider-hosted media asset's BYTES through the authenticated proxy
+ *  and return a blob: object URL a raw <img>/<iframe>/<a> can use.
+ *
+ *  A browser file-loading tag can't send an Authorization header, so it can't
+ *  hit /media/proxy directly (that 401s "Missing bearer token"). Public
+ *  user-uploads don't need this — their blobUrl loads directly; this is only for
+ *  Twilio/Exotel/Gmail assets whose bytes sit behind server-held credentials.
+ *
+ *  Caller MUST URL.revokeObjectURL() the result when done, or the blob leaks. */
+export async function fetchMediaBlobUrl(assetId: string): Promise<string> {
+  const headers = await authHeaders();
+  const r = await fetch(`${API_URL}/media/proxy/${encodeURIComponent(assetId)}`, {
+    cache: "no-store",
+    credentials: "include",
+    headers,
+  });
+  if (!r.ok) await failResponse("GET", `/media/proxy/${assetId}`, r);
+  return URL.createObjectURL(await r.blob());
+}
+
 export interface SendTwilioResult {
   ok: boolean;
   messageId: string;
