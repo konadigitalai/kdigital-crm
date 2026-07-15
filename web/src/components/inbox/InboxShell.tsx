@@ -46,9 +46,14 @@ export interface InboxAdvisor {
   name: string;
 }
 
+// WhatsApp is the default channel — it's where most of the conversation
+// happens, so a bare /inbox (nav click, notification with no channel) lands
+// there rather than on the mixed "All" firehose. An explicit ?channel=all still
+// opens All; only the ABSENCE of a param defaults to WhatsApp.
 function channelFromParam(v: string | null): InboxChannel {
+  if (v === "all") return "all";
   if (v === "voice" || v === "email" || v === "whatsapp" || v === "sms") return v;
-  return "all";
+  return "whatsapp";
 }
 
 const SEARCH_PLACEHOLDER: Record<InboxChannel, string> = {
@@ -165,7 +170,9 @@ export function InboxShell({
   // default channel so it's omitted. `replace` so tab clicks don't fill the
   // browser history with junk entries.
   useEffect(() => {
-    const desiredChannel = channel === "all" ? null : channel;
+    // WhatsApp is the default now, so it's the one omitted from the URL; "all"
+    // and the rest are explicit.
+    const desiredChannel = channel === "whatsapp" ? null : channel;
     const desiredOpen    = openIds.length > 0 ? openIds.join(",") : null;
     if (
       searchParams.get("channel") === desiredChannel &&
@@ -255,11 +262,9 @@ export function InboxShell({
           not the 380px list column, so switching channel/filter reads as a page
           control rather than a list widget. */}
       <div className="flex-shrink-0">
+        {/* Order: WhatsApp first (the default + busiest), then Email, Calls,
+            and "All" last as the catch-all. */}
         <div className="flex items-center gap-1 border-b border-rule">
-          <ChannelTab
-            active={channel === "all"} onClick={() => setChannel("all")}
-            label="All" count={counts.all}
-          />
           <ChannelTab
             active={channel === "whatsapp"} onClick={() => setChannel("whatsapp")}
             icon="chat" label="WhatsApp" count={counts.byChannel.whatsapp?.total ?? 0}
@@ -271,6 +276,10 @@ export function InboxShell({
           <ChannelTab
             active={channel === "voice"} onClick={() => setChannel("voice")}
             icon="phone" label="Calls" count={counts.byChannel.voice?.total ?? 0}
+          />
+          <ChannelTab
+            active={channel === "all"} onClick={() => setChannel("all")}
+            label="All" count={counts.all}
           />
         </div>
 
