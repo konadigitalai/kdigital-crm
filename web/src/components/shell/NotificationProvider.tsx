@@ -14,9 +14,9 @@ import { getInboundEvents } from "@/lib/api";
 import type { InboundEvent, TwChannel } from "@/lib/types";
 
 const POLL_MS = 8_000;
-// Which channels raise a notification. Email/SMS come back in the same feed but
-// aren't counted here.
-const NOTIFY_CHANNELS = new Set<TwChannel>(["voice", "whatsapp"]);
+// Every inbound channel raises a notification: Exotel calls, Twilio WhatsApp/SMS,
+// and Gmail. The endpoint already returns them all; this is just the gate.
+const NOTIFY_CHANNELS = new Set<TwChannel>(["voice", "whatsapp", "email", "sms"]);
 // Keep the dropdown list bounded — it's a "recent", not an archive.
 const MAX_KEPT = 30;
 

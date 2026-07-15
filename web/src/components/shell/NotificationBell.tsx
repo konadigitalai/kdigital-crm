@@ -11,14 +11,16 @@ import { AnchoredPopover } from "@/components/ui/AnchoredPopover";
 import { cn } from "@/lib/cn";
 import { avatarGradClass, gradFor, initialsOf } from "@/lib/ui";
 import { useNotifications } from "./NotificationProvider";
-import type { InboundEvent } from "@/lib/types";
+import type { InboundEvent, TwChannel } from "@/lib/types";
 
 const CHANNEL_UI: Record<
-  "voice" | "whatsapp",
+  TwChannel,
   { label: string; icon: IconName; dot: string; text: string }
 > = {
-  voice:    { label: "Incoming call",  icon: "phone", dot: "bg-brand-magenta", text: "text-brand-magenta" },
-  whatsapp: { label: "WhatsApp",       icon: "chat",  dot: "bg-state-ok",      text: "text-state-ok" },
+  voice:    { label: "Incoming call", icon: "phone",          dot: "bg-brand-magenta", text: "text-brand-magenta" },
+  whatsapp: { label: "WhatsApp",      icon: "chat",           dot: "bg-state-ok",      text: "text-state-ok" },
+  email:    { label: "New email",     icon: "mail",           dot: "bg-brand-blue",    text: "text-brand-blue" },
+  sms:      { label: "SMS",           icon: "message-square", dot: "bg-mute",          text: "text-mute" },
 };
 
 export function NotificationBell() {
@@ -113,7 +115,7 @@ export function NotificationBell() {
 }
 
 function EventRow({ event, onClick }: { event: InboundEvent; onClick: () => void }) {
-  const ui = CHANNEL_UI[event.channel as "voice" | "whatsapp"] ?? CHANNEL_UI.whatsapp;
+  const ui = CHANNEL_UI[event.channel] ?? CHANNEL_UI.whatsapp;
   const preview =
     event.body?.trim() ||
     (event.channel === "voice" ? "Tap to view the call" : "Sent an attachment");
