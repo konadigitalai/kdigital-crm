@@ -20,7 +20,9 @@ export type IconName =
   // Voice / Exotel
   | "phone"
   // Email / Gmail
-  | "reply";
+  | "reply"
+  // Notifications
+  | "bell";
 
 export function Icon({ name, size = 16, strokeWidth = 1.7, className, ...rest }: IconProps) {
   const props = {
@@ -45,6 +47,9 @@ export function Icon({ name, size = 16, strokeWidth = 1.7, className, ...rest }:
       return (<svg {...props}><path d="M22 2L11 13M22 2l-7 20-4-9-9-4z" /></svg>);
     case "clock":
       return (<svg {...props}><circle cx="12" cy="12" r="9" /><path d="M12 7v5l3 2" /></svg>);
+    case "bell":
+      // Lucide "bell" — dome + clapper.
+      return (<svg {...props}><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9" /><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0" /></svg>);
     case "phone":
       // Handset glyph — Lucide's "phone" path. Slight rotation so the
       // handset reads as "off-hook" (active) rather than "hung up".

@@ -32,9 +32,11 @@ const config: Config = {
         },
       },
       fontFamily: {
-        sans: ['"Inter Tight"', "system-ui", "sans-serif"],
-        serif: ['"Instrument Serif"', "Georgia", "serif"],
-        mono: ['"JetBrains Mono"', "ui-monospace", "monospace"],
+        // The var() is populated by next/font in layout.tsx; the rest of each
+        // list is the fallback used before the font swaps in (display: "swap").
+        sans: ["var(--font-sans)", '"Inter Tight"', "system-ui", "sans-serif"],
+        serif: ["var(--font-serif)", '"Instrument Serif"', "Georgia", "serif"],
+        mono: ["var(--font-mono)", '"JetBrains Mono"', "ui-monospace", "monospace"],
       },
       backgroundImage: {
         grad: "linear-gradient(120deg,#1F3FCF 0%,#6B1FB8 52%,#C7197A 100%)",

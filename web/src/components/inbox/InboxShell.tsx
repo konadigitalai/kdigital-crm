@@ -250,70 +250,73 @@ export function InboxShell({
     : advisors.find((a) => a.id === advisor)?.name ?? "All";
 
   return (
-    <div className="grid h-[calc(100vh-140px)] grid-cols-[380px_1fr] gap-4">
-      <div className="flex flex-col overflow-hidden rounded-2xl border border-rule bg-paper">
-        <div className="border-b border-rule px-3 pt-2">
-          <div className="flex items-center gap-1 border-b border-rule">
-            <ChannelTab
-              active={channel === "all"} onClick={() => setChannel("all")}
-              label="All" count={counts.all}
-            />
-            <ChannelTab
-              active={channel === "whatsapp"} onClick={() => setChannel("whatsapp")}
-              icon="chat" label="WhatsApp" count={counts.byChannel.whatsapp?.total ?? 0}
-            />
-            <ChannelTab
-              active={channel === "email"} onClick={() => setChannel("email")}
-              icon="mail" label="Email" count={counts.byChannel.email?.total ?? 0}
-            />
-            <ChannelTab
-              active={channel === "voice"} onClick={() => setChannel("voice")}
-              icon="phone" label="Calls" count={counts.byChannel.voice?.total ?? 0}
-            />
-          </div>
+    <div className="flex h-[calc(100vh-140px)] flex-col gap-4">
+      {/* Full-width flat header — channel tabs + filters span the whole inbox,
+          not the 380px list column, so switching channel/filter reads as a page
+          control rather than a list widget. */}
+      <div className="flex-shrink-0">
+        <div className="flex items-center gap-1 border-b border-rule">
+          <ChannelTab
+            active={channel === "all"} onClick={() => setChannel("all")}
+            label="All" count={counts.all}
+          />
+          <ChannelTab
+            active={channel === "whatsapp"} onClick={() => setChannel("whatsapp")}
+            icon="chat" label="WhatsApp" count={counts.byChannel.whatsapp?.total ?? 0}
+          />
+          <ChannelTab
+            active={channel === "email"} onClick={() => setChannel("email")}
+            icon="mail" label="Email" count={counts.byChannel.email?.total ?? 0}
+          />
+          <ChannelTab
+            active={channel === "voice"} onClick={() => setChannel("voice")}
+            icon="phone" label="Calls" count={counts.byChannel.voice?.total ?? 0}
+          />
         </div>
 
-        <div className="border-b border-rule p-3">
-          <div className="mb-2 flex flex-wrap items-center gap-1.5">
-            <div className="inline-flex items-center rounded-full border border-rule bg-warm/40 p-0.5">
-              <ScopeSegment active={scope === "unread"} onClick={() => setScope("unread")} label="Unread" />
-              <ScopeSegment active={scope === "mine"}   onClick={() => setScope("mine")}   label="Assigned to me" />
-              <ScopeSegment active={scope === "all"}    onClick={() => setScope("all")}    label="All" />
-            </div>
+        <div className="mt-3 flex flex-wrap items-center gap-2">
+          <div className="inline-flex items-center rounded-full border border-rule bg-warm/40 p-0.5">
+            <ScopeSegment active={scope === "unread"} onClick={() => setScope("unread")} label="Unread" />
+            <ScopeSegment active={scope === "mine"}   onClick={() => setScope("mine")}   label="Assigned to me" />
+            <ScopeSegment active={scope === "all"}    onClick={() => setScope("all")}    label="All" />
           </div>
-          <div className="mb-2 flex flex-wrap items-center gap-1.5">
-            <SelectPill
-              label="Advisor"
-              current={advisorLabel}
-              active={advisor !== "all"}
-              choices={[
-                { value: "all", label: "All" },
-                ...advisors.map((a) => ({ value: a.id, label: a.name })),
-              ]}
-              value={advisor}
-              onChange={setAdvisor}
-            />
-            <SelectPill
-              label="Rating"
-              current={rating === "all" ? "Any" : ratingStyles[rating].label}
-              active={rating !== "all"}
-              choices={[
-                { value: "all", label: "Any" },
-                ...LEAD_RATINGS.map((r) => ({ value: r, label: ratingStyles[r].label })),
-              ]}
-              value={rating}
-              onChange={(v) => setRating(v === "all" ? "all" : (v as LeadRating))}
-            />
-            <SelectPill
-              label="Sort"
-              current={SORT_OPTIONS.find((o) => o.value === sort)?.label ?? "Newest"}
-              active={sort !== "newest"}
-              choices={SORT_OPTIONS.map((o) => ({ value: o.value, label: o.label }))}
-              value={sort}
-              onChange={(v) => setSort(v as Sort)}
-            />
-          </div>
+          <SelectPill
+            label="Advisor"
+            current={advisorLabel}
+            active={advisor !== "all"}
+            choices={[
+              { value: "all", label: "All" },
+              ...advisors.map((a) => ({ value: a.id, label: a.name })),
+            ]}
+            value={advisor}
+            onChange={setAdvisor}
+          />
+          <SelectPill
+            label="Rating"
+            current={rating === "all" ? "Any" : ratingStyles[rating].label}
+            active={rating !== "all"}
+            choices={[
+              { value: "all", label: "Any" },
+              ...LEAD_RATINGS.map((r) => ({ value: r, label: ratingStyles[r].label })),
+            ]}
+            value={rating}
+            onChange={(v) => setRating(v === "all" ? "all" : (v as LeadRating))}
+          />
+          <SelectPill
+            label="Sort"
+            current={SORT_OPTIONS.find((o) => o.value === sort)?.label ?? "Newest"}
+            active={sort !== "newest"}
+            choices={SORT_OPTIONS.map((o) => ({ value: o.value, label: o.label }))}
+            value={sort}
+            onChange={(v) => setSort(v as Sort)}
+          />
+        </div>
+      </div>
 
+      {/* Body — list + thread, below the shared header. */}
+      <div className="grid min-h-0 flex-1 grid-cols-[380px_1fr] gap-4">
+      <div className="flex min-h-0 flex-col overflow-hidden rounded-2xl border border-rule bg-paper">
+        <div className="flex-shrink-0 border-b border-rule p-3">
           {/* Compose — the only way to email an address that has no thread and
               no lead record yet. Email-only: SMS/WhatsApp/voice all require an
               existing contact to send to. */}
@@ -405,6 +408,7 @@ export function InboxShell({
             </div>
           )}
         </div>
+      </div>
       </div>
 
       {composeOpen && (

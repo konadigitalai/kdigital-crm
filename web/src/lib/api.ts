@@ -9,7 +9,7 @@ import type {
   Course, CourseInput, CreateLeadInput, CurrentUser,
   Case, CaseDashboard, CaseDetail, CaseResolutionCode,
   CreateCaseInput, DeletedLead, EdifyAnswer, EdifySessionSummary, EnrolmentStatus, EventRsvp, FeedItem,
-  ForecastSnapshot, GroupsResponse, Lead, LeadTask, LeadTaskKind, LeadTaskStatus,
+  ForecastSnapshot, GroupsResponse, InboundEvent, Lead, LeadTask, LeadTaskKind, LeadTaskStatus,
   LeaveDay, LeaveHalfDay, LeaveKind, LearnerFeeInput, LearnerRecord, LearnerSummary,
   PaymentStatus,
   PipelineColumn, Program, ProgramInput, RecentRun, RecordResponse,
@@ -1250,6 +1250,19 @@ export async function logTwConversationCall(
 
 export async function getTwConversation(id: string): Promise<TwConversationDetail> {
   return await get<TwConversationDetail>(`/twilio/conversations/${encodeURIComponent(id)}`);
+}
+
+/** Inbound events (calls + WhatsApp) newer than `since`, for the app-wide toast.
+ *  Returns [] on any failure — a notification poll must never surface an error. */
+export async function getInboundEvents(since: string): Promise<InboundEvent[]> {
+  try {
+    const { events } = await get<{ events: InboundEvent[] }>(
+      `/twilio/inbound-events?since=${encodeURIComponent(since)}`,
+    );
+    return events;
+  } catch {
+    return [];
+  }
 }
 
 /** Fetch a provider-hosted media asset's BYTES through the authenticated proxy

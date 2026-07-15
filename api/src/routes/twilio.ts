@@ -222,6 +222,52 @@ twilioRouter.post("/send", requirePermission("messaging.send"), async (req, res,
   } catch (err) { next(err); }
 });
 
+// ─── GET /twilio/inbound-events ──────────────────────────────────────────
+//
+// Feeds the app-wide "incoming call / new WhatsApp" toast. The shell polls this
+// with the timestamp of the last event it showed; we return inbound messages
+// newer than that. Both inbound WhatsApp (twilio-webhook) and inbound calls
+// (exotel-webhook, channel='voice') land as tw_message rows with
+// direction='inbound', so one query covers both.
+//
+// Only real messages (kind='message') — an internal note or logged call is
+// something staff created, not an event to be notified about.
+twilioRouter.get("/inbound-events", requirePermission("messaging.read"), async (req, res, next) => {
+  try {
+    const since = req.query.since ? new Date(String(req.query.since)) : null;
+    // No cursor → nothing is "new" yet; the client sends its mount time on the
+    // first poll. Returning the whole history here would pop a toast per old
+    // message on every page load.
+    if (!since || Number.isNaN(since.getTime())) return res.json({ events: [] });
+
+    const events = await withTenant(req.tenantId!, async (db) => {
+      const r = await db.execute(sql`
+        SELECT
+          m.id,
+          m.conversation_id AS "conversationId",
+          m.channel,
+          m.body,
+          m.sent_at         AS "sentAt",
+          p.name            AS "partyName",
+          p.phone           AS "partyPhone",
+          wi.number         AS "leadNumber",
+          wi.rating         AS "leadRating"
+        FROM tw_message m
+        JOIN tw_conversation c ON c.id = m.conversation_id
+        JOIN party p ON p.id = c.party_id
+        ${LEAD_LATERAL}
+        WHERE m.direction = 'inbound'
+          AND m.kind = 'message'
+          AND m.sent_at > ${since.toISOString()}
+        ORDER BY m.sent_at ASC
+        LIMIT 20
+      `);
+      return r.rows;
+    });
+    return res.json({ events });
+  } catch (err) { next(err); }
+});
+
 // ─── GET /twilio/conversations ───────────────────────────────────────────
 // Query: ?channel=sms|whatsapp&assignee=me|unassigned|<userId>&q=<text>&limit=100
 

@@ -165,6 +165,20 @@ export interface MediaAsset {
   createdAt: string;
 }
 
+/** One inbound event for the app-wide toast (GET /twilio/inbound-events). */
+export interface InboundEvent {
+  /** tw_message id — the toast's dedupe key. */
+  id: string;
+  conversationId: string;
+  channel: TwChannel;
+  body: string | null;
+  sentAt: string;
+  partyName: string;
+  partyPhone: string | null;
+  leadNumber: string | null;
+  leadRating: LeadRating | null;
+}
+
 export interface TwConversationDetail {
   conversation: TwConversationListItem & {
     partyEmail: string | null;

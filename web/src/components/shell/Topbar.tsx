@@ -1,4 +1,5 @@
 import { Icon } from "@/components/ui/Icon";
+import { NotificationBell } from "./NotificationBell";
 
 export function Topbar({
   crumb, search, status, centerSlot,
@@ -30,6 +31,7 @@ export function Topbar({
           {status}
         </div>
       )}
+      <NotificationBell />
     </div>
   );
 }

@@ -27,7 +27,9 @@ html,
 body {
   background: var(--canvas);
   color: var(--ink);
-  font-family: "Inter Tight", system-ui, sans-serif;
+  /* --font-sans is set by next/font in layout.tsx; the stack after it is the
+     swap-in fallback. */
+  font-family: var(--font-sans), "Inter Tight", system-ui, sans-serif;
   -webkit-font-smoothing: antialiased;
   height: 100vh;
   overflow: hidden;
@@ -73,7 +75,7 @@ body::before {
     color: transparent;
   }
   .mono-cap {
-    font-family: "JetBrains Mono", ui-monospace, monospace;
+    font-family: var(--font-mono), "JetBrains Mono", ui-monospace, monospace;
     letter-spacing: 0.1em;
     text-transform: uppercase;
   }

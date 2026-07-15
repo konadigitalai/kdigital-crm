@@ -10,6 +10,7 @@
 import { useEffect, useState } from "react";
 import { IconRail } from "./IconRail";
 import { Sidebar } from "./Sidebar";
+import { NotificationProvider } from "./NotificationProvider";
 import type { CurrentUser, RecentRun, SummaryResponse } from "@/lib/types";
 
 const STORAGE_KEY = "decrm_sidebar_collapsed";
@@ -43,6 +44,10 @@ export function AppShellClient({
   summary: SummaryResponse;
   children: React.ReactNode;
 }) {
+  // Gates the notification poller — no point polling inbound events for a user
+  // who can't open the inbox anyway.
+  const canSeeInbox = currentUser?.permissions.includes("messaging.read") ?? false;
+
   // Start uncollapsed on first paint so SSR + client first render match.
   // The real preference loads on mount; the swap is invisible because there's
   // no animated layout shift — just a width change applied via Tailwind class.
@@ -103,7 +108,12 @@ export function AppShellClient({
           />
         )}
       </div>
-      <main className="relative min-h-0 overflow-y-auto">{children}</main>
+      {/* Provider wraps the page content so the bell (rendered inside each
+          page's Topbar) can read the shared count. It lives here, not per-page,
+          so the count survives client-side navigation between pages. */}
+      <main className="relative min-h-0 overflow-y-auto">
+        <NotificationProvider enabled={canSeeInbox}>{children}</NotificationProvider>
+      </main>
     </div>
   );
 }
