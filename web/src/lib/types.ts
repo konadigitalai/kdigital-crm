@@ -135,6 +135,8 @@ export interface GmailStatus {
     connectedAt: string;
     lastSyncedAt: string | null;
     syncError: string | null;
+    /** Whether this mailbox's email is shared with the whole workspace. */
+    isShared: boolean;
   } | null;
   /** The shared fallback mailbox, if an admin has connected one. */
   shared: string | null;

@@ -24,6 +24,7 @@ import { ThreadList } from "./ThreadList";
 import { ThreadView } from "./ThreadView";
 import { ComposeEmailDialog } from "./ComposeEmailDialog";
 import { ConnectGmailPrompt } from "@/components/record/ConnectGmailPrompt";
+import { GmailAccountControl } from "./GmailAccountControl";
 
 const LIST_POLL_MS = 30_000;
 
@@ -226,6 +227,22 @@ export function InboxShell({
     });
   }, []);
 
+  // React to EXTERNAL url changes — a notification toast / bell click routes to
+  // `/inbox?channel=…&t=…`. When the user is already on /inbox the shell doesn't
+  // remount, so the mount-time seed never sees the new params; without this
+  // effect the URL would change but the thread wouldn't open. Guarded by
+  // equality so it can't fight the state→URL writer effect (they converge once
+  // state and URL agree).
+  useEffect(() => {
+    const urlChannel = channelFromParam(searchParams.get("channel"));
+    const urlT = searchParams.get("t");
+    if (urlT && urlT !== activeId) {
+      setChannel(urlChannel);
+      openThread(urlT);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchParams]);
+
   const closeThread = useCallback((id: string) => {
     setOpenIds((prev) => {
       const idx = prev.indexOf(id);
@@ -325,6 +342,14 @@ export function InboxShell({
       {/* Body — list + thread, below the shared header. */}
       <div className="grid min-h-0 flex-1 grid-cols-[380px_1fr] gap-4">
       <div className="flex min-h-0 flex-col overflow-hidden rounded-2xl border border-rule bg-paper">
+        {/* Which mailbox this email view is scoped to, with a disconnect control.
+            Only on the Email tab — the other channels have no per-user mailbox. */}
+        {channel === "email" && (
+          <GmailAccountControl
+            status={gmail}
+            onChanged={() => { loadGmail(); void refresh(); }}
+          />
+        )}
         <div className="flex-shrink-0 border-b border-rule p-3">
           {/* Compose — the only way to email an address that has no thread and
               no lead record yet. Email-only: SMS/WhatsApp/voice all require an

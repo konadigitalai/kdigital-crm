@@ -1569,9 +1569,9 @@ export async function getGmailStatus(): Promise<GmailStatus> {
 }
 
 /** Returns the Google consent URL to redirect the browser to. */
-export async function getGmailAuthorizeUrl(returnTo: string): Promise<string> {
+export async function getGmailAuthorizeUrl(returnTo: string, shared = true): Promise<string> {
   const { url } = await get<{ url: string }>(
-    `/auth/google/authorize-url?returnTo=${encodeURIComponent(returnTo)}`,
+    `/auth/google/authorize-url?returnTo=${encodeURIComponent(returnTo)}&shared=${shared ? "1" : "0"}`,
   );
   return url;
 }

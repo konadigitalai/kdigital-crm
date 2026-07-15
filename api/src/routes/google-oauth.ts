@@ -68,10 +68,16 @@ googleOAuthRouter.get("/authorize-url", (req, res) => {
     ? returnTo
     : optCfg("WEB_APP_URL", "http://localhost:3000");
 
+  // Whether this mailbox's email is shared with the whole workspace. Default
+  // shared ("1"); the connect UI lets the user opt out to private ("0"). Baked
+  // into the signed state so the callback can trust it.
+  const shared = req.query.shared === "0" ? "0" : "1";
+
   const state = signState({
     userId:   req.userId,
     tenantId: req.tenantId,
     returnTo: safeReturn,
+    shared,
     nonce:    randomBytes(12).toString("hex"),
   }, cfg);
 
@@ -113,6 +119,8 @@ googleOAuthCallbackRouter.get("/callback", async (req, res, next) => {
     if (!payload) return oauthFail(res, "state signature invalid");
     const { userId, tenantId, returnTo } = payload;
     if (!userId || !tenantId) return oauthFail(res, "state payload malformed");
+    // The user's share choice from the connect screen (default shared).
+    const chosenShared = payload.shared !== "0";
 
     const tok = await exchangeCode(code, cfg);
     if (!tok.refreshToken) {
@@ -133,7 +141,10 @@ googleOAuthCallbackRouter.get("/callback", async (req, res, next) => {
         `${email} is not a ${cfg.internalDomain} account. Connect your work Google account instead.`);
     }
 
-    const isShared  = !!cfg.sharedEmail && email === cfg.sharedEmail;
+    // The connector always OWNS their mailbox row (app_user_id = them) so they
+    // can disconnect it — independent of whether it's shared. `is_shared` is the
+    // user's choice, but the env shared mailbox is always forced shared.
+    const isShared  = chosenShared || (!!cfg.sharedEmail && email === cfg.sharedEmail);
     const expiresAt = new Date(Date.now() + tok.expiresInSec * 1000);
 
     await withTenant(tenantId, async (db) => {
@@ -152,7 +163,7 @@ googleOAuthCallbackRouter.get("/callback", async (req, res, next) => {
           sync_error_count, sync_error
         )
         VALUES (
-          ${tenantId}, ${isShared ? null : userId}, ${email},
+          ${tenantId}, ${userId}, ${email},
           ${tok.refreshToken}, ${tok.accessToken},
           ${expiresAt.toISOString()}, ${tok.scope}, ${isShared},
           now(), NULL, 0, NULL
@@ -193,7 +204,8 @@ googleOAuthRouter.get("/status", async (req, res, next) => {
     const out = await withTenant(req.tenantId, async (db) => {
       const mine = await db.execute(sql`
         SELECT email, connected_at AS "connectedAt", revoked_at AS "revokedAt",
-               last_synced_at AS "lastSyncedAt", sync_error AS "syncError"
+               last_synced_at AS "lastSyncedAt", sync_error AS "syncError",
+               is_shared AS "isShared"
         FROM gmail_account
         WHERE app_user_id = ${req.userId} AND revoked_at IS NULL
         LIMIT 1

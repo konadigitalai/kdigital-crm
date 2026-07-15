@@ -241,6 +241,8 @@ twilioRouter.get("/inbound-events", requirePermission("messaging.read"), async (
     if (!since || Number.isNaN(since.getTime())) return res.json({ events: [] });
 
     const events = await withTenant(req.tenantId!, async (db) => {
+      // Same mailbox scoping as the inbox: notify only about email in a mailbox
+      // this user can see (their own or a shared one).
       const r = await db.execute(sql`
         SELECT
           m.id,
@@ -259,6 +261,7 @@ twilioRouter.get("/inbound-events", requirePermission("messaging.read"), async (
         WHERE m.direction = 'inbound'
           AND m.kind = 'message'
           AND m.sent_at > ${since.toISOString()}
+          AND ${emailMessageVisible(req.userId!)}
         ORDER BY m.sent_at ASC
         LIMIT 20
       `);
@@ -292,6 +295,35 @@ const LEAD_LATERAL = sql`
     LIMIT 1
   ) wi ON TRUE
 `;
+
+// Which mailboxes' email a user may see: their OWN connected mailbox, plus any
+// mailbox marked shared (is_shared). Each connector chooses share-vs-private at
+// connect time (default shared). gmail_account.app_user_id holds the app_user
+// id, matching req.userId.
+//
+// `emailScope` gates a conversation row aliased `c` — non-email channels always
+// pass; an email conversation passes if it carries any message from a mailbox
+// visible to this user. `emailMessageVisible` is the same test per message row
+// aliased `m`, for the thread detail + notification feed.
+function emailScope(userId: string) {
+  return sql`(c.channel <> 'email' OR EXISTS (
+    SELECT 1 FROM tw_message m
+    JOIN gmail_account ga ON ga.id = m.gmail_account_id
+    WHERE m.conversation_id = c.id
+      AND m.channel = 'email'
+      AND ga.revoked_at IS NULL
+      AND (ga.app_user_id = ${userId} OR ga.is_shared = true)
+  ))`;
+}
+
+function emailMessageVisible(userId: string) {
+  return sql`(m.channel <> 'email' OR EXISTS (
+    SELECT 1 FROM gmail_account ga
+    WHERE ga.id = m.gmail_account_id
+      AND ga.revoked_at IS NULL
+      AND (ga.app_user_id = ${userId} OR ga.is_shared = true)
+  ))`;
+}
 
 twilioRouter.get("/conversations", requirePermission("messaging.read"), async (req, res, next) => {
   try {
@@ -335,6 +367,7 @@ twilioRouter.get("/conversations", requirePermission("messaging.read"), async (r
         JOIN party p ON p.id = c.party_id
         ${LEAD_LATERAL}
         WHERE (${channel} = '' OR c.channel = ${channel})
+          AND ${emailScope(req.userId!)}
           AND (${assignee} = '' OR
                (${assignee} = 'unassigned' AND c.assigned_user_id IS NULL) OR
                (${assignee} = 'me' AND c.assigned_user_id IS NOT NULL AND c.assigned_user_id = (
@@ -377,7 +410,8 @@ twilioRouter.get("/conversations/counts", requirePermission("messaging.read"), a
         FROM tw_conversation c
         JOIN party p ON p.id = c.party_id
         ${LEAD_LATERAL}
-        WHERE (${assignee} = '' OR
+        WHERE ${emailScope(req.userId!)}
+          AND (${assignee} = '' OR
                (${assignee} = 'unassigned' AND c.assigned_user_id IS NULL) OR
                (${assignee} = 'me' AND c.assigned_user_id IS NOT NULL AND c.assigned_user_id = (
                   SELECT party_id FROM app_user WHERE id = ${req.userId!}
@@ -433,9 +467,12 @@ twilioRouter.get("/conversations/:id", requirePermission("messaging.read"), asyn
         JOIN party p ON p.id = c.party_id
         ${LEAD_LATERAL}
         WHERE c.id = ${id}
+          AND ${emailScope(req.userId!)}
         LIMIT 1
       `);
       const conv = cR.rows[0] as Record<string, unknown> | undefined;
+      // Also returns null when the conversation IS email but belongs to another
+      // mailbox — emailScope filtered it out, so a stray link can't leak it.
       if (!conv) return null;
       const mR = await db.execute(sql`
         SELECT
@@ -484,6 +521,9 @@ twilioRouter.get("/conversations/:id", requirePermission("messaging.read"), asyn
         FROM tw_message m
         LEFT JOIN wa_template wt ON wt.content_sid = m.content_sid
         WHERE m.conversation_id = ${id}
+          -- In a shared-party email conversation, show only the caller's own
+          -- mailbox's messages; non-email rows are unaffected.
+          AND ${emailMessageVisible(req.userId!)}
         ORDER BY m.sent_at ASC
         LIMIT 500
       `);

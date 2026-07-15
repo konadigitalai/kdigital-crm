@@ -44,16 +44,13 @@ export function NotificationToaster() {
   }, []);
 
   // Watch the provider's event list; toast anything we haven't shown yet.
-  // `events` is newest-first, so reverse to toast in arrival order (newest
-  // ends up at the bottom of the bottom-anchored stack).
+  // `events` is newest-first; prepend so the newest sits at the top of the
+  // top-anchored stack, and keep only the most recent MAX_TOASTS.
   useEffect(() => {
     const fresh = events.filter((e) => !toastedRef.current.has(e.id));
     if (fresh.length === 0) return;
     for (const e of fresh) toastedRef.current.add(e.id);
-    setToasts((prev) => {
-      const next = [...prev, ...fresh.reverse().map((event) => ({ event }))];
-      return next.length > MAX_TOASTS ? next.slice(next.length - MAX_TOASTS) : next;
-    });
+    setToasts((prev) => [...fresh.map((event) => ({ event })), ...prev].slice(0, MAX_TOASTS));
     for (const e of fresh) {
       timersRef.current.set(e.id, setTimeout(() => dismiss(e.id), VISIBLE_MS));
     }
@@ -72,7 +69,9 @@ export function NotificationToaster() {
   }
 
   return createPortal(
-    <div className="pointer-events-none fixed bottom-6 right-6 z-[100] flex w-[340px] max-w-[calc(100vw-2rem)] flex-col gap-2.5">
+    // Top-right, below the topbar (which is ~58px tall). Newest ends up at the
+    // top of the stack so the freshest is nearest the bell it corresponds to.
+    <div className="pointer-events-none fixed right-6 top-[76px] z-[100] flex w-[340px] max-w-[calc(100vw-2rem)] flex-col gap-2.5">
       {toasts.map((t) => (
         <ToastCard
           key={t.event.id}
