@@ -35,7 +35,14 @@ export interface FeeLedgerValue {
   feeNotes:      string | null;
 }
 
-export function FeeLedgerCard({ partyId, initial }: { partyId: string; initial: FeeLedgerValue }) {
+export function FeeLedgerCard({ partyId, initial, saveFee }: {
+  partyId: string;
+  initial: FeeLedgerValue;
+  // Where the ledger saves to. Defaults to the learner fee route
+  // (patchLearnerFee). The enrollment record passes its own saver so the same
+  // card can target the enrolment fee route by id/number instead.
+  saveFee?: (patch: LearnerFeeInput) => Promise<void>;
+}) {
   const router = useRouter();
   const [feeQuoted, setFeeQuoted] = useState(initial.feeQuoted   ?? "");
   const [feePaid,   setFeePaid]   = useState(initial.feePaid     ?? "");
@@ -68,7 +75,7 @@ export function FeeLedgerCard({ partyId, initial }: { partyId: string; initial: 
       feeNotes:      feeNotes.trim() || null,
     };
     try {
-      await patchLearnerFee(partyId, patch);
+      await (saveFee ? saveFee(patch) : patchLearnerFee(partyId, patch));
       setNotice("Saved");
       router.refresh();
       setTimeout(() => setNotice(null), 2000);

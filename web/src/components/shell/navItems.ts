@@ -48,6 +48,7 @@ export function buildNavItems(summary: SummaryResponse): NavItem[] {
     { href: "/",                          icon: "home",            label: "Agent Home" },
     { href: "/inbox",                     icon: "message-square",  label: "Inbox",                          requires: "messaging.read" },
     { href: "/leads",                     icon: "user-plus",       label: "Leads",       badge: leadBadge, requires: "leads.read" },
+    { href: "/enrollments",               icon: "stamp",           label: "Enrollments",                    requires: "learners.read" },
     { href: "/learners",                  icon: "graduation-cap",  label: "Learners",                       requires: "learners.read" },
     { href: "/cases",                     icon: "life-ring",       label: "Cases",       badge: caseBadge, requires: "cases.read" },
     // Pipeline was dropped from the nav 2026-07-12: /leads now carries the
@@ -85,6 +86,7 @@ export function filterNavItems(items: NavItem[], user: CurrentUser | null): NavI
 const DEDICATED_HREFS = [
   "/inbox",
   "/leads",
+  "/enrollments",
   "/learners",
   "/cases",
   "/admin/cohorts",   // Batches
@@ -95,6 +97,7 @@ const DEDICATED_HREFS = [
 export function isActive(pathname: string, href: string): boolean {
   if (href === "/") return pathname === "/";
   if (href === "/leads") return pathname.startsWith("/leads") || pathname.startsWith("/records");
+  if (href === "/enrollments") return pathname.startsWith("/enrollments");
   if (href === "/learners") return pathname.startsWith("/learners");
   if (href === "/cases") return pathname.startsWith("/cases");
   // Settings is the catch-all for admin config. But it must NOT light up

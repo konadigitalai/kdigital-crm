@@ -5,7 +5,22 @@ import { resolveActorPartyId } from "../lib/party/resolve.js";
 
 export const learnersRouter = Router();
 
-// GET /learners — list of learners with their primary program enrolment + counts
+// Human-friendly board status derived from the learner's engagement counts.
+// Kept a pure function so the list route can compute it per-row.
+//   activeBatches > 0            → "In batch"
+//   activeCourses > 0, no batch  → "Assigned"
+//   anything else                → "Enrolled"
+function learnerStatus(activeCourses: number, activeBatches: number): string {
+  if (activeBatches > 0) return "In batch";
+  if (activeCourses > 0) return "Assigned";
+  return "Enrolled";
+}
+
+// GET /learners — enriched learner rows for the Learners board (list/kanban/
+// chart/calendar). One row per learner (party currently 'learner'), newest
+// first. Carries contact, program + stack, course-module chips, primary batch
+// code, best-effort advisor (via the party's originating lead), the sparse
+// learner_profile satellite, and the engagement counts the board groups on.
 learnersRouter.get("/", async (req, res, next) => {
   try {
     const rows = await withTenant(req.tenantId!, async (db) => {
@@ -18,31 +33,143 @@ learnersRouter.get("/", async (req, res, next) => {
           p.city         AS "city",
           p.attributes   AS "attributes",
           pr.valid_from  AS "learnerSince",
+          -- Primary enrolment: prefer an active one, else the newest.
+          pe.id          AS "enrolmentId",
+          pe.status      AS "enrolmentStatus",
+          pg.id          AS "programId",
+          pg.name        AS "programName",
+          stk.name       AS "stackName",
+          au.id          AS "advisorId",     -- app_user.id (l.advisor_id stores party.id)
+          au.name        AS "advisorName",
+          -- learner_profile satellite (sparse — nulls fine).
+          lp.skill_level       AS "skillLevel",
+          lp.placement_status  AS "placementStatus",
+          lp.mentor_party_id   AS "mentorPartyId",
+          -- Course-module chips: the learner's assigned course names.
           (
-            SELECT json_build_object(
-              'id', e.id,
-              'programId', e.program_id,
-              'programName', pg.name,
-              'status', e.status
-            )
-            FROM enrolment e
-            LEFT JOIN program pg ON pg.id = e.program_id
-            WHERE e.party_id = p.id AND e.status = 'active'
-            ORDER BY e.created_at DESC
+            SELECT COALESCE(array_agg(DISTINCT co.name) FILTER (WHERE co.name IS NOT NULL), '{}')
+            FROM course_assignment ca
+            JOIN course co ON co.id = ca.course_id
+            WHERE ca.party_id = p.id
+          )              AS "courseModules",
+          -- Primary batch code: prefer an active assignment, else the newest.
+          (
+            SELECT c.code FROM batch_assignment b
+            JOIN cohort c ON c.id = b.cohort_id
+            WHERE b.party_id = p.id
+            ORDER BY (b.status = 'active') DESC, b.created_at DESC
             LIMIT 1
-          ) AS "primaryEnrolment",
+          )              AS "batchCode",
           (SELECT COUNT(*)::int FROM course_assignment ca WHERE ca.party_id = p.id)                          AS "totalCourses",
           (SELECT COUNT(*)::int FROM course_assignment ca WHERE ca.party_id = p.id AND ca.status = 'active') AS "activeCourses",
           (SELECT COUNT(*)::int FROM batch_assignment b WHERE b.party_id = p.id)                              AS "totalBatches",
           (SELECT COUNT(*)::int FROM batch_assignment b WHERE b.party_id = p.id AND b.status = 'active')      AS "activeBatches"
         FROM party p
         JOIN party_role pr ON pr.party_id = p.id
+        LEFT JOIN LATERAL (
+          SELECT e.id, e.program_id, e.status
+          FROM enrolment e
+          WHERE e.party_id = p.id
+          ORDER BY (e.status = 'active') DESC, e.created_at DESC
+          LIMIT 1
+        ) pe ON true
+        LEFT JOIN program pg  ON pg.id  = pe.program_id
+        LEFT JOIN stack   stk ON stk.id = pg.stack_id
+        LEFT JOIN LATERAL (
+          SELECT l.advisor_id
+          FROM lead l
+          JOIN work_item wi ON wi.id = l.work_item_id
+          WHERE wi.party_id = p.id
+          ORDER BY wi.created_at
+          LIMIT 1
+        ) al ON true
+        LEFT JOIN app_user au        ON au.party_id = al.advisor_id
+        LEFT JOIN learner_profile lp ON lp.party_id = p.id
         WHERE pr.role = 'learner' AND pr.valid_to IS NULL
         ORDER BY pr.valid_from DESC, p.name
       `);
       return r.rows;
     });
-    res.json({ learners: rows });
+
+    const learners = rows.map((raw) => {
+      const row = raw as {
+        partyId: string; name: string; email: string | null; phone: string | null;
+        city: string | null; attributes: { initials?: string } | null; learnerSince: string;
+        enrolmentId: string | null; enrolmentStatus: string | null;
+        programId: string | null; programName: string | null; stackName: string | null;
+        advisorId: string | null; advisorName: string | null;
+        skillLevel: string | null; placementStatus: string | null; mentorPartyId: string | null;
+        courseModules: string[] | null; batchCode: string | null;
+        totalCourses: number; activeCourses: number; totalBatches: number; activeBatches: number;
+      };
+      return {
+        ...row,
+        attributes: row.attributes ?? {},
+        courseModules: row.courseModules ?? [],
+        status: learnerStatus(row.activeCourses, row.activeBatches),
+        primaryEnrolment: row.enrolmentId
+          ? {
+              id: row.enrolmentId,
+              programId: row.programId,
+              programName: row.programName,
+              status: row.enrolmentStatus,
+            }
+          : null,
+      };
+    });
+
+    res.json({ learners });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// GET /learners/summary — KPI aggregates for the Learners board stat cards.
+// Same population as GET / (parties currently 'learner'). One efficient query;
+// the roll-ups are computed in SQL.
+//
+// Registered BEFORE the /:partyId route so "summary" isn't captured as an id.
+learnersRouter.get("/summary", async (req, res, next) => {
+  try {
+    const summary = await withTenant(req.tenantId!, async (db) => {
+      const r = await db.execute(sql`
+        SELECT
+          COUNT(*)::int AS "totalLearners",
+          COUNT(*) FILTER (
+            WHERE EXISTS (
+              SELECT 1 FROM batch_assignment b
+              WHERE b.party_id = p.id AND b.status = 'active'
+            )
+          )::int AS "activeInBatch",
+          COUNT(*) FILTER (
+            WHERE NOT EXISTS (
+              SELECT 1 FROM batch_assignment b
+              WHERE b.party_id = p.id AND b.status = 'active'
+            )
+          )::int AS "notBatched",
+          COUNT(*) FILTER (
+            WHERE EXISTS (
+              SELECT 1 FROM enrolment e
+              WHERE e.party_id = p.id AND e.status = 'completed'
+            )
+          )::int AS "completed",
+          COUNT(*) FILTER (
+            WHERE EXISTS (
+              SELECT 1 FROM learner_profile lp
+              WHERE lp.party_id = p.id AND lp.placement_status = 'placed'
+            )
+          )::int AS "placed"
+        FROM party p
+        JOIN party_role pr ON pr.party_id = p.id
+        WHERE pr.role = 'learner' AND pr.valid_to IS NULL
+      `);
+      return r.rows[0] as {
+        totalLearners: number; activeInBatch: number;
+        notBatched: number; completed: number; placed: number;
+      };
+    });
+
+    res.json({ summary });
   } catch (err) {
     next(err);
   }
@@ -58,16 +185,26 @@ learnersRouter.get("/:partyId", async (req, res, next) => {
     const data = await withTenant(req.tenantId!, async (db) => {
       const partyR = await db.execute(sql`
         SELECT p.id, p.name, p.email, p.phone, p.city, p.attributes,
-               p.fee_quoted        AS "feeQuoted",
-               p.fee_paid          AS "feePaid",
-               p.due_date          AS "dueDate",
-               p.payment_status    AS "paymentStatus",
-               p.payment_proof_url AS "paymentProofUrl",
-               p.payment_proofs    AS "paymentProofs",
-               p.fee_notes         AS "feeNotes",
+               -- Fee ledger now lives on the enrolment (post-0077). A learner
+               -- has one enrolment; prefer the active one if several ever exist.
+               e.fee_quoted        AS "feeQuoted",
+               e.fee_paid          AS "feePaid",
+               e.due_date          AS "dueDate",
+               e.payment_status    AS "paymentStatus",
+               e.payment_proof_url AS "paymentProofUrl",
+               COALESCE(e.payment_proofs, '{}'::text[]) AS "paymentProofs",
+               e.fee_notes         AS "feeNotes",
                (SELECT valid_from FROM party_role WHERE party_id = p.id AND role = 'learner' AND valid_to IS NULL) AS "learnerSince",
                (SELECT MIN(valid_from) FROM party_role WHERE party_id = p.id AND role = 'lead') AS "leadSince"
         FROM party p
+        LEFT JOIN LATERAL (
+          SELECT fee_quoted, fee_paid, due_date, payment_status,
+                 payment_proof_url, payment_proofs, fee_notes
+          FROM enrolment
+          WHERE party_id = p.id
+          ORDER BY (status = 'active') DESC, created_at DESC
+          LIMIT 1
+        ) e ON true
         WHERE p.id = ${partyId}
       `);
       if (!partyR.rows[0]) return null;
@@ -645,6 +782,15 @@ learnersRouter.patch("/:partyId/fee", async (req, res, next) => {
       `);
       if (isLearner.rows.length === 0) return null;
 
+      // The fee ledger lives on the enrolment (post-0077). A learner has one
+      // enrolment; target the active one if several ever exist.
+      const enrolR = await db.execute(sql`
+        SELECT id FROM enrolment WHERE party_id = ${partyId}
+        ORDER BY (status = 'active') DESC, created_at DESC LIMIT 1
+      `);
+      const enrolmentId = (enrolR.rows[0] as { id: string } | undefined)?.id;
+      if (!enrolmentId) return null;
+
       // Snapshot BEFORE so we can produce a diff for the timeline.
       const beforeR = await db.execute(sql`
         SELECT
@@ -654,7 +800,7 @@ learnersRouter.patch("/:partyId/fee", async (req, res, next) => {
           payment_status AS "paymentStatus",
           payment_proofs AS "paymentProofs",
           fee_notes      AS "feeNotes"
-        FROM party WHERE id = ${partyId}
+        FROM enrolment WHERE id = ${enrolmentId}
       `);
       type LedgerRow = {
         feeQuoted: string | null; feePaid: string | null; dueDate: string | null;
@@ -664,8 +810,8 @@ learnersRouter.patch("/:partyId/fee", async (req, res, next) => {
 
       const setClause = sql.join(sets, sql`, `);
       const r = await db.execute(sql`
-        UPDATE party SET ${setClause}
-        WHERE id = ${partyId}
+        UPDATE enrolment SET ${setClause}
+        WHERE id = ${enrolmentId}
         RETURNING
           fee_quoted        AS "feeQuoted",
           fee_paid          AS "feePaid",

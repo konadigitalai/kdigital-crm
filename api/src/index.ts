@@ -5,7 +5,7 @@ dotenv.config({ override: true });
 import express from "express";
 import { appPool } from "./db/app.js";
 import { authMiddleware } from "./middleware/auth.js";
-import { requirePermission } from "./middleware/require.js";
+import { requirePermission, requireAnyPermission } from "./middleware/require.js";
 import { leadsRouter } from "./routes/leads.js";
 import { intakeRouter } from "./routes/intake.js";
 import { pipelineRouter } from "./routes/pipeline.js";
@@ -21,6 +21,7 @@ import { cohortsRouter } from "./routes/cohorts.js";
 import { coursesRouter } from "./routes/courses.js";
 import { convertRouter } from "./routes/convert.js";
 import { learnersRouter } from "./routes/learners.js";
+import { enrollmentsRouter } from "./routes/enrollments.js";
 import { approvalsRouter } from "./routes/approvals.js";
 import { casesRouter } from "./routes/cases.js";
 import { usersRouter } from "./routes/users.js";
@@ -186,8 +187,11 @@ const readWriteDelete = (readPerm: Perm, writePerm: Perm, deletePerm: Perm) =>
   };
 
 app.use("/leads",    readWriteDelete("leads.read", "leads.write", "leads.delete"), leadsRouter);
-app.use("/leads",    requirePermission("leads.write"),             convertRouter); // POST /leads/:idOrNumber/convert
+app.use("/leads",    requirePermission("leads.write"),             convertRouter); // POST /leads/:idOrNumber/convert|/enroll
 app.use("/learners", readWrite("learners.read", "learners.write"), learnersRouter);
+// Enrollments — the enrolment record + fee ledger + payment verification +
+// enrolled→learner conversion. Reuses the learners permission surface.
+app.use("/enrollments", readWrite("learners.read", "learners.write"), enrollmentsRouter);
 app.use("/approvals", approvalsRouter);
 app.use("/cases",    readWrite("cases.read",    "cases.write"),    casesRouter);
 app.use("/pipeline", readWrite("pipeline.read", "pipeline.write"), pipelineRouter);
@@ -224,10 +228,12 @@ app.use("/tasks",       readWrite("leads.read", "leads.write"), tasksRouter);
 // Read to list them, send-permission to create/edit/delete.
 app.use("/message-templates", readWrite("messaging.read", "messaging.send"), messageTemplatesRouter);
 app.use("/batches",     batchesRouter);
-// Saved views — gated per-handler against the surface's read perm
-// (pipeline_list ⇒ pipeline.read for GET, etc.). The router itself does
-// the visibility checks (personal vs shared, owner vs others).
-app.use("/views",       requirePermission("pipeline.read"), viewsRouter);
+// Saved views — generic across surfaces (pipeline_list, enrollments_list, …).
+// The mount only checks the caller can read SOME view surface; the router then
+// enforces the correct read perm per scope (pipeline_list ⇒ pipeline.read,
+// enrollments_list ⇒ learners.read) and the visibility checks (personal vs
+// shared, owner vs others).
+app.use("/views",       requireAnyPermission("pipeline.read", "learners.read"), viewsRouter);
 // Integrations admin — Slack rules + delivery log.
 app.use("/integrations", readWrite("integrations.read", "integrations.manage"), integrationsRouter);
 // User-facing Slack reads needed by the "Share to Slack" dialog — workspace

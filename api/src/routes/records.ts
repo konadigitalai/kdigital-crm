@@ -186,6 +186,19 @@ recordsRouter.get("/:idOrNumber", async (req, res, next) => {
       `);
       const isLearner = learnerCheck.rows.length > 0;
 
+      // Is this party currently 'enrolled' (post-Enroll, pre-learner)? If so
+      // the lead record swaps its "Enroll" button for a link to the pending
+      // enrolment record instead of offering to enroll again.
+      const enrolmentCheck = await db.execute(sql`
+        SELECT e.id, e.number
+        FROM party_role pr
+        JOIN enrolment e ON e.party_id = pr.party_id
+        WHERE pr.party_id = ${row.partyId as string} AND pr.role = 'enrolled' AND pr.valid_to IS NULL
+        ORDER BY e.created_at DESC
+        LIMIT 1
+      `);
+      const enrollment = (enrolmentCheck.rows[0] as { id: string; number: string | null } | undefined) ?? null;
+
       // Map agent.key → glyph/icon for the UI (presentation, not data — kept here
       // so the UI doesn't need to repeat the lookup).
       const AGENT_VISUAL: Record<string, { glyph: string; icon: string }> = {
@@ -243,7 +256,7 @@ recordsRouter.get("/:idOrNumber", async (req, res, next) => {
         },
       };
 
-      return { lead, timeline: timeline.rows, approval: approval.rows[0] ?? null, isLearner };
+      return { lead, timeline: timeline.rows, approval: approval.rows[0] ?? null, isLearner, enrollment };
     });
 
     if (!data) {

@@ -25,7 +25,7 @@ import { partyIdFromAppUserId } from "../lib/party/resolve.js";
 
 export const viewsRouter = Router();
 
-const SUPPORTED_SCOPES = ["pipeline_list"] as const;
+const SUPPORTED_SCOPES = ["pipeline_list", "enrollments_list", "learners_list"] as const;
 type Scope = (typeof SUPPORTED_SCOPES)[number];
 function isScope(s: string): s is Scope {
   return (SUPPORTED_SCOPES as readonly string[]).includes(s);
@@ -33,9 +33,22 @@ function isScope(s: string): s is Scope {
 
 // What permission gates "create/edit/delete a SHARED view" for each scope.
 // The surface's own write perm is reused — anyone who can mutate leads in
-// the pipeline can also publish a shared view there.
+// the pipeline can also publish a shared view there. Enrollments reuses the
+// learners write perm, matching how the /enrollments routes are mounted.
 const SHARED_WRITE_PERM: Record<Scope, Permission> = {
   pipeline_list: "pipeline.write",
+  enrollments_list: "learners.write",
+  learners_list: "learners.write",
+};
+
+// Reading a scope's views requires that surface's read perm. The mount only
+// checks the caller can read *some* surface, so the GET handler re-checks the
+// specific scope here — otherwise a learners-only user could read pipeline
+// views (and vice-versa).
+const READ_PERM: Record<Scope, Permission> = {
+  pipeline_list: "pipeline.read",
+  enrollments_list: "learners.read",
+  learners_list: "learners.read",
 };
 
 const isUuid = (s: string) => /^[0-9a-fA-F-]{36}$/.test(s);
@@ -56,6 +69,9 @@ viewsRouter.get("/", async (req, res, next) => {
   try {
     const scope = String(req.query.scope ?? "");
     if (!isScope(scope)) return res.status(400).json({ error: "unsupported scope" });
+    if (!req.permissions?.has(READ_PERM[scope])) {
+      return res.status(403).json({ error: `Missing permission: ${READ_PERM[scope]}` });
+    }
 
     const rows = await withTenant(req.tenantId!, async (db) => {
       // Phase 2: saved_view.owner_id stores party.id. Return app_user.id in

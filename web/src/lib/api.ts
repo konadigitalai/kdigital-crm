@@ -8,9 +8,10 @@ import type {
   CalendarEventDetail, CalendarEventSummary, CatalogResponse,
   Course, CourseInput, CreateLeadInput, CurrentUser,
   Case, CaseDashboard, CaseDetail, CaseResolutionCode,
-  CreateCaseInput, DeletedLead, EdifyAnswer, EdifySessionSummary, EnrolmentStatus, EventRsvp, FeedItem,
+  CreateCaseInput, DeletedLead, EdifyAnswer, EdifySessionSummary, EnrolmentStatus,
+  Enrollment, EnrollmentRecord, EnrollmentSummary, EventRsvp, FeedItem,
   ForecastSnapshot, GroupsResponse, InboundEvent, Lead, LeadTask, LeadTaskKind, LeadTaskStatus,
-  LeaveDay, LeaveHalfDay, LeaveKind, LearnerFeeInput, LearnerRecord, LearnerSummary,
+  LeaveDay, LeaveHalfDay, LeaveKind, LearnerBoardSummary, LearnerFeeInput, LearnerRecord, LearnerSummary,
   MessageTemplate,
   PaymentStatus,
   PipelineColumn, Program, ProgramInput, RecentRun, RecordResponse,
@@ -423,6 +424,63 @@ export async function convertLead(
   );
 }
 
+// ── Enrollments ─────────────────────────────────────────────────────────────
+
+// Step 1: lead → enrolled. Creates the enrolment (status 'pending') and the
+// 'enrolled' role. Returns the new enrolment id so the UI can route to it.
+export async function enrollLead(
+  idOrNumber: string,
+  body: { programId?: string } = {},
+): Promise<{ partyId: string; enrolmentId: string }> {
+  return await post<{ partyId: string; enrolmentId: string }>(
+    `/leads/${encodeURIComponent(idOrNumber)}/enroll`,
+    body,
+  );
+}
+
+export async function getEnrollments(): Promise<Enrollment[]> {
+  const { enrollments } = await get<{ enrollments: Enrollment[] }>("/enrollments");
+  return enrollments;
+}
+
+export async function getEnrollmentSummary(): Promise<EnrollmentSummary> {
+  const { summary } = await get<{ summary: EnrollmentSummary }>("/enrollments/summary");
+  return summary;
+}
+
+export async function getEnrollment(idOrNumber: string): Promise<EnrollmentRecord | null> {
+  try {
+    return await get<EnrollmentRecord>(`/enrollments/${encodeURIComponent(idOrNumber)}`);
+  } catch (err) {
+    if ((err as Error).message.includes("404")) return null;
+    throw err;
+  }
+}
+
+export async function verifyEnrollmentPayment(
+  idOrNumber: string,
+): Promise<{ ok: true; enrolment: { id: string; number: string | null; paymentVerifiedAt: string } }> {
+  return await post(`/enrollments/${encodeURIComponent(idOrNumber)}/verify-payment`, {});
+}
+
+// enrolled → learner. Blocked server-side (409) unless payment is verified.
+export async function convertEnrollmentToLearner(
+  idOrNumber: string,
+): Promise<{ ok: true; partyId: string }> {
+  return await post(`/enrollments/${encodeURIComponent(idOrNumber)}/convert`, {});
+}
+
+export async function patchEnrollmentFee(
+  idOrNumber: string,
+  patch: LearnerFeeInput,
+): Promise<{ ok: true; fee: {
+  feeQuoted: string | null; feePaid: string | null; dueDate: string | null;
+  paymentStatus: PaymentStatus | null; paymentProofUrl: string | null;
+  paymentProofs: string[]; feeNotes: string | null;
+} }> {
+  return await send("PATCH", `/enrollments/${encodeURIComponent(idOrNumber)}/fee`, patch);
+}
+
 // ── Courses ───────────────────────────────────────────────────────────────
 
 export async function getCourses(): Promise<Course[]> {
@@ -462,6 +520,11 @@ export async function updateBatch(id: string, patch: Partial<BatchInput>): Promi
 export async function getLearners(): Promise<LearnerSummary[]> {
   const { learners } = await get<{ learners: LearnerSummary[] }>("/learners");
   return learners;
+}
+
+export async function getLearnerSummary(): Promise<LearnerBoardSummary> {
+  const { summary } = await get<{ summary: LearnerBoardSummary }>("/learners/summary");
+  return summary;
 }
 
 export async function getLearner(partyId: string): Promise<LearnerRecord | null> {

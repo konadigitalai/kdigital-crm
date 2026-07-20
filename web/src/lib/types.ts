@@ -657,7 +657,7 @@ export interface GroupsResponse {
 // state shape (`{ rules: [...] }`); `columns` is the ordered list of
 // visible column keys.
 
-export type SavedViewScope = "pipeline_list";
+export type SavedViewScope = "pipeline_list" | "enrollments_list" | "learners_list";
 export type SavedViewVisibility = "personal" | "shared";
 
 export interface SavedView {
@@ -793,6 +793,10 @@ export interface BatchSession {
 
 export type EnrolmentStatus = "active" | "completed" | "dropped" | "deferred";
 
+// One enriched learner row for the Learners board (list/kanban/chart/calendar).
+// Carries everything needed to display, filter, group and search without a
+// second round-trip. `status` is the derived board label ("In batch" /
+// "Assigned" / "Enrolled"); the learner_profile fields are sparse (nulls fine).
 export interface LearnerSummary {
   partyId: string;
   name: string;
@@ -807,10 +811,38 @@ export interface LearnerSummary {
   activeBatches: number;
   primaryEnrolment: {
     id: string;
-    programId: string;
-    programName: string;
-    status: EnrolmentStatus;
+    programId: string | null;
+    programName: string | null;
+    status: EnrolmentStatus | null;
   } | null;
+  /** Program of the primary enrolment (prefer active, else newest). */
+  programName: string | null;
+  /** Stack the primary program belongs to. */
+  stackName: string | null;
+  /** Raw lifecycle status of the primary enrolment. */
+  enrolmentStatus: EnrolmentStatus | null;
+  /** Derived board status: "In batch" | "Assigned" | "Enrolled". */
+  status: string;
+  /** Assigned course-module names — the chips. */
+  courseModules: string[];
+  /** Primary batch code, or null → the UI shows "Not batched". */
+  batchCode: string | null;
+  /** Best-effort from the party's originating lead. Null → "Unassigned". */
+  advisorId: string | null;
+  advisorName: string | null;
+  /** learner_profile satellite — sparse, nulls fine. */
+  skillLevel: string | null;
+  placementStatus: string | null;
+  mentorPartyId: string | null;
+}
+
+// KPI aggregates for the Learners board stat cards.
+export interface LearnerBoardSummary {
+  totalLearners: number;
+  activeInBatch: number;
+  notBatched: number;
+  completed: number;
+  placed: number;
 }
 
 export interface CourseAssignment {
@@ -895,6 +927,98 @@ export interface LearnerFeeInput {
   paymentStatus?: PaymentStatus | null;
   paymentProofs?: string[];
   feeNotes?:      string | null;
+}
+
+// ── Enrollments ─────────────────────────────────────────────────────────────
+// The enrolment record — persists across the lead → enrolled → learner
+// workflow. paymentHealth is a computed label derived from paid/quoted vs the
+// due date. `status` is the full enrolment lifecycle
+// ('pending' | 'active' | 'on_hold' | 'completed' | 'dropped' | 'deferred').
+export type PaymentHealth = "paid_in_full" | "on_track" | "due_soon" | "overdue" | "critical";
+
+// One enriched enrollment row for the Enrollments board (list/kanban/chart/
+// calendar). Carries everything needed to display, filter, group and search
+// without a second round-trip. `statusLabel` is the derived human label
+// ("In Training" / "Batched" / "Active" / …); `paymentHealth` is computed
+// server-side from paid/quoted vs the due date.
+export interface Enrollment {
+  id: string;
+  number: string | null;
+  status: string;
+  statusLabel: string;
+  feeQuoted: string | null;
+  feePaid: string | null;
+  feeDue: string | null;
+  paidPct: number | null;
+  dueDate: string | null;
+  paymentStatus: PaymentStatus | null;
+  paymentVerifiedAt: string | null;
+  paymentHealth: PaymentHealth;
+  createdAt: string;
+  registeredDate: string | null;
+  partyId: string;
+  name: string;
+  email: string | null;
+  phone: string | null;
+  city: string | null;
+  programName: string | null;
+  stackName: string | null;
+  /** Assigned course-module names — the "+ML +GenAI" chips. */
+  courseModules: string[];
+  /** Primary batch code, or null → the UI shows "+ Assign". */
+  batchCode: string | null;
+  advisorId: string | null;
+  advisorName: string | null;
+  /** Current role — 'enrolled' pre-conversion, 'learner' once converted. */
+  role: string | null;
+  activeBatches: number;
+  totalBatches: number;
+}
+
+// KPI aggregates for the Enrollments stat cards. Money fields are rupee
+// amounts (numbers, not formatted strings); the client formats them.
+export interface EnrollmentSummary {
+  contractedTotal: number;
+  collectedTotal: number;
+  collectedPct: number;
+  outstandingTotal: number;
+  overdueTotal: number;
+  overdueCount: number;
+  dueSoonTotal: number;
+  dueSoonCount: number;
+}
+
+export interface EnrollmentRecord {
+  enrolment: {
+    id: string;
+    number: string | null;
+    status: string;
+    feeQuoted: string | null;
+    feePaid: string | null;
+    feeDue: string | null;
+    dueDate: string | null;
+    paymentStatus: PaymentStatus | null;
+    paymentProofUrl: string | null;
+    paymentProofs: string[];
+    feeNotes: string | null;
+    paymentVerifiedAt: string | null;
+    verifiedByName: string | null;
+    paymentHealth: PaymentHealth;
+  };
+  party: {
+    id: string;
+    name: string;
+    email: string | null;
+    phone: string | null;
+    city: string | null;
+    attributes: { initials?: string };
+    /** Current role — 'enrolled' pre-conversion, 'learner' once converted. */
+    role: string | null;
+  };
+  programName: string | null;
+  programId: string | null;
+  timeline: TimelineRow[];
+  originLead: { number: string; workItemId: string } | null;
 }
 
 export interface BatchInput {
@@ -1190,6 +1314,9 @@ export interface RecordResponse {
   timeline: TimelineRow[];
   approval: { id: string; actionType: string; mode: string; status: string; proposed: unknown } | null;
   isLearner: boolean;
+  /** Set when the party is currently 'enrolled' (post-Enroll, pre-learner).
+   *  The lead record links here instead of offering to enroll again. */
+  enrollment: { id: string; number: string | null } | null;
 }
 
 export interface TimelineRow {

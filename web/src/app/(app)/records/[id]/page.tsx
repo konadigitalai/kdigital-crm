@@ -6,7 +6,7 @@ import { getCatalog, getCurrentUser, getRecord } from "@/lib/api";
 import { requirePagePermission } from "@/lib/guards";
 import { avatarGradClass } from "@/lib/ui";
 import { cn } from "@/lib/cn";
-import { ConvertButton } from "@/components/record/ConvertDialog";
+import { EnrollButton } from "@/components/record/EnrollButton";
 import { DeleteLeadButton } from "@/components/record/DeleteLeadButton";
 import { EditLeadButton, type LeadEditable } from "@/components/record/EditLeadDialog";
 import { ShareToSlackButton } from "@/components/share/ShareToSlackButton";
@@ -71,7 +71,10 @@ export default async function RecordPage({
   // any more — we're only viewing the historical lead record. Gate every
   // such control on `!isConverted`.
   const isConverted    = !!data.isLearner;
-  const canConvert     = !isConverted && (me?.permissions.includes("leads.write") ?? false);
+  // Already enrolled (post-Enroll, pre-learner) — the Enroll button is replaced
+  // by a link to the pending enrolment record instead of re-enrolling.
+  const isEnrolled     = !!data.enrollment;
+  const canConvert     = !isConverted && !isEnrolled && (me?.permissions.includes("leads.write") ?? false);
   const canRunAgents   = !isConverted && (me?.permissions.includes("agents.run")  ?? false);
   const canDecideApproval = me?.permissions.includes("agents.run")  ?? false;
   const canSendMessage    = me?.permissions.includes("messaging.send") ?? false;
@@ -210,11 +213,20 @@ export default async function RecordPage({
                 />
               )}
               {canConvert && (
-                <ConvertButton
+                <EnrollButton
                   leadNumber={lead.number}
-                  leadName={lead.name}
                   programId={lead.programId}
                 />
+              )}
+              {!isConverted && isEnrolled && data.enrollment && (
+                <Link
+                  href={`/enrollments/${data.enrollment.id}`}
+                  className="btn-grad"
+                  title="Open the enrolment record"
+                >
+                  <Icon name="check" size={14} strokeWidth={2.2} />
+                  View enrolment{data.enrollment.number ? ` · ${data.enrollment.number}` : ""}
+                </Link>
               )}
               {/* Share-to-Slack and Delete are only meaningful while the
                   record is still an active lead — once converted to a

@@ -124,27 +124,14 @@ export const party = pgTable(
     isMerged: boolean("is_merged").notNull().default(false),
     mergedIntoPartyId: uuid("merged_into_party_id"),
     mergedAt: timestamp("merged_at", { withTimezone: true }),
-    // Fee ledger — single per learner. fee_due is not stored, it is computed
-    // as (fee_quoted - fee_paid) at read time. See post-0055-party-fee-ledger.sql.
-    // paymentProofs is an ordered list of receipts — each entry is either a
-    // data: URL (base64 inline image) or an https link. paymentProofUrl (the
-    // singular column) is legacy; readers should prefer paymentProofs.
-    // feeNotes was added by post-0056-party-fee-notes.sql.
-    // paymentProofs was added by post-0057-party-payment-proofs.sql.
-    feeQuoted:       numeric("fee_quoted", { precision: 12, scale: 2 }),
-    feePaid:         numeric("fee_paid",   { precision: 12, scale: 2 }),
-    dueDate:         date("due_date"),
-    paymentStatus:   text("payment_status"),
-    paymentProofUrl: text("payment_proof_url"),
-    paymentProofs:   text("payment_proofs").array().notNull().default(sql`'{}'::text[]`),
-    feeNotes:        text("fee_notes"),
+    // Fee ledger — MOVED to `enrolment` in post-0077-move-fee-to-enrolment.sql.
+    // Financial information now lives on the enrolment (one per learner), not
+    // on the person. Do not re-add fee columns here.
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => ({
     kindCheck: check("party_kind_check", sql`${t.kind} IN ('person','org')`),
-    paymentStatusCheck: check("party_payment_status_check",
-      sql`${t.paymentStatus} IS NULL OR ${t.paymentStatus} IN ('pending','paid','refund','on_hold')`),
     tenantIdx: index("party_tenant_idx").on(t.tenantId),
     identifiersGin: index("party_identifiers_gin").using("gin", t.identifiers),
     nameTrgm: index("party_name_trgm").using("gin", sql`${t.name} gin_trgm_ops`),
@@ -163,7 +150,7 @@ export const partyRole = pgTable(
     validTo: date("valid_to"),
   },
   (t) => ({
-    roleCheck: check("party_role_role_check", sql`${t.role} IN ('lead','contact','learner','advisor','alumnus')`),
+    roleCheck: check("party_role_role_check", sql`${t.role} IN ('lead','contact','enrolled','learner','intern','advisor','alumnus')`),
     lookupIdx: index("party_role_lookup_idx").on(t.tenantId, t.role, t.partyId),
     partyValidKey: uniqueIndex("party_role_party_valid_key").on(t.partyId, t.role, t.validFrom),
   }),
@@ -688,20 +675,41 @@ export const enrolment = pgTable(
   {
     id: uuid("id").primaryKey().defaultRandom(),
     tenantId: uuid("tenant_id").notNull().references(() => tenant.id),
+    // Human-friendly enrollment number, e.g. "ENR-00231". Set by the app via
+    // seq_enrolment. Added in post-0078. Nullable for legacy safety; the
+    // enroll route always populates it.
+    number: text("number"),
     partyId: uuid("party_id").notNull().references(() => party.id),
     programId: uuid("program_id").references(() => program.id), // becomes NOT NULL after migration
     cohortId: uuid("cohort_id").references(() => cohort.id),    // legacy — to be dropped post-migration
     dealId: uuid("deal_id").references(() => workItem.id),
+    // Lifecycle: 'pending' = enrolled, payment not yet verified (pre-learner);
+    // 'active' = converted to learner. See post-0078.
     status: text("status").notNull().default("active"),
     pricePaid:       numeric("price_paid", { precision: 12, scale: 2 }),
-    feeDue:          numeric("fee_due",    { precision: 12, scale: 2 }),
+    feeDue:          numeric("fee_due",    { precision: 12, scale: 2 }), // legacy snapshot; UI computes due = quoted − paid
     dueDate:         date("due_date"),
     registeredDate:  date("registered_date"),
     paymentProofUrl: text("payment_proof_url"),
+    // Fee ledger — moved here from `party` in post-0077. One ledger per
+    // enrolment; a learner has exactly one enrolment. paymentProofs is the
+    // canonical ordered receipt list; paymentProofUrl mirrors proofs[0].
+    feeQuoted:       numeric("fee_quoted", { precision: 12, scale: 2 }),
+    feePaid:         numeric("fee_paid",   { precision: 12, scale: 2 }),
+    paymentStatus:   text("payment_status"),
+    paymentProofs:   text("payment_proofs").array().notNull().default(sql`'{}'::text[]`),
+    feeNotes:        text("fee_notes"),
+    // Payment verification — the gate for enrolled → learner. Set when finance
+    // signs off; Convert to Learner requires paymentVerifiedAt IS NOT NULL.
+    paymentVerifiedAt: timestamp("payment_verified_at", { withTimezone: true }),
+    paymentVerifiedBy: uuid("payment_verified_by").references(() => party.id, { onDelete: "set null" }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => ({
-    statusCheck: check("enrolment_status_check", sql`${t.status} IN ('active','completed','dropped','deferred')`),
+    statusCheck: check("enrolment_status_check", sql`${t.status} IN ('pending','active','on_hold','completed','dropped','deferred')`),
+    paymentStatusCheck: check("enrolment_payment_status_check",
+      sql`${t.paymentStatus} IS NULL OR ${t.paymentStatus} IN ('pending','paid','refund','on_hold')`),
+    tenantNumberKey: uniqueIndex("enrolment_tenant_number_key").on(t.tenantId, t.number),
     partyIdx: index("enrolment_party_idx").on(t.tenantId, t.partyId),
     programIdx: index("enrolment_program_idx").on(t.tenantId, t.programId),
   }),
@@ -751,6 +759,41 @@ export const batchAssignment = pgTable(
     partyIdx:     index("batch_assignment_party_idx").on(t.tenantId, t.partyId),
     cohortIdx:    index("batch_assignment_cohort_idx").on(t.tenantId, t.cohortId),
     uniqAssignment: uniqueIndex("batch_assignment_uniq").on(t.partyId, t.cohortId),
+  }),
+);
+
+// ─── Learner profile (1:1 satellite of party — keyed by party_id) ─────────
+// Durable learner-specific attributes that don't belong on `party` (identity)
+// and aren't a role transition (party_role) or an engagement (enrolment).
+// PK = party_id ⇒ exactly one profile per person and NO identity duplicated —
+// name/email/phone/fees stay on `party`. RLS + grants are SQL-side. See
+// post-0076-learner-profile.sql.
+export const learnerProfile = pgTable(
+  "learner_profile",
+  {
+    partyId: uuid("party_id").primaryKey().references(() => party.id, { onDelete: "cascade" }),
+    tenantId: uuid("tenant_id").notNull().references(() => tenant.id),
+    lmsUserId: text("lms_user_id"),
+    mentorPartyId: uuid("mentor_party_id").references(() => party.id, { onDelete: "set null" }),
+    skillLevel: text("skill_level"),           // beginner | intermediate | advanced
+    placementStatus: text("placement_status"), // not_started | in_progress | placed | deferred
+    placedCompany: text("placed_company"),
+    placedAt: date("placed_at"),
+    status: text("status").notNull().default("active"), // active | paused | completed | dropped
+    attributes: jsonb("attributes").notNull().default(sql`'{}'::jsonb`),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    tenantIdx: index("learner_profile_tenant_idx").on(t.tenantId),
+    mentorIdx: index("learner_profile_mentor_idx").on(t.tenantId, t.mentorPartyId),
+    placementIdx: index("learner_profile_placement_idx").on(t.tenantId, t.placementStatus),
+    skillLevelCheck: check("learner_profile_skill_level_check",
+      sql`${t.skillLevel} IS NULL OR ${t.skillLevel} IN ('beginner','intermediate','advanced')`),
+    placementStatusCheck: check("learner_profile_placement_status_check",
+      sql`${t.placementStatus} IS NULL OR ${t.placementStatus} IN ('not_started','in_progress','placed','deferred')`),
+    statusCheck: check("learner_profile_status_check",
+      sql`${t.status} IN ('active','paused','completed','dropped')`),
   }),
 );
 
@@ -1742,6 +1785,7 @@ export type CampaignRecipient = typeof campaignRecipient.$inferSelect;
 export type CampaignTrigger = typeof campaignTrigger.$inferSelect;
 export type CampaignTriggerFire = typeof campaignTriggerFire.$inferSelect;
 export type TwCallEvent = typeof twCallEvent.$inferSelect;
+export type LearnerProfile = typeof learnerProfile.$inferSelect;
 export type SlackRule = typeof slackRule.$inferSelect;
 export type SlackDeliveryLog = typeof slackDeliveryLog.$inferSelect;
 export type SlackWorkspace = typeof slackWorkspace.$inferSelect;
