@@ -334,6 +334,7 @@ export function EnrollmentsBoard({
       <div className="mb-3 flex items-center justify-between gap-3">
         <div className="min-w-0 flex-1">
           <ViewTabs
+            scope="enrollments_list"
             views={views}
             activeId={activeViewId}
             onSelect={selectView}

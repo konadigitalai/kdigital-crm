@@ -80,6 +80,7 @@ catalogRouter.get("/", async (req, res, next) => {
         { key: "cohort_batch",  label: "Cohort / Batch" },
         { key: "refund",        label: "Refund" },
         { key: "certificate",   label: "Certificate" },
+        { key: "data_privacy",  label: "Data / Privacy" },
         { key: "other",         label: "Other" },
       ];
       const casePriorities = [

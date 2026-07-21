@@ -14,7 +14,7 @@ export const casesRouter = Router();
 // ─── shared constants ─────────────────────────────────────────────────────
 
 const STATUSES = ["open", "in_progress", "pending", "resolved", "closed", "cancelled"] as const;
-const CATEGORIES = ["billing", "technical", "content_lms", "onboarding", "cohort_batch", "refund", "certificate", "other"] as const;
+const CATEGORIES = ["billing", "technical", "content_lms", "onboarding", "cohort_batch", "refund", "certificate", "data_privacy", "other"] as const;
 const REQ_KINDS = ["lead", "learner", "external"] as const;
 const RES_CODES = ["fixed", "duplicate", "wont_fix", "no_action"] as const;
 
@@ -25,9 +25,19 @@ const STATUS_LABEL: Record<string, string> = {
 const CATEGORY_LABEL: Record<string, string> = {
   billing: "Billing", technical: "Technical", content_lms: "Content / LMS",
   onboarding: "Onboarding", cohort_batch: "Cohort / Batch", refund: "Refund",
-  certificate: "Certificate", other: "Other",
+  certificate: "Certificate", data_privacy: "Data / Privacy", other: "Other",
 };
 const PRIORITY_LABEL: Record<number, string> = { 1: "Urgent", 2: "High", 3: "Medium", 4: "Low" };
+// Severity is the mockup's label for priority; the group buckets categories for the Type pill.
+const SEVERITY_LABEL: Record<number, string> = { 1: "Critical", 2: "High", 3: "Medium", 4: "Low" };
+const TYPE_GROUP: Record<string, string> = {
+  billing: "Money", refund: "Money",
+  content_lms: "Content", certificate: "Content",
+  cohort_batch: "Delivery", onboarding: "Delivery",
+  technical: "Access",
+  data_privacy: "Data",
+  other: "Other",
+};
 
 // Drizzle's tagged template handles binding for us — these helpers keep the
 // route bodies focused on logic.
@@ -40,6 +50,99 @@ function statusToWiState(s: string): string {
   if (s === "cancelled") return "closed_lost";
   if (s === "in_progress" || s === "pending") return "in_progress";
   return "open";
+}
+
+// Display status for the board (mockup labels): open→"New", pending splits by
+// who it's waiting on, a reopened-but-still-open case reads "Reopened".
+function displayStatus(status: string, pendingWith: string | null, reopenCount: number): string {
+  if ((status === "open" || status === "in_progress") && reopenCount > 0) return "Reopened";
+  if (status === "pending") {
+    if (pendingWith === "learner") return "Pending Learner";
+    if (pendingWith === "internal") return "Pending Internal";
+    return "Pending";
+  }
+  const map: Record<string, string> = {
+    open: "New", in_progress: "In Progress", resolved: "Resolved",
+    closed: "Closed", cancelled: "Cancelled",
+  };
+  return map[status] ?? status;
+}
+
+// "About" link — prefer the party's enrolment, then a learner profile, then the
+// party's originating lead. Mirrors the detail linkage but adds the enrolment ref.
+interface AboutRaw {
+  partyId: string | null; requesterName: string; isLearner: boolean;
+  enrolNumber: string | null; enrolId: string | null; leadNumber: string | null;
+}
+function deriveAbout(row: AboutRaw): {
+  aboutKind: "lead" | "enrolment" | "learner" | null;
+  aboutLabel: string | null; aboutHref: string | null;
+} {
+  if (row.enrolNumber) return { aboutKind: "enrolment", aboutLabel: row.enrolNumber, aboutHref: `/enrollments/${row.enrolId}` };
+  if (row.isLearner && row.partyId) return { aboutKind: "learner", aboutLabel: row.requesterName, aboutHref: `/learners/${row.partyId}` };
+  if (row.leadNumber) return { aboutKind: "lead", aboutLabel: row.leadNumber, aboutHref: `/records/${row.leadNumber}` };
+  return { aboutKind: null, aboutLabel: null, aboutHref: null };
+}
+
+// Attach the board's derived fields to a raw case row (list + detail share this).
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function enrichCase(row: any) {
+  const priority = Number(row.priority);
+  const about = deriveAbout(row as AboutRaw);
+  return {
+    ...row,
+    source: row.source ?? "manual",
+    isAuto: row.source === "auto",
+    reopenCount: Number(row.reopenCount ?? 0),
+    severity: SEVERITY_LABEL[priority] ?? "Medium",
+    typeGroup: TYPE_GROUP[row.category] ?? "Other",
+    typeLabel: row.typeLabel ?? CATEGORY_LABEL[row.category] ?? "Case",
+    slaMinutes: row.slaMinutes == null ? null : Math.round(Number(row.slaMinutes)),
+    displayStatus: displayStatus(row.status, row.pendingWith ?? null, Number(row.reopenCount ?? 0)),
+    ...about,
+  };
+}
+
+// Shared derived columns for the detail SELECTs (leading comma — appended after
+// the base column list). Mirrors what the list query computes inline.
+const CASE_EXTRA_COLS = sql`
+  , t.source, t.type_label AS "typeLabel", t.channel, t.raised_by AS "raisedBy",
+    t.pending_with AS "pendingWith", t.first_response_at AS "firstResponseAt",
+    t.reopen_count AS "reopenCount", t.preventable, t.root_cause AS "rootCause",
+    t.systemic_ref AS "systemicRef",
+    CASE
+      WHEN t.status IN ('resolved','closed','cancelled') THEN 'met'
+      WHEN t.status = 'pending'                          THEN 'paused'
+      WHEN t.due_at IS NULL                              THEN 'none'
+      WHEN t.due_at < NOW()                              THEN 'breached'
+      ELSE 'active'
+    END AS "slaState",
+    CASE WHEN t.due_at IS NULL THEN NULL ELSE EXTRACT(EPOCH FROM (t.due_at - NOW())) / 60 END AS "slaMinutes",
+    (t.due_at IS NOT NULL AND t.due_at < NOW() AND t.status NOT IN ('closed','resolved','cancelled')) AS "isOverdue",
+    EXISTS (SELECT 1 FROM party_role pr WHERE pr.party_id = t.party_id AND pr.role = 'learner' AND pr.valid_to IS NULL) AS "isLearner",
+    (SELECT e.number FROM enrolment e WHERE e.party_id = t.party_id ORDER BY e.created_at DESC LIMIT 1) AS "enrolNumber",
+    (SELECT e.id     FROM enrolment e WHERE e.party_id = t.party_id ORDER BY e.created_at DESC LIMIT 1) AS "enrolId",
+    (SELECT w2.number FROM work_item w2 JOIN lead l ON l.work_item_id = w2.id WHERE w2.party_id = t.party_id LIMIT 1) AS "leadNumber"
+`;
+
+// Next-best-action for the record banner. Non-money this pass — summarises
+// severity / SLA / reopen and suggests the single most useful move.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function buildNba(c: any): { text: string; action: string } | null {
+  if (["resolved", "closed", "cancelled"].includes(c.status)) return null;
+  const parts: string[] = [`${c.severity} severity`];
+  if (c.slaState === "breached") parts.push("SLA breached");
+  else if (c.slaState === "active" && c.slaMinutes != null) {
+    const h = Math.floor(c.slaMinutes / 60);
+    parts.push(h >= 1 ? `${h}h to SLA` : `${c.slaMinutes}m to SLA`);
+  } else if (c.slaState === "paused") parts.push("SLA paused");
+  if (c.reopenCount > 0) parts.push(`reopened ${c.reopenCount}×`);
+  let action = "Reply and set the next step.";
+  if (!c.assigneeId) action = "Assign an owner.";
+  else if (c.slaState === "breached") action = "Resolve now — SLA is breached.";
+  else if (c.status === "pending" && c.pendingWith === "learner") action = "Follow up with the learner.";
+  else if (c.status === "pending" && c.pendingWith === "internal") action = "Chase the internal team.";
+  return { text: parts.join(" · "), action };
 }
 
 // ─── GET /cases/dashboard ─────────────────────────────────────────────────
@@ -61,8 +164,15 @@ casesRouter.get("/dashboard", async (req, res, next) => {
                           AND status NOT IN ('closed','resolved','cancelled'))::int               AS "dueToday",
           COUNT(*) FILTER (WHERE due_at >= NOW() AND due_at < NOW() + interval '7 days'
                           AND status NOT IN ('closed','resolved','cancelled'))::int               AS "dueThisWeek",
-          COUNT(*) FILTER (WHERE closed_at >= NOW() - interval '7 days')::int                     AS "closedThisWeek"
-        FROM support_case
+          COUNT(*) FILTER (WHERE closed_at >= NOW() - interval '7 days')::int                     AS "closedThisWeek",
+          COUNT(*) FILTER (WHERE wi.assignee_id IS NULL
+                          AND status NOT IN ('closed','resolved','cancelled'))::int               AS "unassigned",
+          COUNT(*) FILTER (WHERE due_at < NOW()
+                          AND status NOT IN ('closed','resolved','cancelled'))::int               AS "slaBreaching",
+          COUNT(*) FILTER (WHERE category = 'refund'
+                          AND status NOT IN ('closed','resolved','cancelled'))::int               AS "refundsPending"
+        FROM support_case t
+        JOIN work_item wi ON wi.id = t.work_item_id
       `);
 
       const byPriority = await db.execute(sql`
@@ -150,8 +260,10 @@ casesRouter.get("/", async (req, res, next) => {
     const category   = typeof req.query.category   === "string" ? req.query.category   : null;
     const priority   = req.query.priority != null ? Number(req.query.priority) : null;
     const requesterKind = typeof req.query.requesterKind === "string" ? req.query.requesterKind : null;
+    const source = typeof req.query.source === "string" ? req.query.source : null;
     const q = typeof req.query.q === "string" ? req.query.q.trim() : "";
 
+    if (source && !["manual", "auto"].includes(source)) return res.status(400).json({ error: "invalid source" });
     if (status     && !STATUSES.includes(status as typeof STATUSES[number])) return res.status(400).json({ error: "invalid status" });
     if (category   && !CATEGORIES.includes(category as typeof CATEGORIES[number])) return res.status(400).json({ error: "invalid category" });
     if (requesterKind && !REQ_KINDS.includes(requesterKind as typeof REQ_KINDS[number])) return res.status(400).json({ error: "invalid requesterKind" });
@@ -168,6 +280,7 @@ casesRouter.get("/", async (req, res, next) => {
       if (category)   conditions.push(sql`t.category = ${category}`);
       if (priority)   conditions.push(sql`t.priority = ${priority}`);
       if (requesterKind) conditions.push(sql`t.requester_kind = ${requesterKind}`);
+      if (source)     conditions.push(sql`t.source = ${source}`);
       if (q) {
         conditions.push(sql`(
           wi.number ILIKE ${"%" + q + "%"} OR
@@ -196,7 +309,29 @@ casesRouter.get("/", async (req, res, next) => {
           t.resolution_code AS "resolutionCode",
           u.id              AS "assigneeId",
           u.name            AS "assigneeName",
-          (t.due_at IS NOT NULL AND t.due_at < NOW() AND t.status NOT IN ('closed','resolved','cancelled')) AS "isOverdue"
+          (t.due_at IS NOT NULL AND t.due_at < NOW() AND t.status NOT IN ('closed','resolved','cancelled')) AS "isOverdue",
+          -- board redesign fields
+          t.source, t.type_label AS "typeLabel", t.channel, t.raised_by AS "raisedBy",
+          t.pending_with AS "pendingWith", t.first_response_at AS "firstResponseAt",
+          t.reopen_count AS "reopenCount", t.preventable, t.root_cause AS "rootCause",
+          t.systemic_ref AS "systemicRef",
+          -- SLA state + signed minutes-to-due (paused while pending)
+          CASE
+            WHEN t.status IN ('resolved','closed','cancelled') THEN 'met'
+            WHEN t.status = 'pending'                          THEN 'paused'
+            WHEN t.due_at IS NULL                              THEN 'none'
+            WHEN t.due_at < NOW()                              THEN 'breached'
+            ELSE 'active'
+          END AS "slaState",
+          CASE WHEN t.due_at IS NULL THEN NULL
+               ELSE EXTRACT(EPOCH FROM (t.due_at - NOW())) / 60 END AS "slaMinutes",
+          -- "About": prefer the party's enrolment, else their lead
+          EXISTS (SELECT 1 FROM party_role pr
+                  WHERE pr.party_id = t.party_id AND pr.role = 'learner' AND pr.valid_to IS NULL) AS "isLearner",
+          (SELECT e.number FROM enrolment e WHERE e.party_id = t.party_id ORDER BY e.created_at DESC LIMIT 1) AS "enrolNumber",
+          (SELECT e.id     FROM enrolment e WHERE e.party_id = t.party_id ORDER BY e.created_at DESC LIMIT 1) AS "enrolId",
+          (SELECT w2.number FROM work_item w2 JOIN lead l ON l.work_item_id = w2.id
+             WHERE w2.party_id = t.party_id LIMIT 1) AS "leadNumber"
         FROM support_case t
         JOIN work_item wi  ON wi.id = t.work_item_id
         LEFT JOIN app_user u ON u.party_id = wi.assignee_id
@@ -209,7 +344,7 @@ casesRouter.get("/", async (req, res, next) => {
       return r.rows;
     });
 
-    res.json({ cases: rows });
+    res.json({ cases: rows.map(enrichCase) });
   } catch (err) {
     next(err);
   }
@@ -247,6 +382,7 @@ casesRouter.get("/:idOrNumber", async (req, res, next) => {
                 p.name            AS "partyName",
                 p.email           AS "partyEmail",
                 p.phone           AS "partyPhone"
+                ${CASE_EXTRA_COLS}
               FROM support_case t
               JOIN work_item wi   ON wi.id = t.work_item_id
               LEFT JOIN app_user u  ON u.party_id = wi.assignee_id
@@ -277,6 +413,7 @@ casesRouter.get("/:idOrNumber", async (req, res, next) => {
                 p.name            AS "partyName",
                 p.email           AS "partyEmail",
                 p.phone           AS "partyPhone"
+                ${CASE_EXTRA_COLS}
               FROM support_case t
               JOIN work_item wi   ON wi.id = t.work_item_id
               LEFT JOIN app_user u  ON u.party_id = wi.assignee_id
@@ -326,7 +463,8 @@ casesRouter.get("/:idOrNumber", async (req, res, next) => {
         }
       }
 
-      return { case: supportCase, timeline: timeline.rows, linked };
+      const enriched = enrichCase(supportCase);
+      return { case: enriched, timeline: timeline.rows, linked, nba: buildNba(enriched) };
     });
 
     if (!data) return res.status(404).json({ error: "Case not found" });
@@ -514,6 +652,15 @@ casesRouter.patch("/:idOrNumber", async (req, res, next) => {
       // Cannot transition to 'closed' via PATCH — must use /close so resolution is required.
       return res.status(400).json({ error: "use POST /cases/:id/close to close a case (resolution required)" });
     }
+    if (b.source !== undefined && !["manual", "auto"].includes(String(b.source))) {
+      return res.status(400).json({ error: "invalid source" });
+    }
+    if (b.raisedBy != null && !["learner", "internal", "system"].includes(String(b.raisedBy))) {
+      return res.status(400).json({ error: "invalid raisedBy" });
+    }
+    if (b.pendingWith != null && !["learner", "internal"].includes(String(b.pendingWith))) {
+      return res.status(400).json({ error: "invalid pendingWith" });
+    }
 
     const result = await withTenant(req.tenantId!, async (db) => {
       const actorPartyId = await resolveActorPartyId(db, req.tenantId!, req.userId);
@@ -556,6 +703,15 @@ casesRouter.patch("/:idOrNumber", async (req, res, next) => {
       if (b.status !== undefined)      caseSets.push(sql`status = ${String(b.status)}`);
       if (b.dueAt !== undefined)       caseSets.push(sql`due_at = ${b.dueAt ? new Date(String(b.dueAt)).toISOString() : null}`);
       if (b.remindAt !== undefined)    caseSets.push(sql`remind_at = ${b.remindAt ? new Date(String(b.remindAt)).toISOString() : null}`);
+      // board redesign fields
+      if (b.typeLabel !== undefined)   caseSets.push(sql`type_label = ${b.typeLabel ? String(b.typeLabel).trim() : null}`);
+      if (b.channel !== undefined)     caseSets.push(sql`channel = ${b.channel ? String(b.channel).trim() : null}`);
+      if (b.raisedBy !== undefined)    caseSets.push(sql`raised_by = ${b.raisedBy ? String(b.raisedBy) : null}`);
+      if (b.pendingWith !== undefined) caseSets.push(sql`pending_with = ${b.pendingWith ? String(b.pendingWith) : null}`);
+      if (b.source !== undefined)      caseSets.push(sql`source = ${String(b.source)}`);
+      if (b.preventable !== undefined) caseSets.push(sql`preventable = ${b.preventable == null ? null : Boolean(b.preventable)}`);
+      if (b.rootCause !== undefined)   caseSets.push(sql`root_cause = ${b.rootCause ? String(b.rootCause) : null}`);
+      if (b.systemicRef !== undefined) caseSets.push(sql`systemic_ref = ${b.systemicRef ? String(b.systemicRef) : null}`);
 
       if (b.status === "resolved")     caseSets.push(sql`resolved_at = NOW()`);
 
@@ -609,8 +765,19 @@ casesRouter.patch("/:idOrNumber", async (req, res, next) => {
       if (b.category !== undefined && before.category !== b.category) {
         lines.push({ verb: "Category", detail: `Category: ${CATEGORY_LABEL[before.category as string] ?? before.category} → ${CATEGORY_LABEL[String(b.category)] ?? b.category}`, kind: "edit" });
       }
-      if (b.priority !== undefined && Number(before.priority) !== Number(b.priority)) {
-        lines.push({ verb: "Priority", detail: `Priority: ${PRIORITY_LABEL[Number(before.priority)]} → ${PRIORITY_LABEL[Number(b.priority)]}`, kind: "priority" });
+      if (b.escalate) {
+        lines.push({ verb: "Escalated", detail: "Case escalated to Critical", kind: "priority" });
+      } else if (b.priority !== undefined && Number(before.priority) !== Number(b.priority)) {
+        lines.push({ verb: "Priority", detail: `Severity: ${SEVERITY_LABEL[Number(before.priority)]} → ${SEVERITY_LABEL[Number(b.priority)]}`, kind: "priority" });
+      }
+      if (b.preventable !== undefined) {
+        lines.push({ verb: "Outcome", detail: `Preventable: ${b.preventable == null ? "—" : b.preventable ? "Yes" : "No"}`, kind: "edit" });
+      }
+      if (b.rootCause !== undefined) {
+        lines.push({ verb: "Root cause", detail: b.rootCause ? `Root cause: ${String(b.rootCause).slice(0, 80)}` : "Root cause cleared", kind: "edit" });
+      }
+      if (b.systemicRef !== undefined) {
+        lines.push({ verb: "Systemic", detail: b.systemicRef ? `Systemic ref: ${String(b.systemicRef).slice(0, 80)}` : "Systemic ref cleared", kind: "edit" });
       }
       if (b.status !== undefined && before.status !== b.status) {
         lines.push({ verb: "Status", detail: `Status: ${STATUS_LABEL[before.status as string]} → ${STATUS_LABEL[String(b.status)]}`, kind: "status" });
@@ -685,6 +852,11 @@ casesRouter.post("/:idOrNumber/comments", async (req, res, next) => {
         VALUES (current_tenant(), ${wiId}, ${partyId}, 'user', ${actorPartyId}, 'You', 'Comment', ${text}, 'you',
                 ${JSON.stringify({ when: "Just now", kind: "comment" })}::jsonb, NOW())
         RETURNING id
+      `);
+      // Treat the first staff comment/reply as the case's first response.
+      await db.execute(sql`
+        UPDATE support_case SET first_response_at = COALESCE(first_response_at, NOW())
+        WHERE work_item_id = ${wiId}
       `);
       return ins.rows[0] as { id: string };
     });
@@ -826,7 +998,8 @@ casesRouter.post("/:idOrNumber/reopen", async (req, res, next) => {
       // when status='closed'. Clearing closed_at lets the dashboard re-count it.
       await db.execute(sql`
         UPDATE support_case
-        SET status = 'in_progress', closed_at = NULL, resolved_at = NULL
+        SET status = 'in_progress', closed_at = NULL, resolved_at = NULL,
+            reopen_count = reopen_count + 1
         WHERE work_item_id = ${row.id}
       `);
       await db.execute(sql`UPDATE work_item SET state = 'in_progress' WHERE id = ${row.id}`);

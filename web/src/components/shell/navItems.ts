@@ -55,7 +55,7 @@ export function buildNavItems(summary: SummaryResponse): NavItem[] {
     // same List / Kanban / Chart modes and group-by axes, so the two screens
     // were the same tool twice. The /pipeline route itself still resolves —
     // old bookmarks and links keep working — it's just not advertised.
-    { href: "/admin/cohorts",             icon: "batches",         label: "Batches",                        requires: "admin.batches.manage" },
+    { href: "/batches",                   icon: "batches",         label: "Batches",                        requires: "admin.batches.manage" },
     { href: "/calendar",                  icon: "calendar",        label: "Calendar",                       requires: "events.manage.self" },
     { href: "/agents",                    icon: "robot",           label: "Agents",                         requires: "agents.read" },
     { href: "/settings",                  icon: "settings",        label: "Settings", requiresAny: SETTINGS_ANY_PERMISSIONS },
@@ -77,7 +77,7 @@ export function filterNavItems(items: NavItem[], user: CurrentUser | null): NavI
 // Resolve which sidebar entry should be marked "active" for a given URL.
 //
 // Rule: exactly one nav item lights up at a time. Items with their own
-// dedicated entry (Batches → /admin/cohorts, Calendar → /calendar, etc.)
+// dedicated entry (Batches → /batches, Calendar → /calendar, etc.)
 // always win over the generic Settings catch-all, even though their paths
 // happen to live under /admin.
 //
@@ -89,7 +89,7 @@ const DEDICATED_HREFS = [
   "/enrollments",
   "/learners",
   "/cases",
-  "/admin/cohorts",   // Batches
+  "/batches",         // operational Batches board (admin CRUD still at /admin/cohorts)
   "/calendar",
   "/agents",
 ];
@@ -100,10 +100,12 @@ export function isActive(pathname: string, href: string): boolean {
   if (href === "/enrollments") return pathname.startsWith("/enrollments");
   if (href === "/learners") return pathname.startsWith("/learners");
   if (href === "/cases") return pathname.startsWith("/cases");
+  if (href === "/batches") return pathname.startsWith("/batches");
   // Settings is the catch-all for admin config. But it must NOT light up
-  // when the user is on a path that has its own dedicated nav entry —
-  // e.g. /admin/cohorts (Batches) is also under /admin, but we want only
-  // Batches to highlight, not Settings.
+  // when the user is on a path that has its own dedicated nav entry — those
+  // dedicated hrefs (see DEDICATED_HREFS) win even if they also live under
+  // /admin. The admin CRUD screens (e.g. /admin/cohorts) have no dedicated
+  // entry, so Settings correctly highlights while on them.
   if (href === "/settings") {
     const onDedicated = DEDICATED_HREFS.some(
       (h) => h !== "/settings" && (pathname === h || pathname.startsWith(`${h}/`)),

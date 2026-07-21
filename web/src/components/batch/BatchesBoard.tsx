@@ -1,12 +1,14 @@
 "use client";
 
-// Learners board — feature parity with EnrollmentsBoard, built on the same
-// generic infrastructure (ViewTabs, FilterBar, useFilter, applyFilter). Composes:
-//   • KPI stat cards (Total / In batch / Not batched / Placed)
-//   • custom saved views via <ViewTabs scope="learners_list"> (no preset tabs)
+// Batches board — the operational board over existing batch data, built on the
+// same generic infrastructure as LearnersBoard (ViewTabs, FilterBar, useFilter,
+// applyFilter). Composes:
+//   • KPI stat cards (Total / Running / Unstaffed / Under-enrolled / Fill / Cov)
+//   • custom saved views via <ViewTabs scope="batches_list"> (no preset tabs)
 //   • List / Kanban / Chart / Calendar view switcher
 //   • group-by pill, quick-filter pills, full "Add filter" rule builder
 //   • URL sync of mode + active saved view
+//   • a "Rollups live" status dot driven by the background poller
 //   • a topbar search box (portaled into the page's Topbar slot)
 
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -19,21 +21,20 @@ import { applyFilter } from "@/components/filter/operators";
 import { AnchoredPopover } from "@/components/ui/AnchoredPopover";
 import { Icon, type IconName } from "@/components/ui/Icon";
 import { cn } from "@/lib/cn";
-import { avatarGradClass, gradFor, initialsOf } from "@/lib/ui";
 import {
-  getLearners, getViewPreferences, updateViewPreferences,
+  getBatchesBoard, getViewPreferences, updateViewPreferences,
   type UserViewPreference,
 } from "@/lib/api";
 import type { FilterField, FilterState } from "@/components/filter/types";
-import type { CurrentUser, LearnerSummary, LearnerBoardSummary, SavedView } from "@/lib/types";
+import type { CurrentUser, BatchBoardRow, BatchBoardSummary, SavedView } from "@/lib/types";
 import {
-  LEARNER_LIST_COLUMNS, LEARNER_LIST_DEFAULT_COLUMNS, LearnersListView,
-} from "./LearnersListView";
+  BATCH_LIST_COLUMNS, BATCH_LIST_DEFAULT_COLUMNS, BatchesListView,
+} from "./BatchesListView";
 import {
-  LEARNER_GROUP_BY_OPTIONS, LearnersKanban, learnerGroupKey, type LearnerGroupBy,
-} from "./LearnersKanban";
-import { LEARNER_CHART_RANGES, LearnersChartView, type LearnerChartRange } from "./LearnersChartView";
-import { LearnersCalendarView } from "./LearnersCalendarView";
+  BATCH_GROUP_BY_OPTIONS, BatchesKanban, type BatchGroupBy,
+} from "./BatchesKanban";
+import { BATCH_CHART_RANGES, BatchesChartView, type BatchChartRange } from "./BatchesChartView";
+import { BatchesCalendarView } from "./BatchesCalendarView";
 
 type ViewMode = "list" | "kanban" | "chart" | "calendar";
 const VIEW_MODES: readonly ViewMode[] = ["list", "kanban", "chart", "calendar"];
@@ -42,65 +43,75 @@ function parseViewMode(raw: string | null): ViewMode {
 }
 
 /** DOM id of the Topbar slot the board portals its search input into. */
-export const LEARNERS_SEARCH_SLOT_ID = "learners-topbar-search";
+export const BATCHES_SEARCH_SLOT_ID = "batches-search-slot";
 
 const POLL_MS = 45_000;
 
+const STATUS_CLS: Record<string, string> = {
+  upcoming:  "bg-[rgba(31,63,207,.08)]  text-brand-blue",
+  running:   "bg-[rgba(46,158,106,.10)] text-state-ok",
+  completed: "bg-warm2                  text-mute",
+  cancelled: "bg-[rgba(217,83,79,.10)]  text-state-warn",
+};
 const STATUS_OPTIONS = [
-  { value: "In batch", label: "In batch" },
-  { value: "Assigned", label: "Assigned" },
-  { value: "Enrolled", label: "Enrolled" },
+  { value: "upcoming",  label: "Upcoming",  cls: STATUS_CLS.upcoming },
+  { value: "running",   label: "Running",   cls: STATUS_CLS.running },
+  { value: "completed", label: "Completed", cls: STATUS_CLS.completed },
+  { value: "cancelled", label: "Cancelled", cls: STATUS_CLS.cancelled },
 ];
-const PLACEMENT_OPTIONS = [
-  { value: "not_started", label: "Not started" },
-  { value: "in_progress", label: "In progress" },
-  { value: "placed",      label: "Placed" },
-  { value: "deferred",    label: "Deferred" },
+const SLOT_OPTIONS = [
+  { value: "morning",   label: "Morning" },
+  { value: "afternoon", label: "Afternoon" },
+  { value: "evening",   label: "Evening" },
 ];
-const SKILL_OPTIONS = [
-  { value: "beginner",     label: "Beginner" },
-  { value: "intermediate", label: "Intermediate" },
-  { value: "advanced",     label: "Advanced" },
+const YES_NO_OPTIONS = [
+  { value: "Yes", label: "Yes" },
+  { value: "No",  label: "No" },
 ];
+
+function slotTitle(slot: string | null): string {
+  if (!slot) return "—";
+  return slot[0]!.toUpperCase() + slot.slice(1);
+}
 
 function unique(xs: (string | null | undefined)[]): string[] {
   return Array.from(new Set(xs.filter((x): x is string => typeof x === "string" && x !== "")));
 }
 
-function buildFields(rows: LearnerSummary[]): FilterField[] {
-  const programs = unique(rows.map((r) => r.programName));
+const NOT_ASSIGNED = "Not assigned";
+
+function buildFields(rows: BatchBoardRow[]): FilterField[] {
   const stacks   = unique(rows.map((r) => r.stackName));
-  const advisors = unique(rows.map((r) => r.advisorName));
-  const cities   = unique(rows.map((r) => r.city));
-  const batches  = unique(rows.map((r) => r.batchCode));
+  const trainers = unique(rows.map((r) => r.trainerName));
   return [
-    { key: "name",            label: "Learner",         type: "text",   get: (l: LearnerSummary) => l.name },
-    { key: "email",           label: "Email",           type: "text",   get: (l: LearnerSummary) => l.email },
-    { key: "phone",           label: "Phone",           type: "text",   get: (l: LearnerSummary) => l.phone },
-    { key: "city",            label: "City",            type: "enum",   options: cities.map((c) => ({ value: c, label: c })),     get: (l: LearnerSummary) => l.city },
-    { key: "program",         label: "Program",         type: "enum",   options: programs.map((p) => ({ value: p, label: p })),   get: (l: LearnerSummary) => l.programName },
-    { key: "stack",           label: "Stack",           type: "enum",   options: stacks.map((s) => ({ value: s, label: s })),     get: (l: LearnerSummary) => l.stackName },
-    { key: "status",          label: "Status",          type: "enum",   options: STATUS_OPTIONS,          get: (l: LearnerSummary) => l.status },
-    { key: "advisor",         label: "Advisor",         type: "enum",   options: advisors.map((a) => ({ value: a, label: a })),   get: (l: LearnerSummary) => l.advisorName },
-    { key: "placementStatus", label: "Placement",       type: "enum",   options: PLACEMENT_OPTIONS,       get: (l: LearnerSummary) => l.placementStatus },
-    { key: "skillLevel",      label: "Skill level",     type: "enum",   options: SKILL_OPTIONS,           get: (l: LearnerSummary) => l.skillLevel },
-    { key: "batchCode",       label: "Batch",           type: "enum",   options: batches.map((b) => ({ value: b, label: b })),    get: (l: LearnerSummary) => l.batchCode },
-    { key: "activeCourses",   label: "Active courses",  type: "number", get: (l: LearnerSummary) => l.activeCourses },
-    { key: "activeBatches",   label: "Active batches",  type: "number", get: (l: LearnerSummary) => l.activeBatches },
-    { key: "learnerSince",    label: "Learner since",   type: "date",   get: (l: LearnerSummary) => l.learnerSince },
+    { key: "code",           label: "Code",          type: "text",   get: (b: BatchBoardRow) => b.code },
+    { key: "name",           label: "Batch",         type: "text",   get: (b: BatchBoardRow) => b.name },
+    { key: "stack",          label: "Stack",         type: "enum",   options: stacks.map((s) => ({ value: s, label: s })),   get: (b: BatchBoardRow) => b.stackName },
+    { key: "status",         label: "Status",        type: "enum",   options: STATUS_OPTIONS,   get: (b: BatchBoardRow) => b.status },
+    { key: "trainer",        label: "Trainer",       type: "enum",   options: [...trainers.map((t) => ({ value: t, label: t })), { value: NOT_ASSIGNED, label: NOT_ASSIGNED }], get: (b: BatchBoardRow) => b.trainerName ?? NOT_ASSIGNED },
+    { key: "slot",           label: "Slot",          type: "enum",   options: SLOT_OPTIONS,     get: (b: BatchBoardRow) => b.slot },
+    { key: "startDate",      label: "Start date",    type: "date",   get: (b: BatchBoardRow) => b.startDate },
+    { key: "activeCount",    label: "Active",        type: "number", get: (b: BatchBoardRow) => b.activeCount },
+    { key: "seats",          label: "Seats",         type: "number", get: (b: BatchBoardRow) => b.seats },
+    { key: "coveragePct",    label: "Coverage %",    type: "number", get: (b: BatchBoardRow) => b.coveragePct },
+    { key: "attendancePct",  label: "Attendance %",  type: "number", get: (b: BatchBoardRow) => b.attendancePct },
+    { key: "staffed",        label: "Staffed",       type: "enum",   options: YES_NO_OPTIONS,   get: (b: BatchBoardRow) => b.staffed ? "Yes" : "No" },
+    { key: "underEnrolled",  label: "Under-enrolled",type: "enum",   options: YES_NO_OPTIONS,   get: (b: BatchBoardRow) => b.underEnrolled ? "Yes" : "No" },
+    { key: "behindSchedule", label: "Behind schedule", type: "enum", options: YES_NO_OPTIONS,   get: (b: BatchBoardRow) => b.behindSchedule ? "Yes" : "No" },
+    { key: "slaBreached",    label: "SLA breached",  type: "enum",   options: YES_NO_OPTIONS,   get: (b: BatchBoardRow) => b.slaBreachCount > 0 ? "Yes" : "No" },
   ];
 }
 
-export function LearnersBoard({
-  initialLearners,
+export function BatchesBoard({
+  initialBatches,
   summary,
   initialViews,
   currentUser,
   canWrite,
   headerSlot,
 }: {
-  initialLearners: LearnerSummary[];
-  summary: LearnerBoardSummary | null;
+  initialBatches: BatchBoardRow[];
+  summary: BatchBoardSummary | null;
   initialViews: SavedView[];
   currentUser: CurrentUser | null;
   canWrite: boolean;
@@ -111,13 +122,14 @@ export function LearnersBoard({
   const searchParams = useSearchParams();
 
   // ── local copy + light background poller ────────────────────────────────
-  const [rows, setRows] = useState<LearnerSummary[]>(initialLearners);
+  const [rows, setRows] = useState<BatchBoardRow[]>(initialBatches);
+  const [live, setLive] = useState(true);
   const incomingKey = useMemo(
-    () => initialLearners.map((l) => [l.partyId, l.status, l.activeBatches, l.activeCourses, l.batchCode ?? "", l.placementStatus ?? ""].join("|")).join("·"),
-    [initialLearners],
+    () => initialBatches.map((b) => [b.id, b.status, b.activeCount, b.enrolmentCount, b.trainerId ?? "", b.staffed, b.underEnrolled].join("|")).join("·"),
+    [initialBatches],
   );
   useEffect(() => {
-    setRows(initialLearners);
+    setRows(initialBatches);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [incomingKey]);
 
@@ -126,9 +138,9 @@ export function LearnersBoard({
     async function tick() {
       if (document.hidden) return;
       try {
-        const fresh = await getLearners();
-        if (!cancelled) setRows(fresh);
-      } catch { /* silent — next tick retries */ }
+        const fresh = await getBatchesBoard();
+        if (!cancelled) { setRows(fresh); setLive(true); }
+      } catch { if (!cancelled) setLive(false); }
     }
     const timer = setInterval(tick, POLL_MS);
     function onVisible() { if (!document.hidden) tick(); }
@@ -144,15 +156,14 @@ export function LearnersBoard({
   // Group-by is optional for the list (flat is the sane default) but Kanban
   // always needs an axis, so it falls back to status.
   const [view, setView] = useState<ViewMode>(() => parseViewMode(searchParams.get("v")));
-  const [groupBy, setGroupBy] = useState<LearnerGroupBy | "none">("none");
-  const axis: LearnerGroupBy = groupBy === "none" ? "status" : groupBy;
-  const [chartRange, setChartRange] = useState<LearnerChartRange>("90d");
-  const [calAdvisor, setCalAdvisor] = useState<string>("all");
+  const [groupBy, setGroupBy] = useState<BatchGroupBy | "none">("none");
+  const axis: BatchGroupBy = groupBy === "none" ? "status" : groupBy;
+  const [chartRange, setChartRange] = useState<BatchChartRange>("90d");
 
   // Rows a view shows = the rule-builder filter. (Saved views cover preset cuts.)
   const visible = filtered;
 
-  // ── saved views (scope learners_list) ────────────────────────────────────
+  // ── saved views (scope batches_list) ─────────────────────────────────────
   const [views, setViews] = useState<SavedView[]>(initialViews);
   const [activeViewId, setActiveViewId] = useState<string>(() => {
     const fromUrl = searchParams.get("view");
@@ -234,7 +245,7 @@ export function LearnersBoard({
   const [tabOrder, setTabOrder] = useState<string[]>([]);
   useEffect(() => {
     let cancelled = false;
-    getViewPreferences("learners_list")
+    getViewPreferences("batches_list")
       .then((prefs: UserViewPreference[]) => {
         if (cancelled) return;
         setHiddenViewIds(prefs.filter((p) => p.hidden).map((p) => p.viewId ?? DEFAULT_VIEW_ID));
@@ -257,12 +268,12 @@ export function LearnersBoard({
       if (seen.has(id)) continue;
       payload.push({ viewId: id === DEFAULT_VIEW_ID ? null : id, hidden: true });
     }
-    updateViewPreferences("learners_list", payload).catch(() => { /* silent */ });
+    updateViewPreferences("batches_list", payload).catch(() => { /* silent */ });
   }
 
   // ── topbar search portal ────────────────────────────────────────────────
   const [searchSlot, setSearchSlot] = useState<HTMLElement | null>(null);
-  useEffect(() => { setSearchSlot(document.getElementById(LEARNERS_SEARCH_SLOT_ID)); }, []);
+  useEffect(() => { setSearchSlot(document.getElementById(BATCHES_SEARCH_SLOT_ID)); }, []);
 
   // Editing a filter by hand detaches from the active saved view.
   function changeFilter(next: FilterState) {
@@ -273,7 +284,7 @@ export function LearnersBoard({
   const toolbar = (
     <div className="flex min-w-0 items-center gap-2.5">
       <div className="flex-shrink-0">
-        <LearnerViewSwitcher value={view} onChange={setView} />
+        <BatchViewSwitcher value={view} onChange={setView} />
       </div>
       <div
         className="min-w-0 flex-1 overflow-x-auto scroll-x-clean"
@@ -289,48 +300,43 @@ export function LearnersBoard({
           )}
           {(view === "list" || view === "kanban") && (
             <>
-              <QuickFilterPill label="Status" options={STATUS_OPTIONS} state={filterState} fieldKey="status" onChange={changeFilter} anyLabel="All" />
-              <QuickFilterPill label="Advisor" options={unique(rows.map((r) => r.advisorName)).map((a) => ({ value: a, label: a }))} state={filterState} fieldKey="advisor" onChange={changeFilter} anyLabel="All" />
+              <QuickFilterPill label="Stack" options={unique(rows.map((r) => r.stackName)).map((s) => ({ value: s, label: s }))} state={filterState} fieldKey="stack" onChange={changeFilter} anyLabel="All" />
+              <QuickFilterPill label="Slot" options={SLOT_OPTIONS} state={filterState} fieldKey="slot" onChange={changeFilter} anyLabel="All" />
+              <QuickFilterPill label="Trainer" options={[...unique(rows.map((r) => r.trainerName)).map((t) => ({ value: t, label: t })), { value: NOT_ASSIGNED, label: NOT_ASSIGNED }]} state={filterState} fieldKey="trainer" onChange={changeFilter} anyLabel="All" />
             </>
           )}
           {view === "chart" && (
-            <SelectPill label="Range" options={LEARNER_CHART_RANGES} value={chartRange} onChange={(v) => setChartRange(v as LearnerChartRange)} />
-          )}
-          {view === "calendar" && (
-            <SelectPill
-              label="Advisor"
-              options={unique(rows.map((r) => r.advisorName)).map((a) => ({ value: a, label: a }))}
-              value={calAdvisor}
-              onChange={(v) => setCalAdvisor(v)}
-              allValue="all"
-              allLabel="All"
-            />
+            <SelectPill label="Range" options={BATCH_CHART_RANGES} value={chartRange} onChange={(v) => setChartRange(v as BatchChartRange)} />
           )}
           {(view === "list" || view === "kanban") && (
             <FilterBar fields={fields} state={filterState} onChange={changeFilter} />
           )}
         </div>
       </div>
+      <div className="flex-shrink-0">
+        <RollupsStatus live={live} />
+      </div>
     </div>
   );
 
   return (
     <>
-      {searchSlot && createPortal(<LearnersSearchBox rows={rows} />, searchSlot)}
+      {searchSlot && createPortal(<BatchesSearchBox rows={rows} />, searchSlot)}
 
       {/* Saved views (top level) + header slot on the right. */}
       <div className="mb-3 flex items-center justify-between gap-3">
         <div className="min-w-0 flex-1">
           <ViewTabs
-            scope="learners_list"
+            scope="batches_list"
+            allLabel="All batches"
             views={views}
             activeId={activeViewId}
             onSelect={selectView}
             fields={fields}
-            allColumns={LEARNER_LIST_COLUMNS}
-            defaultColumns={LEARNER_LIST_DEFAULT_COLUMNS}
+            allColumns={BATCH_LIST_COLUMNS}
+            defaultColumns={BATCH_LIST_DEFAULT_COLUMNS}
             currentFilter={filterState}
-            currentColumns={(liveColumns ?? viewColumnsToPush ?? [...LEARNER_LIST_DEFAULT_COLUMNS]) as string[]}
+            currentColumns={(liveColumns ?? viewColumnsToPush ?? [...BATCH_LIST_DEFAULT_COLUMNS]) as string[]}
             onChange={setViews}
             currentUser={currentUser}
             canShare={canWrite}
@@ -347,7 +353,7 @@ export function LearnersBoard({
       {summary && <KpiRow summary={summary} />}
 
       {view === "list" ? (
-        <LearnersListView
+        <BatchesListView
           rows={visible}
           groupBy={groupBy === "none" ? null : groupBy}
           viewColumns={viewColumnsToPush}
@@ -361,44 +367,74 @@ export function LearnersBoard({
           <div className="mb-4 flex items-center justify-between gap-3">
             <div className="min-w-0 flex-1">{toolbar}</div>
           </div>
-          {view === "kanban" && <LearnersKanban rows={visible} groupBy={axis} />}
-          {view === "chart" && <LearnersChartView rows={visible} range={chartRange} />}
-          {view === "calendar" && <LearnersCalendarView rows={visible} advisorFilter={calAdvisor} />}
+          {view === "kanban" && <BatchesKanban rows={visible} groupBy={axis} />}
+          {view === "chart" && <BatchesChartView rows={visible} range={chartRange} />}
+          {view === "calendar" && <BatchesCalendarView rows={visible} />}
         </>
       )}
     </>
   );
 }
 
+// ─── Rollups live status ─────────────────────────────────────────────────────
+
+function RollupsStatus({ live }: { live: boolean }) {
+  return (
+    <div className="mono-cap flex items-center gap-1.5 text-[9.5px] font-semibold tracking-[.1em] text-mute">
+      <span
+        className={cn(
+          "h-[7px] w-[7px] flex-shrink-0 rounded-full",
+          live ? "live-dot bg-state-ok shadow-[0_0_10px_#2E9E6A]" : "bg-hint",
+        )}
+      />
+      {live ? "Rollups live" : "Reconnecting"}
+    </div>
+  );
+}
+
 // ─── KPI stat cards ─────────────────────────────────────────────────────────
 
-function KpiRow({ summary }: { summary: LearnerBoardSummary }) {
+function KpiRow({ summary }: { summary: BatchBoardSummary }) {
   return (
-    <div className="mb-4 grid grid-cols-2 gap-3 lg:grid-cols-4">
+    <div className="mb-4 grid grid-cols-2 gap-3 md:grid-cols-3 lg:grid-cols-6">
       <KpiCard
-        cap="Total learners"
-        value={String(summary.totalLearners)}
-        sub="Everyone enrolled"
-        icon="users"
+        cap="Total batches"
+        value={String(summary.totalBatches)}
+        sub="All batches"
+        icon="batches"
       />
       <KpiCard
-        cap="In batch"
-        value={String(summary.activeInBatch)}
-        sub={`${summary.totalLearners > 0 ? Math.round((summary.activeInBatch / summary.totalLearners) * 100) : 0}% of learners`}
-        icon="graduation-cap"
+        cap="Running"
+        value={String(summary.running)}
+        sub={`${summary.upcoming} upcoming`}
+        icon="check"
         accent="text-state-ok"
       />
       <KpiCard
-        cap="Not batched"
-        value={String(summary.notBatched)}
-        sub="Awaiting a batch"
+        cap="Unstaffed"
+        value={String(summary.unstaffed)}
+        sub="No trainer"
         icon="info"
         accent="text-state-amber"
       />
       <KpiCard
-        cap="Placed"
-        value={String(summary.placed)}
-        sub={summary.completed > 0 ? `${summary.completed} completed` : "Placement tracked"}
+        cap="Under-enrolled"
+        value={String(summary.underEnrolled)}
+        sub="Below target"
+        icon="users"
+        accent="text-brand-magenta"
+      />
+      <KpiCard
+        cap="Fill"
+        value={summary.fillPct != null ? `${summary.fillPct}%` : "—"}
+        sub={`${summary.totalActive}/${summary.totalSeats} seats`}
+        icon="chart"
+        accent="text-brand-blue"
+      />
+      <KpiCard
+        cap="Avg coverage"
+        value={summary.avgCoveragePct != null ? `${summary.avgCoveragePct}%` : "—"}
+        sub="Session coverage"
         icon="star"
         accent="text-brand-violet"
       />
@@ -427,7 +463,7 @@ function KpiCard({
 
 // ─── view switcher ────────────────────────────────────────────────────────
 
-function LearnerViewSwitcher({ value, onChange }: { value: ViewMode; onChange: (v: ViewMode) => void }) {
+function BatchViewSwitcher({ value, onChange }: { value: ViewMode; onChange: (v: ViewMode) => void }) {
   const items: Array<{ key: ViewMode; label: string; icon: IconName }> = [
     { key: "list",     label: "List",     icon: "bars" },
     { key: "kanban",   label: "Kanban",   icon: "agents-grid" },
@@ -456,7 +492,7 @@ function LearnerViewSwitcher({ value, onChange }: { value: ViewMode; onChange: (
 
 // ─── GroupByPill ──────────────────────────────────────────────────────────
 
-function GroupByPill({ value, onChange }: { value: LearnerGroupBy | "none"; onChange: (v: LearnerGroupBy | "none") => void }) {
+function GroupByPill({ value, onChange }: { value: BatchGroupBy | "none"; onChange: (v: BatchGroupBy | "none") => void }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -466,11 +502,11 @@ function GroupByPill({ value, onChange }: { value: LearnerGroupBy | "none"; onCh
     return () => window.removeEventListener("mousedown", onClick);
   }, [open]);
   const active = value !== "none";
-  const options: Array<{ value: LearnerGroupBy | "none"; label: string }> = [
+  const options: Array<{ value: BatchGroupBy | "none"; label: string }> = [
     { value: "none", label: "None" },
-    ...LEARNER_GROUP_BY_OPTIONS,
+    ...BATCH_GROUP_BY_OPTIONS,
   ];
-  const label = active ? (LEARNER_GROUP_BY_OPTIONS.find((o) => o.value === value)?.label ?? value) : "None";
+  const label = active ? (BATCH_GROUP_BY_OPTIONS.find((o) => o.value === value)?.label ?? value) : "None";
   return (
     <div ref={ref} className="relative">
       <button
@@ -622,10 +658,10 @@ function SelectPill({
   );
 }
 
-// ─── LearnersSearchBox ──────────────────────────────────────────────────────
-// Type-ahead over the loaded learners; jumps to /learners/:partyId.
+// ─── BatchesSearchBox ─────────────────────────────────────────────────────────
+// Type-ahead over the loaded batches; jumps to /batches/:id.
 
-export function LearnersSearchBox({ rows }: { rows: LearnerSummary[] }) {
+export function BatchesSearchBox({ rows }: { rows: BatchBoardRow[] }) {
   const [query, setQuery] = useState("");
   const [open, setOpen] = useState(false);
   const [activeIdx, setActiveIdx] = useState(0);
@@ -635,17 +671,18 @@ export function LearnersSearchBox({ rows }: { rows: LearnerSummary[] }) {
 
   const matches = useMemo(() => {
     const q = query.trim().toLowerCase();
-    if (!q) return [] as LearnerSummary[];
-    const scored: Array<{ l: LearnerSummary; score: number }> = [];
-    for (const l of rows) {
-      const hay = [l.name, l.phone, l.email, l.city, l.programName, l.stackName, l.advisorName, l.batchCode, ...l.courseModules].filter(Boolean).join(" ").toLowerCase();
+    if (!q) return [] as BatchBoardRow[];
+    const scored: Array<{ b: BatchBoardRow; score: number }> = [];
+    for (const b of rows) {
+      const hay = [b.code, b.name, b.stackName, b.trainerName].filter(Boolean).join(" ").toLowerCase();
       if (!hay.includes(q)) continue;
-      const nameLc = (l.name ?? "").toLowerCase();
-      const score = nameLc.startsWith(q) ? 3 : nameLc.includes(q) ? 2 : 1;
-      scored.push({ l, score });
+      const nameLc = (b.name ?? "").toLowerCase();
+      const codeLc = (b.code ?? "").toLowerCase();
+      const score = codeLc.startsWith(q) || nameLc.startsWith(q) ? 3 : nameLc.includes(q) ? 2 : 1;
+      scored.push({ b, score });
     }
     scored.sort((a, b) => b.score - a.score);
-    return scored.slice(0, 8).map((s) => s.l);
+    return scored.slice(0, 8).map((s) => s.b);
   }, [query, rows]);
 
   useEffect(() => { setActiveIdx(0); }, [query]);
@@ -656,8 +693,8 @@ export function LearnersSearchBox({ rows }: { rows: LearnerSummary[] }) {
     return () => window.removeEventListener("mousedown", onClick);
   }, [open]);
 
-  function goTo(l: LearnerSummary) {
-    router.push(`/learners/${l.partyId}`);
+  function goTo(b: BatchBoardRow) {
+    router.push(`/batches/${b.id}`);
     setOpen(false);
     setQuery("");
   }
@@ -679,7 +716,7 @@ export function LearnersSearchBox({ rows }: { rows: LearnerSummary[] }) {
           onChange={(e) => { setQuery(e.target.value); setOpen(true); }}
           onFocus={() => query.trim() && setOpen(true)}
           onKeyDown={onKeyDown}
-          placeholder="Search learners by name, program, batch, advisor…"
+          placeholder="Search batches by code, name, stack, trainer…"
           className="min-w-0 flex-1 bg-transparent text-[13.5px] text-ink placeholder:text-hint outline-none"
         />
         {query && (
@@ -691,25 +728,25 @@ export function LearnersSearchBox({ rows }: { rows: LearnerSummary[] }) {
       {open && query.trim() && (
         <div className="absolute left-0 right-0 top-full z-30 mt-1 max-h-[400px] overflow-y-auto rounded-[12px] border border-rule bg-paper py-1 shadow-card">
           {matches.length === 0 ? (
-            <div className="px-4 py-4 text-center text-[12.5px] text-mute">No learners match “{query.trim()}”.</div>
+            <div className="px-4 py-4 text-center text-[12.5px] text-mute">No batches match “{query.trim()}”.</div>
           ) : (
-            matches.map((l, i) => (
+            matches.map((b, i) => (
               <button
                 type="button"
-                key={l.partyId}
+                key={b.id}
                 onMouseEnter={() => setActiveIdx(i)}
-                onClick={() => goTo(l)}
+                onClick={() => goTo(b)}
                 className={cn("flex w-full items-center gap-3 px-3 py-2 text-left transition", i === activeIdx ? "bg-warm/60" : "hover:bg-warm/40")}
               >
-                <div className={cn("flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full text-[10.5px] font-bold text-white", avatarGradClass[gradFor(l.name)])}>
-                  {initialsOf(l.name)}
-                </div>
+                <span className={cn("mono-cap inline-flex flex-shrink-0 items-center rounded-full px-2 py-0.5 text-[9px] font-semibold capitalize", STATUS_CLS[b.status] ?? "bg-warm2 text-mute")}>
+                  {b.status}
+                </span>
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center gap-2">
-                    <span className="truncate text-[13px] font-semibold text-ink">{l.name}</span>
+                    <span className="truncate text-[13px] font-semibold text-ink">{b.name}</span>
                   </div>
                   <div className="mt-0.5 truncate text-[11.5px] text-mute">
-                    {[l.programName, l.batchCode, l.advisorName].filter(Boolean).join(" · ") || "—"}
+                    {[b.code, b.stackName, b.trainerName, slotTitle(b.slot) !== "—" ? slotTitle(b.slot) : null].filter(Boolean).join(" · ") || "—"}
                   </div>
                 </div>
               </button>

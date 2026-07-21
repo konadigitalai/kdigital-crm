@@ -657,7 +657,7 @@ export interface GroupsResponse {
 // state shape (`{ rules: [...] }`); `columns` is the ordered list of
 // visible column keys.
 
-export type SavedViewScope = "pipeline_list" | "enrollments_list" | "learners_list";
+export type SavedViewScope = "pipeline_list" | "enrollments_list" | "learners_list" | "batches_list" | "cases_list";
 export type SavedViewVisibility = "personal" | "shared";
 
 export interface SavedView {
@@ -789,6 +789,136 @@ export interface BatchSession {
   trainerName: string | null;
   coTrainerName: string | null;
   location: string | null;
+}
+
+// One enriched batch row for the Batches operational board (list/kanban/chart/
+// calendar). Carries course/stack/trainer context + learner counts + rollups so
+// the board can display, filter, group and search without a second round-trip.
+// coveragePct/attendancePct/slaBreachCount/behindSchedule are computed from the
+// batch_session + attendance subsystem (null/0/false until sessions exist).
+export interface BatchBoardRow {
+  id: string;
+  name: string;
+  code: string | null;
+  slot: BatchSlot | null;
+  timeLabel: string | null;
+  schedule: string | null;
+  startDate: string | null;
+  endDate: string | null;
+  seats: number | null;
+  status: BatchStatus;
+  enabled: boolean;
+  courseId: string | null;
+  courseName: string | null;
+  trainerId: string | null;
+  trainerName: string | null;
+  coTrainerId: string | null;
+  coTrainerName: string | null;
+  daysOfWeek: WeekDay[] | null;
+  startTime: string | null;
+  endTime: string | null;
+  stackId: string | null;
+  stackName: string | null;
+  programName: string | null;
+  activeCount: number;
+  enrolmentCount: number;
+  coveragePct: number | null;
+  attendancePct: number | null;
+  slaBreachCount: number;
+  behindSchedule: boolean;
+  staffed: boolean;
+  underEnrolled: boolean;
+}
+
+export type BatchSessionStatus = "planned" | "delivered" | "cancelled";
+export type AttendanceStatus = "present" | "absent" | "late" | "excused";
+
+// A persisted batch_session for the batch detail timeline.
+export interface BatchSessionDetail {
+  id: string;
+  cohortId: string;
+  sessionDate: string;
+  startTime: string | null;
+  endTime: string | null;
+  status: BatchSessionStatus;
+  recordingUrl: string | null;
+  recordingPublishedAt: string | null;
+  notes: string | null;
+  markedCount: number;
+  presentCount: number;
+}
+
+// One roster entry for a session's attendance capture panel. `status` is null
+// when the learner hasn't been marked yet.
+export interface AttendanceRosterEntry {
+  partyId: string;
+  name: string;
+  email: string | null;
+  status: AttendanceStatus | null;
+  markedAt: string | null;
+}
+
+// A persisted batch_session enriched for the board calendar feed.
+export interface BatchBoardSession {
+  id: string;
+  cohortId: string;
+  title: string;
+  courseName: string | null;
+  sessionDate: string;
+  startTime: string | null;
+  endTime: string | null;
+  status: BatchSessionStatus;
+  recordingUrl: string | null;
+  recordingPublishedAt: string | null;
+  trainerName: string | null;
+  coTrainerName: string | null;
+}
+
+// Rich rollup bundle for the batch record page.
+export interface BatchDetailData {
+  id: string;
+  code: string | null;
+  name: string;
+  courseName: string | null;
+  stackName: string | null;
+  programName: string | null;
+  status: BatchStatus;
+  staffed: boolean;
+  trainerId: string | null;
+  trainerName: string | null;
+  coTrainerId: string | null;
+  coTrainerName: string | null;
+  slot: BatchSlot | null;
+  timeLabel: string | null;
+  schedule: string | null;
+  startDate: string | null;
+  endDate: string | null;
+  seats: number | null;
+  activeCount: number;
+  movedOut: number;
+  atRisk: number;
+  sessionsTotal: number;
+  sessionsDelivered: number;
+  sessionsNoRecording: number;
+  coveragePct: number | null;
+  attendancePct: number | null;
+  recordingSlaPct: number | null;
+  behindSessions: number;
+  timezone: string;
+  nba: { text: string; action: string };
+}
+
+export interface BatchBoardSummary {
+  totalBatches: number;
+  running: number;
+  upcoming: number;
+  unstaffed: number;
+  underEnrolled: number;
+  totalActive: number;
+  totalSeats: number;
+  fillPct: number | null;
+  avgCoveragePct: number | null;
+  avgAttendancePct: number | null;
 }
 
 export type EnrolmentStatus = "active" | "completed" | "dropped" | "deferred";
@@ -1156,9 +1286,15 @@ export type CaseStatus = "open" | "in_progress" | "pending" | "resolved" | "clos
 export type CasePriority = 1 | 2 | 3 | 4;
 export type CaseCategory =
   | "billing" | "technical" | "content_lms" | "onboarding"
-  | "cohort_batch" | "refund" | "certificate" | "other";
+  | "cohort_batch" | "refund" | "certificate" | "data_privacy" | "other";
 export type CaseRequesterKind = "lead" | "learner" | "external";
 export type CaseResolutionCode = "fixed" | "duplicate" | "wont_fix" | "no_action";
+
+// Cases board redesign — derived/label types.
+export type CaseSeverity = "Critical" | "High" | "Medium" | "Low";
+export type CaseSlaState = "met" | "paused" | "none" | "breached" | "active";
+export type CaseTypeGroup = "Money" | "Content" | "Delivery" | "Access" | "Data" | "Other";
+export type CaseSource = "manual" | "auto";
 
 export interface Case {
   id: string;
@@ -1184,6 +1320,29 @@ export interface Case {
   assigneeId: string | null;
   assigneeName: string | null;
   isOverdue: boolean;
+
+  // ── board redesign — persisted (post-0080) ──
+  source: CaseSource;
+  isAuto: boolean;
+  typeLabel: string | null;
+  channel: string | null;
+  raisedBy: string | null;
+  pendingWith: string | null;
+  firstResponseAt: string | null;
+  reopenCount: number;
+  preventable: boolean | null;
+  rootCause: string | null;
+  systemicRef: string | null;
+
+  // ── derived (server-computed) ──
+  severity: CaseSeverity;
+  typeGroup: CaseTypeGroup;
+  slaState: CaseSlaState;
+  slaMinutes: number | null;   // signed minutes to due; negative = past due
+  displayStatus: string;       // "In Progress" | "Pending Learner" | "Reopened" | …
+  aboutKind: "lead" | "enrolment" | "learner" | null;
+  aboutLabel: string | null;
+  aboutHref: string | null;
 }
 
 export interface CaseDetail {
@@ -1196,6 +1355,8 @@ export interface CaseDetail {
   };
   timeline: TimelineRow[];
   linked: { kind: "lead" | "learner"; href: string; label: string } | null;
+  // Derived next-best-action for the violet banner (non-money this pass).
+  nba: { text: string; action: string } | null;
 }
 
 export interface CaseDashboard {
@@ -1203,6 +1364,7 @@ export interface CaseDashboard {
     total: number; open: number; inProgress: number; pending: number;
     resolved: number; closed: number; cancelled: number;
     overdue: number; dueToday: number; dueThisWeek: number; closedThisWeek: number;
+    unassigned: number; slaBreaching: number; refundsPending: number;
   };
   byPriority: { priority: number; count: number }[];
   byCategory: { category: CaseCategory; count: number }[];

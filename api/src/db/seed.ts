@@ -13,6 +13,9 @@ import {
   agentRun,
   appUser,
   approval,
+  attendance,
+  batchAssignment,
+  batchSession,
   cohort,
   contactPoint,
   course,
@@ -23,6 +26,7 @@ import {
   partyRole,
   program,
   programCourse,
+  savedView,
   stack,
   tenant,
   supportCase,
@@ -157,30 +161,28 @@ const FEED = [
 // ─── main ─────────────────────────────────────────────────────────────────
 
 async function main() {
-  console.log("→ resetting tenant data (CASCADE)…");
-  // Delete in dependency order. RLS escape (current_tenant() IS NULL) lets this run.
-  await pool.query(`SET LOCAL app.tenant_id = ''`);
-  // audit_log is intentionally insert-only (post-0004 trigger). Skip it.
-  // Order: child rows first, then parents.
-  for (const t of [
-    "agent_assignment", "lead_score_signal",
-    "approval", "approval_policy", "activity", "relationship",
-    "attachment", "embedding", "agent_run", "agent",
-    "support_case",
-    "onboarding_task", "service_case", "deal", "lead",
-    "batch_assignment", "enrolment",
-    "work_item", "cohort", "program_course", "course", "program", "stack",
-    // Phase 1 party-model tables — depend on party, so delete first.
-    "contact_point", "party_external_id", "party_affiliation",
-    // Phase 4 party-model tables — same reason.
-    "party_duplicate_candidate", "party_merge_log", "party_consent", "party_match_rule",
-    // user_group_member / user_group_permission / user_group / app_session
-    // tables no longer exist post-Auth0 cutover (see post-0039 migration).
-    // Phase 2: app_user.party_id FKs into party — delete app_user BEFORE party.
-    "party_role", "app_user", "party", "tenant",
-  ]) {
-    await pool.query(`DELETE FROM ${t}`);
-  }
+  console.log("→ resetting tenant data (TRUNCATE CASCADE)…");
+  // Every tenant-scoped table carries a `tenant_id` column, so we discover the
+  // full set from the catalog rather than maintaining a hand-ordered delete list
+  // that silently rots as new tables land. One `TRUNCATE … CASCADE` clears them
+  // all — plus any FK-dependents that lack a tenant_id of their own (e.g.
+  // calendar_invitee, tw_message_media, program_course) — in a single,
+  // order-independent statement.
+  //
+  // Notes:
+  //  • audit_log is insert-only via BEFORE UPDATE/DELETE triggers (post-0004);
+  //    TRUNCATE is a different event and isn't blocked, so a full dev reset does
+  //    clear the audit trail of the data it's wiping. That's intended here.
+  //  • RESTART IDENTITY is harmless — the app's human-friendly numbers (ENR-…,
+  //    etc.) use standalone sequences, not identity columns.
+  const { rows: scoped } = await pool.query<{ t: string }>(`
+    SELECT quote_ident(table_name) AS t
+    FROM information_schema.columns
+    WHERE table_schema = 'public' AND column_name = 'tenant_id'
+    ORDER BY table_name
+  `);
+  const truncTargets = [...scoped.map((r) => r.t), "tenant"].join(", ");
+  await pool.query(`TRUNCATE TABLE ${truncTargets} RESTART IDENTITY CASCADE`);
 
   // ── Tenant + admin user
   console.log("→ creating tenant + users…");
@@ -421,6 +423,120 @@ async function main() {
       cohortIds[`${courseName}|${name}`] = c!.id;
     }
   }
+
+  // ── Batches board saved-view tabs (scope batches_list, tenant-shared) ─────
+  // Preset tabs for the /batches operational board. Field keys match
+  // BatchesBoard.buildFields; the board computes per-tab counts by re-running
+  // applyFilter over these filters. Behind-schedule + Recording-SLA tabs are
+  // seeded in the sessions phase once those fields exist.
+  console.log("→ batches board tabs…");
+  await db.insert(savedView).values([
+    {
+      tenantId, ownerId: admin.partyId, scope: "batches_list",
+      name: "Unstaffed", visibility: "shared", columns: null,
+      filter: { combinator: "and", rules: [
+        { id: "b1", fieldKey: "staffed", operator: "is", value: "No" },
+      ] },
+    },
+    {
+      tenantId, ownerId: admin.partyId, scope: "batches_list",
+      name: "Ongoing", visibility: "shared", columns: null,
+      filter: { combinator: "and", rules: [
+        { id: "b1", fieldKey: "status", operator: "is", value: "running" },
+      ] },
+    },
+    {
+      tenantId, ownerId: admin.partyId, scope: "batches_list",
+      name: "Upcoming w/o start date", visibility: "shared", columns: null,
+      filter: { combinator: "and", rules: [
+        { id: "b1", fieldKey: "status",    operator: "is",       value: "upcoming" },
+        { id: "b2", fieldKey: "startDate", operator: "is_empty", value: null },
+      ] },
+    },
+    {
+      tenantId, ownerId: admin.partyId, scope: "batches_list",
+      name: "Under-enrolled", visibility: "shared", columns: null,
+      filter: { combinator: "and", rules: [
+        { id: "b1", fieldKey: "underEnrolled", operator: "is", value: "Yes" },
+      ] },
+    },
+    {
+      tenantId, ownerId: admin.partyId, scope: "batches_list",
+      name: "Behind schedule", visibility: "shared", columns: null,
+      filter: { combinator: "and", rules: [
+        { id: "b1", fieldKey: "behindSchedule", operator: "is", value: "Yes" },
+      ] },
+    },
+    {
+      tenantId, ownerId: admin.partyId, scope: "batches_list",
+      name: "Recording SLA breach", visibility: "shared", columns: null,
+      filter: { combinator: "and", rules: [
+        { id: "b1", fieldKey: "slaBreached", operator: "is", value: "Yes" },
+      ] },
+    },
+  ]);
+
+  // ── Cases board saved-view tabs (scope cases_list, tenant-shared) ─────────
+  // Field keys match CasesBoard.buildFields; "All cases" is the built-in default.
+  console.log("→ cases board tabs…");
+  await db.insert(savedView).values([
+    {
+      tenantId, ownerId: admin.partyId, scope: "cases_list",
+      name: "All open", visibility: "shared", columns: null,
+      filter: { combinator: "and", rules: [
+        { id: "c1", fieldKey: "openState", operator: "is", value: "Open" },
+      ] },
+    },
+    {
+      tenantId, ownerId: admin.partyId, scope: "cases_list",
+      name: "My cases", visibility: "shared", columns: null,
+      filter: { combinator: "and", rules: [
+        { id: "c1", fieldKey: "mine", operator: "is", value: "Yes" },
+      ] },
+    },
+    {
+      tenantId, ownerId: admin.partyId, scope: "cases_list",
+      name: "Unassigned", visibility: "shared", columns: null,
+      filter: { combinator: "and", rules: [
+        { id: "c1", fieldKey: "owner", operator: "is", value: "Unassigned" },
+      ] },
+    },
+    {
+      tenantId, ownerId: admin.partyId, scope: "cases_list",
+      name: "SLA breaching", visibility: "shared", columns: null,
+      filter: { combinator: "and", rules: [
+        { id: "c1", fieldKey: "slaState", operator: "is", value: "breached" },
+      ] },
+    },
+    {
+      tenantId, ownerId: admin.partyId, scope: "cases_list",
+      name: "Refunds pending", visibility: "shared", columns: null,
+      filter: { combinator: "and", rules: [
+        { id: "c1", fieldKey: "refundPending", operator: "is", value: "Yes" },
+      ] },
+    },
+    {
+      tenantId, ownerId: admin.partyId, scope: "cases_list",
+      name: "Auto-detected", visibility: "shared", columns: null,
+      filter: { combinator: "and", rules: [
+        { id: "c1", fieldKey: "source", operator: "is", value: "auto" },
+      ] },
+    },
+    {
+      tenantId, ownerId: admin.partyId, scope: "cases_list",
+      name: "Preventable", visibility: "shared", columns: null,
+      filter: { combinator: "and", rules: [
+        { id: "c1", fieldKey: "preventable", operator: "is", value: "Yes" },
+      ] },
+    },
+    {
+      tenantId, ownerId: admin.partyId, scope: "cases_list",
+      name: "Reopened", visibility: "shared", columns: null,
+      filter: { combinator: "and", rules: [
+        { id: "c1", fieldKey: "reopened", operator: "is", value: "Yes" },
+      ] },
+    },
+  ]);
 
   function abbr(s: string): string {
     return s.split(/\s+/).map((w) => w[0]).join("").replace(/[^A-Za-z]/g, "").slice(0, 3).toUpperCase();
@@ -885,6 +1001,169 @@ async function main() {
   }
   console.log(`  ${wonLeads.rows.length} learners enrolled (no courses/batches yet — assign on the learner page)`);
 
+  // ── Demo batches: learners + sessions + attendance ────────────────────────
+  // Only a couple of leads convert to enrolments above, so we synthesize a
+  // realistic cohort here — parties + learner role + enrolment + batch
+  // assignment — then materialize ~42 weekday sessions and mark attendance, so
+  // the board + record page show real Coverage/Attendance/Behind-schedule/
+  // Recording-SLA numbers. Batch 1 is the showcase: unstaffed, 24 learners, a
+  // couple of undelivered recent sessions (behind schedule) and some
+  // missing/late recordings (SLA breach). Batch 2 is smaller, staffed and clean.
+  console.log("→ demo batches (learners + sessions + attendance)…");
+  const trainerPid = advisorPriya.partyId;
+  const runningCohorts = await pool.query<{ id: string }>(
+    `SELECT id FROM cohort WHERE status = 'running' ORDER BY start_date NULLS LAST LIMIT 2`,
+  );
+
+  const FIRST_NAMES = ["Aarav", "Vivaan", "Aditya", "Vihaan", "Arjun", "Sai", "Reyansh", "Krishna", "Ishaan", "Rohan", "Ananya", "Diya", "Aadhya", "Saanvi", "Pari", "Ira", "Myra", "Riya", "Sara", "Kiara", "Tanvi", "Nikhil", "Rahul", "Karthik", "Meghana", "Sneha", "Divya", "Harsha", "Teja", "Lasya"];
+  const LAST_INITIALS = ["K", "R", "M", "S", "N", "P", "V", "T", "B", "G"];
+
+  const isoDay = (d: Date) => d.toISOString().slice(0, 10);
+  const shiftDays = (base: Date, n: number) => {
+    const d = new Date(base);
+    d.setUTCDate(d.getUTCDate() + n);
+    return d;
+  };
+  const isWeekday = (d: Date) => d.getUTCDay() !== 0 && d.getUTCDay() !== 6;
+
+  let learnerSeq = 0;
+  async function makeLearner(programId: string | null, price: string | null) {
+    const fn = FIRST_NAMES[learnerSeq % FIRST_NAMES.length]!;
+    const li = LAST_INITIALS[(learnerSeq * 7) % LAST_INITIALS.length]!;
+    learnerSeq += 1;
+    const name = `${fn} ${li}.`;
+    const email = `${fn.toLowerCase()}.${li.toLowerCase()}${learnerSeq}@learner.edify.io`;
+    const initials = `${fn[0]}${li}`.toUpperCase();
+    const [p] = await db.insert(party).values({
+      tenantId, kind: "person", name, email, attributes: { initials },
+    }).returning();
+    await db.insert(partyRole).values({ tenantId, partyId: p!.id, role: "learner" });
+    await db.insert(contactPoint).values({ tenantId, partyId: p!.id, kind: "email", value: email, isPrimary: true });
+    const [e] = await db.insert(enrolment).values({
+      tenantId, partyId: p!.id, programId, status: "active",
+      feeQuoted: price, feePaid: price,
+    }).returning();
+    return { enrolmentId: e!.id, partyId: p!.id };
+  }
+
+  async function seedDemoBatch(
+    cohortId: string,
+    activeCount: number,
+    movedOutCount: number,
+    opts: { assignTrainer: boolean; messy: boolean },
+  ) {
+    const prog = await pool.query<{ id: string; price: string | null }>(
+      `SELECT pg.id, pg.price FROM cohort c
+         JOIN program_course pc ON pc.course_id = c.course_id
+         JOIN program pg        ON pg.id = pc.program_id
+        WHERE c.id = $1 LIMIT 1`,
+      [cohortId],
+    );
+    const programId = prog.rows[0]?.id ?? null;
+    const price = prog.rows[0]?.price ?? "59000";
+
+    const start = shiftDays(now, -13);
+    const end = shiftDays(now, 60);
+    const setTrainer = opts.assignTrainer ? sql`, trainer_id = ${trainerPid}` : sql``;
+    await db.execute(sql`
+      UPDATE cohort SET
+        days_of_week = '{mon,tue,wed,thu,fri}',
+        start_time = '19:00', end_time = '20:30',
+        start_date = ${isoDay(start)}, end_date = ${isoDay(end)},
+        status = 'running', seats = 30,
+        slot = 'evening', time_label = '7:00 PM – 8:30 PM',
+        schedule = 'Mon · Tue · Wed · Thu · Fri'
+        ${setTrainer}
+      WHERE id = ${cohortId}
+    `);
+    const marker = opts.assignTrainer ? trainerPid : admin.partyId;
+
+    // Active learners (assigned) + a few moved-out (dropped) for the risk card.
+    const active: Array<{ partyId: string }> = [];
+    for (let i = 0; i < activeCount; i++) {
+      const l = await makeLearner(programId, price);
+      active.push({ partyId: l.partyId });
+      await pool.query(
+        `INSERT INTO batch_assignment (tenant_id, enrolment_id, party_id, cohort_id, status)
+         VALUES ($1, $2, $3, $4, 'active') ON CONFLICT (party_id, cohort_id) DO NOTHING`,
+        [tenantId, l.enrolmentId, l.partyId, cohortId],
+      );
+    }
+    for (let i = 0; i < movedOutCount; i++) {
+      const l = await makeLearner(programId, price);
+      await pool.query(
+        `INSERT INTO batch_assignment (tenant_id, enrolment_id, party_id, cohort_id, status)
+         VALUES ($1, $2, $3, $4, 'dropped') ON CONFLICT (party_id, cohort_id) DO NOTHING`,
+        [tenantId, l.enrolmentId, l.partyId, cohortId],
+      );
+    }
+
+    // 42 weekday sessions from start (oldest → newest).
+    const dates: Date[] = [];
+    let cur = new Date(start);
+    while (dates.length < 42) {
+      if (isWeekday(cur)) dates.push(new Date(cur));
+      cur = shiftDays(cur, 1);
+    }
+    const pastCount = dates.filter((d) => d <= now).length;
+
+    let pastSeen = 0;
+    for (const d of dates) {
+      const isPast = d <= now;
+      const dateStr = isoDay(d);
+      let status: "planned" | "delivered" | "cancelled" = "planned";
+      let recordingUrl: string | null = null;
+      let recordingPublishedAt: Date | null = null;
+
+      if (isPast) {
+        const posFromEnd = pastCount - 1 - pastSeen; // 0 = most recent past session
+        pastSeen += 1;
+        const sessionEnd = new Date(`${dateStr}T20:30:00+05:30`);
+        if (opts.messy && posFromEnd <= 1) {
+          status = "planned"; // due but not delivered ⇒ behind schedule
+        } else {
+          status = "delivered";
+          const breach = opts.messy && (pastSeen % 5 === 0 || pastSeen % 5 === 2);
+          if (breach && pastSeen % 2 === 0) {
+            // missing recording ⇒ SLA breach (leave nulls)
+          } else if (breach) {
+            recordingUrl = `https://recordings.example/${cohortId}/${dateStr}`;
+            recordingPublishedAt = new Date(sessionEnd.getTime() + 40 * 3600_000); // late ⇒ SLA breach
+          } else {
+            recordingUrl = `https://recordings.example/${cohortId}/${dateStr}`;
+            recordingPublishedAt = new Date(sessionEnd.getTime() + 3 * 3600_000); // within SLA
+          }
+        }
+      }
+
+      const [s] = await db.insert(batchSession).values({
+        tenantId, cohortId, sessionDate: dateStr,
+        startTime: "19:00:00", endTime: "20:30:00",
+        status, recordingUrl, recordingPublishedAt,
+      }).returning();
+
+      if (status === "delivered") {
+        for (const [i, l] of active.entries()) {
+          // ~68% present, ~14% late, ~18% absent — varied by learner + session.
+          const r = (i * 3 + pastSeen * 7) % 10;
+          const attStatus = r < 6 ? "present" : r < 8 ? "late" : "absent";
+          await db.insert(attendance).values({
+            tenantId, batchSessionId: s!.id, partyId: l.partyId,
+            status: attStatus, markedBy: marker,
+          });
+        }
+      }
+    }
+  }
+
+  if (runningCohorts.rows[0]) {
+    await seedDemoBatch(runningCohorts.rows[0].id, 24, 2, { assignTrainer: false, messy: true });
+  }
+  if (runningCohorts.rows[1]) {
+    await seedDemoBatch(runningCohorts.rows[1].id, 18, 0, { assignTrainer: true, messy: false });
+  }
+  console.log(`  demo batches seeded (${learnerSeq} learners created)`);
+
   // ── Cases — sample data for the dashboard
   console.log("→ cases…");
   // Pick a couple of seeded leads + a converted learner so the cross-link demo works.
@@ -926,6 +1205,16 @@ async function main() {
     remindOffsetHours: number | null;
     resolution?: string;
     resolutionCode?: string;
+    // board redesign fields
+    source?: "manual" | "auto";
+    typeLabel?: string;
+    channel?: "whatsapp" | "email" | "phone" | "portal";
+    raisedBy?: "learner" | "internal" | "system";
+    pendingWith?: "learner" | "internal";
+    reopenCount?: number;
+    preventable?: boolean;
+    rootCause?: string;
+    systemicRef?: string;
   };
 
   const NOW = Date.now();
@@ -937,6 +1226,7 @@ async function main() {
       requesterKind: "lead", partyId: aaravParty,
       category: "onboarding", priority: 1, status: "in_progress",
       assigneeName: "Anirudh", dueOffsetHours: 6, remindOffsetHours: 2,
+      source: "auto", typeLabel: "Onboarding link broken", channel: "email", raisedBy: "learner",
     },
     {
       subject: "Refund requested — Salesforce program",
@@ -945,6 +1235,7 @@ async function main() {
       requesterKind: "lead", partyId: sneha.partyId,
       category: "refund", priority: 2, status: "open",
       assigneeName: "Sheshi", dueOffsetHours: 24, remindOffsetHours: 8,
+      source: "auto", typeLabel: "Refund request", channel: "whatsapp", raisedBy: "learner",
     },
     {
       subject: "Payment receipt not received",
@@ -953,6 +1244,7 @@ async function main() {
       requesterKind: "learner", partyId: meghaParty,
       category: "billing", priority: 3, status: "pending",
       assigneeName: "Venki", dueOffsetHours: 48, remindOffsetHours: 24,
+      typeLabel: "Payment receipt missing", channel: "email", raisedBy: "learner", pendingWith: "internal",
     },
     {
       subject: "Demo session crashed midway — need recording",
@@ -961,6 +1253,7 @@ async function main() {
       requesterKind: "external", partyId: null,
       category: "technical", priority: 2, status: "open",
       assigneeName: "Akhil", dueOffsetHours: -3, remindOffsetHours: null,   // OVERDUE
+      source: "auto", typeLabel: "Recording missing", channel: "email", raisedBy: "learner",
     },
     {
       subject: "Course material — Power BI module 4 missing",
@@ -969,6 +1262,8 @@ async function main() {
       requesterKind: "external", partyId: null,
       category: "content_lms", priority: 3, status: "in_progress",
       assigneeName: "Roshni", dueOffsetHours: 72, remindOffsetHours: 48,
+      source: "auto", typeLabel: "Content missing", channel: "portal", raisedBy: "learner",
+      preventable: true, rootCause: "LMS publish step skipped for module 4.",
     },
     {
       subject: "Certificate name spelling correction",
@@ -989,6 +1284,7 @@ async function main() {
       assigneeName: "Sheshi", dueOffsetHours: -36, remindOffsetHours: null,
       resolution: "Moved Anita to Cohort 027 (next month evening batch). Updated her welcome pack and notified the academic team.",
       resolutionCode: "fixed",
+      typeLabel: "Batch change request", channel: "phone", raisedBy: "learner", reopenCount: 1,
     },
   ];
 
@@ -1039,6 +1335,19 @@ async function main() {
       resolvedAt: isResolved ? new Date(NOW + T.dueOffsetHours * 3600_000 - 1800_000) : undefined,
       closedAt:   isClosed   ? new Date(NOW + T.dueOffsetHours * 3600_000 - 1500_000) : undefined,
       createdById: admin.partyId,
+      // board redesign fields
+      source:      T.source ?? "manual",
+      typeLabel:   T.typeLabel ?? undefined,
+      channel:     T.channel ?? undefined,
+      raisedBy:    T.raisedBy ?? undefined,
+      pendingWith: T.pendingWith ?? undefined,
+      reopenCount: T.reopenCount ?? 0,
+      preventable: T.preventable ?? undefined,
+      rootCause:   T.rootCause ?? undefined,
+      systemicRef: T.systemicRef ?? undefined,
+      // Mark first response for cases that already show progress.
+      firstResponseAt: (T.status === "in_progress" || T.status === "pending" || isResolved || isClosed)
+        ? new Date(NOW - 6 * 3600_000) : undefined,
     });
 
     // Activity row — case created

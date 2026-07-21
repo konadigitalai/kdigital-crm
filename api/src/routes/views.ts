@@ -25,7 +25,7 @@ import { partyIdFromAppUserId } from "../lib/party/resolve.js";
 
 export const viewsRouter = Router();
 
-const SUPPORTED_SCOPES = ["pipeline_list", "enrollments_list", "learners_list"] as const;
+const SUPPORTED_SCOPES = ["pipeline_list", "enrollments_list", "learners_list", "batches_list", "cases_list"] as const;
 type Scope = (typeof SUPPORTED_SCOPES)[number];
 function isScope(s: string): s is Scope {
   return (SUPPORTED_SCOPES as readonly string[]).includes(s);
@@ -39,6 +39,8 @@ const SHARED_WRITE_PERM: Record<Scope, Permission> = {
   pipeline_list: "pipeline.write",
   enrollments_list: "learners.write",
   learners_list: "learners.write",
+  batches_list: "admin.batches.manage",
+  cases_list: "cases.write",
 };
 
 // Reading a scope's views requires that surface's read perm. The mount only
@@ -49,6 +51,8 @@ const READ_PERM: Record<Scope, Permission> = {
   pipeline_list: "pipeline.read",
   enrollments_list: "learners.read",
   learners_list: "learners.read",
+  batches_list: "admin.batches.manage",
+  cases_list: "cases.read",
 };
 
 const isUuid = (s: string) => /^[0-9a-fA-F-]{36}$/.test(s);

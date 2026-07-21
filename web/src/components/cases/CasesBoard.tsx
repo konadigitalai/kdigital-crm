@@ -1,12 +1,15 @@
 "use client";
 
-// Learners board — feature parity with EnrollmentsBoard, built on the same
-// generic infrastructure (ViewTabs, FilterBar, useFilter, applyFilter). Composes:
-//   • KPI stat cards (Total / In batch / Not batched / Placed)
-//   • custom saved views via <ViewTabs scope="learners_list"> (no preset tabs)
-//   • List / Kanban / Chart / Calendar view switcher
-//   • group-by pill, quick-filter pills, full "Add filter" rule builder
+// Cases board — the operational board over the case queue, built on the same
+// generic infrastructure as BatchesBoard (ViewTabs, FilterBar, useFilter,
+// applyFilter). Composes:
+//   • KPI stat cards (Open / Unassigned / SLA breaching / Refunds / Auto / Reopened)
+//   • custom saved views via <ViewTabs scope="cases_list"> (no preset tabs)
+//   • List / Dashboard view switcher
+//   • quick-filter pills, full "Add filter" rule builder
 //   • URL sync of mode + active saved view
+//   • a "live" status dot driven by the background poller
+//   • an "AUTO-DETECT ON" pill (display-only)
 //   • a topbar search box (portaled into the page's Topbar slot)
 
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -19,88 +22,106 @@ import { applyFilter } from "@/components/filter/operators";
 import { AnchoredPopover } from "@/components/ui/AnchoredPopover";
 import { Icon, type IconName } from "@/components/ui/Icon";
 import { cn } from "@/lib/cn";
-import { avatarGradClass, gradFor, initialsOf } from "@/lib/ui";
 import {
-  getLearners, getViewPreferences, updateViewPreferences,
+  getCases, getViewPreferences, updateViewPreferences,
   type UserViewPreference,
 } from "@/lib/api";
 import type { FilterField, FilterState } from "@/components/filter/types";
-import type { CurrentUser, LearnerSummary, LearnerBoardSummary, SavedView } from "@/lib/types";
+import type { Case, CaseDashboard, CurrentUser, SavedView } from "@/lib/types";
+import { STATUS_LABEL } from "./StatusPill";
+import { CaseDashboardCards } from "./CaseDashboardCards";
 import {
-  LEARNER_LIST_COLUMNS, LEARNER_LIST_DEFAULT_COLUMNS, LearnersListView,
-} from "./LearnersListView";
-import {
-  LEARNER_GROUP_BY_OPTIONS, LearnersKanban, learnerGroupKey, type LearnerGroupBy,
-} from "./LearnersKanban";
-import { LEARNER_CHART_RANGES, LearnersChartView, type LearnerChartRange } from "./LearnersChartView";
-import { LearnersCalendarView } from "./LearnersCalendarView";
+  CASE_LIST_COLUMNS, CASE_LIST_DEFAULT_COLUMNS, CasesListView,
+} from "./CasesListView";
 
-type ViewMode = "list" | "kanban" | "chart" | "calendar";
-const VIEW_MODES: readonly ViewMode[] = ["list", "kanban", "chart", "calendar"];
+type ViewMode = "list" | "dashboard";
+const VIEW_MODES: readonly ViewMode[] = ["list", "dashboard"];
 function parseViewMode(raw: string | null): ViewMode {
   return VIEW_MODES.includes(raw as ViewMode) ? (raw as ViewMode) : "list";
 }
 
 /** DOM id of the Topbar slot the board portals its search input into. */
-export const LEARNERS_SEARCH_SLOT_ID = "learners-topbar-search";
+export const CASES_SEARCH_SLOT_ID = "cases-search-slot";
 
 const POLL_MS = 45_000;
 
-const STATUS_OPTIONS = [
-  { value: "In batch", label: "In batch" },
-  { value: "Assigned", label: "Assigned" },
-  { value: "Enrolled", label: "Enrolled" },
+const CLOSED_STATUSES = ["resolved", "closed", "cancelled"];
+
+const TYPE_GROUP_OPTIONS = [
+  { value: "Money",    label: "Money" },
+  { value: "Content",  label: "Content" },
+  { value: "Delivery", label: "Delivery" },
+  { value: "Access",   label: "Access" },
+  { value: "Data",     label: "Data" },
+  { value: "Other",    label: "Other" },
 ];
-const PLACEMENT_OPTIONS = [
-  { value: "not_started", label: "Not started" },
-  { value: "in_progress", label: "In progress" },
-  { value: "placed",      label: "Placed" },
-  { value: "deferred",    label: "Deferred" },
+const SEVERITY_OPTIONS = [
+  { value: "Critical", label: "Critical" },
+  { value: "High",     label: "High" },
+  { value: "Medium",   label: "Medium" },
+  { value: "Low",      label: "Low" },
 ];
-const SKILL_OPTIONS = [
-  { value: "beginner",     label: "Beginner" },
-  { value: "intermediate", label: "Intermediate" },
-  { value: "advanced",     label: "Advanced" },
+const STATUS_OPTIONS = (["open", "in_progress", "pending", "resolved", "closed", "cancelled"] as const)
+  .map((s) => ({ value: s, label: STATUS_LABEL[s] }));
+const SLA_OPTIONS = [
+  { value: "met",      label: "Met" },
+  { value: "paused",   label: "Paused" },
+  { value: "none",     label: "None" },
+  { value: "breached", label: "Breached" },
+  { value: "active",   label: "Active" },
 ];
+const SOURCE_OPTIONS = [
+  { value: "manual", label: "Manual" },
+  { value: "auto",   label: "Auto" },
+];
+const OPEN_STATE_OPTIONS = [
+  { value: "Open",   label: "Open" },
+  { value: "Closed", label: "Closed" },
+];
+const YES_NO_OPTIONS = [
+  { value: "Yes", label: "Yes" },
+  { value: "No",  label: "No" },
+];
+
+const UNASSIGNED = "Unassigned";
 
 function unique(xs: (string | null | undefined)[]): string[] {
   return Array.from(new Set(xs.filter((x): x is string => typeof x === "string" && x !== "")));
 }
 
-function buildFields(rows: LearnerSummary[]): FilterField[] {
-  const programs = unique(rows.map((r) => r.programName));
-  const stacks   = unique(rows.map((r) => r.stackName));
-  const advisors = unique(rows.map((r) => r.advisorName));
-  const cities   = unique(rows.map((r) => r.city));
-  const batches  = unique(rows.map((r) => r.batchCode));
+function isClosed(status: string): boolean {
+  return CLOSED_STATUSES.includes(status);
+}
+
+function buildFields(rows: Case[], currentUser: CurrentUser | null): FilterField[] {
+  const owners = unique(rows.map((r) => r.assigneeName));
   return [
-    { key: "name",            label: "Learner",         type: "text",   get: (l: LearnerSummary) => l.name },
-    { key: "email",           label: "Email",           type: "text",   get: (l: LearnerSummary) => l.email },
-    { key: "phone",           label: "Phone",           type: "text",   get: (l: LearnerSummary) => l.phone },
-    { key: "city",            label: "City",            type: "enum",   options: cities.map((c) => ({ value: c, label: c })),     get: (l: LearnerSummary) => l.city },
-    { key: "program",         label: "Program",         type: "enum",   options: programs.map((p) => ({ value: p, label: p })),   get: (l: LearnerSummary) => l.programName },
-    { key: "stack",           label: "Stack",           type: "enum",   options: stacks.map((s) => ({ value: s, label: s })),     get: (l: LearnerSummary) => l.stackName },
-    { key: "status",          label: "Status",          type: "enum",   options: STATUS_OPTIONS,          get: (l: LearnerSummary) => l.status },
-    { key: "advisor",         label: "Advisor",         type: "enum",   options: advisors.map((a) => ({ value: a, label: a })),   get: (l: LearnerSummary) => l.advisorName },
-    { key: "placementStatus", label: "Placement",       type: "enum",   options: PLACEMENT_OPTIONS,       get: (l: LearnerSummary) => l.placementStatus },
-    { key: "skillLevel",      label: "Skill level",     type: "enum",   options: SKILL_OPTIONS,           get: (l: LearnerSummary) => l.skillLevel },
-    { key: "batchCode",       label: "Batch",           type: "enum",   options: batches.map((b) => ({ value: b, label: b })),    get: (l: LearnerSummary) => l.batchCode },
-    { key: "activeCourses",   label: "Active courses",  type: "number", get: (l: LearnerSummary) => l.activeCourses },
-    { key: "activeBatches",   label: "Active batches",  type: "number", get: (l: LearnerSummary) => l.activeBatches },
-    { key: "learnerSince",    label: "Learner since",   type: "date",   get: (l: LearnerSummary) => l.learnerSince },
+    { key: "case",          label: "Case",         type: "text",   get: (c: Case) => `${c.number} ${c.subject}` },
+    { key: "party",         label: "Party",        type: "text",   get: (c: Case) => c.requesterName },
+    { key: "typeGroup",     label: "Type",         type: "enum",   options: TYPE_GROUP_OPTIONS, get: (c: Case) => c.typeGroup },
+    { key: "severity",      label: "Severity",     type: "enum",   options: SEVERITY_OPTIONS,   get: (c: Case) => c.severity },
+    { key: "status",        label: "Status",       type: "enum",   options: STATUS_OPTIONS,     get: (c: Case) => c.status },
+    { key: "owner",         label: "Owner",        type: "enum",   options: [...owners.map((o) => ({ value: o, label: o })), { value: UNASSIGNED, label: UNASSIGNED }], get: (c: Case) => c.assigneeName ?? UNASSIGNED },
+    { key: "slaState",      label: "SLA",          type: "enum",   options: SLA_OPTIONS,        get: (c: Case) => c.slaState },
+    { key: "source",        label: "Source",       type: "enum",   options: SOURCE_OPTIONS,     get: (c: Case) => c.source },
+    { key: "openState",     label: "Open / Closed", type: "enum",  options: OPEN_STATE_OPTIONS, get: (c: Case) => isClosed(c.status) ? "Closed" : "Open" },
+    { key: "refundPending", label: "Refund pending", type: "enum", options: YES_NO_OPTIONS,     get: (c: Case) => (c.category === "refund" && !isClosed(c.status)) ? "Yes" : "No" },
+    { key: "preventable",   label: "Preventable",  type: "enum",   options: YES_NO_OPTIONS,     get: (c: Case) => c.preventable ? "Yes" : "No" },
+    { key: "reopened",      label: "Reopened",     type: "enum",   options: YES_NO_OPTIONS,     get: (c: Case) => c.reopenCount > 0 ? "Yes" : "No" },
+    { key: "mine",          label: "Mine",         type: "enum",   options: YES_NO_OPTIONS,     get: (c: Case) => (currentUser && c.assigneeId === currentUser.id) ? "Yes" : "No" },
   ];
 }
 
-export function LearnersBoard({
-  initialLearners,
-  summary,
+export function CasesBoard({
+  initialCases,
+  dashboard,
   initialViews,
   currentUser,
   canWrite,
   headerSlot,
 }: {
-  initialLearners: LearnerSummary[];
-  summary: LearnerBoardSummary | null;
+  initialCases: Case[];
+  dashboard: CaseDashboard | null;
   initialViews: SavedView[];
   currentUser: CurrentUser | null;
   canWrite: boolean;
@@ -111,13 +132,14 @@ export function LearnersBoard({
   const searchParams = useSearchParams();
 
   // ── local copy + light background poller ────────────────────────────────
-  const [rows, setRows] = useState<LearnerSummary[]>(initialLearners);
+  const [rows, setRows] = useState<Case[]>(initialCases);
+  const [live, setLive] = useState(true);
   const incomingKey = useMemo(
-    () => initialLearners.map((l) => [l.partyId, l.status, l.activeBatches, l.activeCourses, l.batchCode ?? "", l.placementStatus ?? ""].join("|")).join("·"),
-    [initialLearners],
+    () => initialCases.map((c) => [c.id, c.status, c.assigneeId ?? "", c.slaState, c.displayStatus, c.reopenCount].join("|")).join("·"),
+    [initialCases],
   );
   useEffect(() => {
-    setRows(initialLearners);
+    setRows(initialCases);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [incomingKey]);
 
@@ -126,9 +148,9 @@ export function LearnersBoard({
     async function tick() {
       if (document.hidden) return;
       try {
-        const fresh = await getLearners();
-        if (!cancelled) setRows(fresh);
-      } catch { /* silent — next tick retries */ }
+        const fresh = await getCases();
+        if (!cancelled) { setRows(fresh); setLive(true); }
+      } catch { if (!cancelled) setLive(false); }
     }
     const timer = setInterval(tick, POLL_MS);
     function onVisible() { if (!document.hidden) tick(); }
@@ -137,22 +159,16 @@ export function LearnersBoard({
   }, []);
 
   // ── filter (rule builder) ───────────────────────────────────────────────
-  const fields = useMemo(() => buildFields(rows), [rows]);
+  const fields = useMemo(() => buildFields(rows, currentUser), [rows, currentUser]);
   const [filtered, filterState, setFilterState] = useFilter(rows, fields);
 
-  // ── view mode + grouping axis ────────────────────────────────────────────
-  // Group-by is optional for the list (flat is the sane default) but Kanban
-  // always needs an axis, so it falls back to status.
+  // ── view mode ─────────────────────────────────────────────────────────────
   const [view, setView] = useState<ViewMode>(() => parseViewMode(searchParams.get("v")));
-  const [groupBy, setGroupBy] = useState<LearnerGroupBy | "none">("none");
-  const axis: LearnerGroupBy = groupBy === "none" ? "status" : groupBy;
-  const [chartRange, setChartRange] = useState<LearnerChartRange>("90d");
-  const [calAdvisor, setCalAdvisor] = useState<string>("all");
 
   // Rows a view shows = the rule-builder filter. (Saved views cover preset cuts.)
   const visible = filtered;
 
-  // ── saved views (scope learners_list) ────────────────────────────────────
+  // ── saved views (scope cases_list) ───────────────────────────────────────
   const [views, setViews] = useState<SavedView[]>(initialViews);
   const [activeViewId, setActiveViewId] = useState<string>(() => {
     const fromUrl = searchParams.get("view");
@@ -234,7 +250,7 @@ export function LearnersBoard({
   const [tabOrder, setTabOrder] = useState<string[]>([]);
   useEffect(() => {
     let cancelled = false;
-    getViewPreferences("learners_list")
+    getViewPreferences("cases_list")
       .then((prefs: UserViewPreference[]) => {
         if (cancelled) return;
         setHiddenViewIds(prefs.filter((p) => p.hidden).map((p) => p.viewId ?? DEFAULT_VIEW_ID));
@@ -257,12 +273,12 @@ export function LearnersBoard({
       if (seen.has(id)) continue;
       payload.push({ viewId: id === DEFAULT_VIEW_ID ? null : id, hidden: true });
     }
-    updateViewPreferences("learners_list", payload).catch(() => { /* silent */ });
+    updateViewPreferences("cases_list", payload).catch(() => { /* silent */ });
   }
 
   // ── topbar search portal ────────────────────────────────────────────────
   const [searchSlot, setSearchSlot] = useState<HTMLElement | null>(null);
-  useEffect(() => { setSearchSlot(document.getElementById(LEARNERS_SEARCH_SLOT_ID)); }, []);
+  useEffect(() => { setSearchSlot(document.getElementById(CASES_SEARCH_SLOT_ID)); }, []);
 
   // Editing a filter by hand detaches from the active saved view.
   function changeFilter(next: FilterState) {
@@ -273,7 +289,7 @@ export function LearnersBoard({
   const toolbar = (
     <div className="flex min-w-0 items-center gap-2.5">
       <div className="flex-shrink-0">
-        <LearnerViewSwitcher value={view} onChange={setView} />
+        <CaseViewSwitcher value={view} onChange={setView} />
       </div>
       <div
         className="min-w-0 flex-1 overflow-x-auto scroll-x-clean"
@@ -284,53 +300,42 @@ export function LearnersBoard({
         }}
       >
         <div className="flex w-max flex-nowrap items-center gap-2.5 [&>*]:flex-shrink-0">
-          {(view === "list" || view === "kanban") && (
-            <GroupByPill value={groupBy} onChange={setGroupBy} />
-          )}
-          {(view === "list" || view === "kanban") && (
+          {view === "list" && (
             <>
+              <QuickFilterPill label="Type" options={TYPE_GROUP_OPTIONS} state={filterState} fieldKey="typeGroup" onChange={changeFilter} anyLabel="All" />
+              <QuickFilterPill label="Severity" options={SEVERITY_OPTIONS} state={filterState} fieldKey="severity" onChange={changeFilter} anyLabel="All" />
               <QuickFilterPill label="Status" options={STATUS_OPTIONS} state={filterState} fieldKey="status" onChange={changeFilter} anyLabel="All" />
-              <QuickFilterPill label="Advisor" options={unique(rows.map((r) => r.advisorName)).map((a) => ({ value: a, label: a }))} state={filterState} fieldKey="advisor" onChange={changeFilter} anyLabel="All" />
+              <QuickFilterPill label="Owner" options={[...unique(rows.map((r) => r.assigneeName)).map((o) => ({ value: o, label: o })), { value: UNASSIGNED, label: UNASSIGNED }]} state={filterState} fieldKey="owner" onChange={changeFilter} anyLabel="All" />
+              <FilterBar fields={fields} state={filterState} onChange={changeFilter} />
             </>
           )}
-          {view === "chart" && (
-            <SelectPill label="Range" options={LEARNER_CHART_RANGES} value={chartRange} onChange={(v) => setChartRange(v as LearnerChartRange)} />
-          )}
-          {view === "calendar" && (
-            <SelectPill
-              label="Advisor"
-              options={unique(rows.map((r) => r.advisorName)).map((a) => ({ value: a, label: a }))}
-              value={calAdvisor}
-              onChange={(v) => setCalAdvisor(v)}
-              allValue="all"
-              allLabel="All"
-            />
-          )}
-          {(view === "list" || view === "kanban") && (
-            <FilterBar fields={fields} state={filterState} onChange={changeFilter} />
-          )}
         </div>
+      </div>
+      <div className="flex flex-shrink-0 items-center gap-2.5">
+        <AutoDetectPill />
+        <LiveStatus live={live} />
       </div>
     </div>
   );
 
   return (
     <>
-      {searchSlot && createPortal(<LearnersSearchBox rows={rows} />, searchSlot)}
+      {searchSlot && createPortal(<CasesSearchBox rows={rows} />, searchSlot)}
 
       {/* Saved views (top level) + header slot on the right. */}
       <div className="mb-3 flex items-center justify-between gap-3">
         <div className="min-w-0 flex-1">
           <ViewTabs
-            scope="learners_list"
+            scope="cases_list"
+            allLabel="All cases"
             views={views}
             activeId={activeViewId}
             onSelect={selectView}
             fields={fields}
-            allColumns={LEARNER_LIST_COLUMNS}
-            defaultColumns={LEARNER_LIST_DEFAULT_COLUMNS}
+            allColumns={CASE_LIST_COLUMNS}
+            defaultColumns={CASE_LIST_DEFAULT_COLUMNS}
             currentFilter={filterState}
-            currentColumns={(liveColumns ?? viewColumnsToPush ?? [...LEARNER_LIST_DEFAULT_COLUMNS]) as string[]}
+            currentColumns={(liveColumns ?? viewColumnsToPush ?? [...CASE_LIST_DEFAULT_COLUMNS]) as string[]}
             onChange={setViews}
             currentUser={currentUser}
             canShare={canWrite}
@@ -344,12 +349,12 @@ export function LearnersBoard({
       </div>
 
       {/* KPI stat cards */}
-      {summary && <KpiRow summary={summary} />}
+      <KpiRow dashboard={dashboard} rows={rows} />
 
       {view === "list" ? (
-        <LearnersListView
+        <CasesListView
           rows={visible}
-          groupBy={groupBy === "none" ? null : groupBy}
+          groupBy={null}
           viewColumns={viewColumnsToPush}
           onColumnsChange={setLiveColumns}
           toolbarSlot={toolbar}
@@ -361,47 +366,59 @@ export function LearnersBoard({
           <div className="mb-4 flex items-center justify-between gap-3">
             <div className="min-w-0 flex-1">{toolbar}</div>
           </div>
-          {view === "kanban" && <LearnersKanban rows={visible} groupBy={axis} />}
-          {view === "chart" && <LearnersChartView rows={visible} range={chartRange} />}
-          {view === "calendar" && <LearnersCalendarView rows={visible} advisorFilter={calAdvisor} />}
+          {dashboard && <CaseDashboardCards data={dashboard} />}
         </>
       )}
     </>
   );
 }
 
+// ─── Live status ─────────────────────────────────────────────────────────────
+
+function LiveStatus({ live }: { live: boolean }) {
+  return (
+    <div className="mono-cap flex items-center gap-1.5 text-[9.5px] font-semibold tracking-[.1em] text-mute">
+      <span
+        className={cn(
+          "h-[7px] w-[7px] flex-shrink-0 rounded-full",
+          live ? "live-dot bg-state-ok shadow-[0_0_10px_#2E9E6A]" : "bg-hint",
+        )}
+      />
+      {live ? "Live" : "Reconnecting"}
+    </div>
+  );
+}
+
+// ─── Auto-detect pill (display-only) ────────────────────────────────────────
+
+function AutoDetectPill() {
+  return (
+    <div className="mono-cap inline-flex items-center gap-1.5 rounded-full border border-state-ok/30 bg-[rgba(46,158,106,.08)] px-2.5 py-1 text-[9px] font-semibold tracking-[.1em] text-state-ok">
+      <span className="live-dot h-[6px] w-[6px] flex-shrink-0 rounded-full bg-state-ok shadow-[0_0_10px_#2E9E6A]" />
+      AUTO-DETECT ON
+    </div>
+  );
+}
+
 // ─── KPI stat cards ─────────────────────────────────────────────────────────
 
-function KpiRow({ summary }: { summary: LearnerBoardSummary }) {
+function KpiRow({ dashboard, rows }: { dashboard: CaseDashboard | null; rows: Case[] }) {
+  const c = dashboard?.counts;
+  const open = c ? c.open + c.inProgress + c.pending : rows.filter((r) => !isClosed(r.status)).length;
+  const unassigned = c ? c.unassigned : rows.filter((r) => !r.assigneeId).length;
+  const slaBreaching = c ? c.slaBreaching : rows.filter((r) => r.slaState === "breached").length;
+  const refundsPending = c ? c.refundsPending : rows.filter((r) => r.category === "refund" && !isClosed(r.status)).length;
+  const autoDetected = rows.filter((r) => r.source === "auto").length;
+  const reopened = rows.filter((r) => r.reopenCount > 0).length;
+
   return (
-    <div className="mb-4 grid grid-cols-2 gap-3 lg:grid-cols-4">
-      <KpiCard
-        cap="Total learners"
-        value={String(summary.totalLearners)}
-        sub="Everyone enrolled"
-        icon="users"
-      />
-      <KpiCard
-        cap="In batch"
-        value={String(summary.activeInBatch)}
-        sub={`${summary.totalLearners > 0 ? Math.round((summary.activeInBatch / summary.totalLearners) * 100) : 0}% of learners`}
-        icon="graduation-cap"
-        accent="text-state-ok"
-      />
-      <KpiCard
-        cap="Not batched"
-        value={String(summary.notBatched)}
-        sub="Awaiting a batch"
-        icon="info"
-        accent="text-state-amber"
-      />
-      <KpiCard
-        cap="Placed"
-        value={String(summary.placed)}
-        sub={summary.completed > 0 ? `${summary.completed} completed` : "Placement tracked"}
-        icon="star"
-        accent="text-brand-violet"
-      />
+    <div className="mb-4 grid grid-cols-2 gap-3 md:grid-cols-3 lg:grid-cols-6">
+      <KpiCard cap="Open"           value={String(open)}           sub="Active queue"     icon="inbox" accent="text-brand-blue" />
+      <KpiCard cap="Unassigned"     value={String(unassigned)}     sub="No owner"         icon="users" accent="text-state-amber" />
+      <KpiCard cap="SLA breaching"  value={String(slaBreaching)}   sub="Past due"         icon="clock" accent="text-state-warn" />
+      <KpiCard cap="Refunds"        value={String(refundsPending)} sub="Pending refund"   icon="money" accent="text-brand-magenta" />
+      <KpiCard cap="Auto-detected"  value={String(autoDetected)}   sub="Raised by system" icon="robot" accent="text-state-ok" />
+      <KpiCard cap="Reopened"       value={String(reopened)}       sub="Bounced back"     icon="info"  accent="text-brand-violet" />
     </div>
   );
 }
@@ -427,12 +444,10 @@ function KpiCard({
 
 // ─── view switcher ────────────────────────────────────────────────────────
 
-function LearnerViewSwitcher({ value, onChange }: { value: ViewMode; onChange: (v: ViewMode) => void }) {
+function CaseViewSwitcher({ value, onChange }: { value: ViewMode; onChange: (v: ViewMode) => void }) {
   const items: Array<{ key: ViewMode; label: string; icon: IconName }> = [
-    { key: "list",     label: "List",     icon: "bars" },
-    { key: "kanban",   label: "Kanban",   icon: "agents-grid" },
-    { key: "chart",    label: "Chart",    icon: "chart" },
-    { key: "calendar", label: "Calendar", icon: "calendar" },
+    { key: "list",      label: "List",      icon: "bars" },
+    { key: "dashboard", label: "Dashboard", icon: "chart" },
   ];
   return (
     <div className="inline-flex rounded-full border border-rule bg-paper p-1 text-[12.5px]">
@@ -450,55 +465,6 @@ function LearnerViewSwitcher({ value, onChange }: { value: ViewMode; onChange: (
           {it.label}
         </button>
       ))}
-    </div>
-  );
-}
-
-// ─── GroupByPill ──────────────────────────────────────────────────────────
-
-function GroupByPill({ value, onChange }: { value: LearnerGroupBy | "none"; onChange: (v: LearnerGroupBy | "none") => void }) {
-  const [open, setOpen] = useState(false);
-  const ref = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    if (!open) return;
-    function onClick(e: MouseEvent) { if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false); }
-    window.addEventListener("mousedown", onClick);
-    return () => window.removeEventListener("mousedown", onClick);
-  }, [open]);
-  const active = value !== "none";
-  const options: Array<{ value: LearnerGroupBy | "none"; label: string }> = [
-    { value: "none", label: "None" },
-    ...LEARNER_GROUP_BY_OPTIONS,
-  ];
-  const label = active ? (LEARNER_GROUP_BY_OPTIONS.find((o) => o.value === value)?.label ?? value) : "None";
-  return (
-    <div ref={ref} className="relative">
-      <button
-        type="button"
-        onClick={() => setOpen((o) => !o)}
-        className={cn(
-          "inline-flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-[12.5px] font-semibold transition",
-          active ? "border-brand-violet bg-brand-violet/10 text-brand-violet" : "border-rule bg-paper text-ink2 hover:border-rule2 hover:text-ink",
-        )}
-      >
-        <span className="mono-cap text-[9.5px] tracking-[.08em] text-mute">Group by</span>
-        <span>{label}</span>
-        <span className="text-[9px] text-mute">▾</span>
-      </button>
-      {open && (
-        <AnchoredPopover anchor={ref.current} className="min-w-[160px]">
-          {options.map((o) => (
-            <button
-              type="button"
-              key={o.value}
-              onClick={() => { onChange(o.value); setOpen(false); }}
-              className={cn("block w-full px-3 py-1.5 text-left text-[12.5px] hover:bg-warm", value === o.value && "bg-warm font-semibold")}
-            >
-              {o.label}
-            </button>
-          ))}
-        </AnchoredPopover>
-      )}
     </div>
   );
 }
@@ -565,67 +531,10 @@ function QuickFilterPill({
   );
 }
 
-// ─── SelectPill (plain local state) ─────────────────────────────────────────
+// ─── CasesSearchBox ─────────────────────────────────────────────────────────
+// Type-ahead over the loaded cases; jumps to /cases/:number.
 
-function SelectPill({
-  label, options, value, onChange, allValue, allLabel = "Any",
-}: {
-  label: string;
-  options: ReadonlyArray<{ value: string; label: string }>;
-  value: string;
-  onChange: (v: string) => void;
-  allValue?: string;
-  allLabel?: string;
-}) {
-  const [open, setOpen] = useState(false);
-  const ref = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    if (!open) return;
-    function onClick(e: MouseEvent) { if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false); }
-    window.addEventListener("mousedown", onClick);
-    return () => window.removeEventListener("mousedown", onClick);
-  }, [open]);
-  const isAll = allValue !== undefined && value === allValue;
-  const current = isAll ? allLabel : (options.find((o) => o.value === value)?.label ?? String(value));
-  const active = allValue !== undefined && !isAll;
-  const choices = [
-    ...(allValue !== undefined ? [{ value: allValue, label: allLabel }] : []),
-    ...options.map((o) => ({ value: o.value, label: o.label })),
-  ];
-  return (
-    <div ref={ref} className="relative">
-      <button
-        type="button"
-        onClick={() => setOpen((o) => !o)}
-        className={cn(
-          "inline-flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-[12.5px] font-semibold transition",
-          active ? "border-brand-violet bg-brand-violet/10 text-brand-violet" : "border-rule bg-paper text-ink2 hover:border-rule2 hover:text-ink",
-        )}
-      >
-        <span className="mono-cap text-[9.5px] tracking-[.08em] text-mute">{label}:</span>
-        <span>{current}</span>
-        <span className="text-[9px] text-mute">▾</span>
-      </button>
-      {open && (
-        <AnchoredPopover anchor={ref.current} className="max-h-[320px] min-w-[180px] overflow-y-auto">
-          {choices.map((o, i) => (
-            <div key={o.value}>
-              {allValue !== undefined && i === 1 && <div className="my-1 border-t border-rule" />}
-              <button type="button" onClick={() => { onChange(o.value); setOpen(false); }} className={cn("block w-full px-3 py-1.5 text-left text-[12.5px] hover:bg-warm", value === o.value && "bg-warm font-semibold")}>
-                {o.label}
-              </button>
-            </div>
-          ))}
-        </AnchoredPopover>
-      )}
-    </div>
-  );
-}
-
-// ─── LearnersSearchBox ──────────────────────────────────────────────────────
-// Type-ahead over the loaded learners; jumps to /learners/:partyId.
-
-export function LearnersSearchBox({ rows }: { rows: LearnerSummary[] }) {
+export function CasesSearchBox({ rows }: { rows: Case[] }) {
   const [query, setQuery] = useState("");
   const [open, setOpen] = useState(false);
   const [activeIdx, setActiveIdx] = useState(0);
@@ -635,17 +544,18 @@ export function LearnersSearchBox({ rows }: { rows: LearnerSummary[] }) {
 
   const matches = useMemo(() => {
     const q = query.trim().toLowerCase();
-    if (!q) return [] as LearnerSummary[];
-    const scored: Array<{ l: LearnerSummary; score: number }> = [];
-    for (const l of rows) {
-      const hay = [l.name, l.phone, l.email, l.city, l.programName, l.stackName, l.advisorName, l.batchCode, ...l.courseModules].filter(Boolean).join(" ").toLowerCase();
+    if (!q) return [] as Case[];
+    const scored: Array<{ c: Case; score: number }> = [];
+    for (const c of rows) {
+      const hay = [c.number, c.subject, c.requesterName].filter(Boolean).join(" ").toLowerCase();
       if (!hay.includes(q)) continue;
-      const nameLc = (l.name ?? "").toLowerCase();
-      const score = nameLc.startsWith(q) ? 3 : nameLc.includes(q) ? 2 : 1;
-      scored.push({ l, score });
+      const numLc = (c.number ?? "").toLowerCase();
+      const subjLc = (c.subject ?? "").toLowerCase();
+      const score = numLc.startsWith(q) || subjLc.startsWith(q) ? 3 : subjLc.includes(q) ? 2 : 1;
+      scored.push({ c, score });
     }
     scored.sort((a, b) => b.score - a.score);
-    return scored.slice(0, 8).map((s) => s.l);
+    return scored.slice(0, 8).map((s) => s.c);
   }, [query, rows]);
 
   useEffect(() => { setActiveIdx(0); }, [query]);
@@ -656,8 +566,8 @@ export function LearnersSearchBox({ rows }: { rows: LearnerSummary[] }) {
     return () => window.removeEventListener("mousedown", onClick);
   }, [open]);
 
-  function goTo(l: LearnerSummary) {
-    router.push(`/learners/${l.partyId}`);
+  function goTo(c: Case) {
+    router.push(`/cases/${c.number}`);
     setOpen(false);
     setQuery("");
   }
@@ -679,7 +589,7 @@ export function LearnersSearchBox({ rows }: { rows: LearnerSummary[] }) {
           onChange={(e) => { setQuery(e.target.value); setOpen(true); }}
           onFocus={() => query.trim() && setOpen(true)}
           onKeyDown={onKeyDown}
-          placeholder="Search learners by name, program, batch, advisor…"
+          placeholder="Search cases by number, subject, party…"
           className="min-w-0 flex-1 bg-transparent text-[13.5px] text-ink placeholder:text-hint outline-none"
         />
         {query && (
@@ -691,25 +601,25 @@ export function LearnersSearchBox({ rows }: { rows: LearnerSummary[] }) {
       {open && query.trim() && (
         <div className="absolute left-0 right-0 top-full z-30 mt-1 max-h-[400px] overflow-y-auto rounded-[12px] border border-rule bg-paper py-1 shadow-card">
           {matches.length === 0 ? (
-            <div className="px-4 py-4 text-center text-[12.5px] text-mute">No learners match “{query.trim()}”.</div>
+            <div className="px-4 py-4 text-center text-[12.5px] text-mute">No cases match “{query.trim()}”.</div>
           ) : (
-            matches.map((l, i) => (
+            matches.map((c, i) => (
               <button
                 type="button"
-                key={l.partyId}
+                key={c.id}
                 onMouseEnter={() => setActiveIdx(i)}
-                onClick={() => goTo(l)}
+                onClick={() => goTo(c)}
                 className={cn("flex w-full items-center gap-3 px-3 py-2 text-left transition", i === activeIdx ? "bg-warm/60" : "hover:bg-warm/40")}
               >
-                <div className={cn("flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full text-[10.5px] font-bold text-white", avatarGradClass[gradFor(l.name)])}>
-                  {initialsOf(l.name)}
-                </div>
+                <span className="mono-cap inline-flex flex-shrink-0 items-center rounded-full bg-warm2 px-2 py-0.5 text-[9px] font-semibold text-mute">
+                  {c.number}
+                </span>
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center gap-2">
-                    <span className="truncate text-[13px] font-semibold text-ink">{l.name}</span>
+                    <span className="truncate text-[13px] font-semibold text-ink">{c.subject}</span>
                   </div>
                   <div className="mt-0.5 truncate text-[11.5px] text-mute">
-                    {[l.programName, l.batchCode, l.advisorName].filter(Boolean).join(" · ") || "—"}
+                    {[c.requesterName, c.displayStatus, c.severity].filter(Boolean).join(" · ") || "—"}
                   </div>
                 </div>
               </button>

@@ -13,6 +13,7 @@ const CATEGORY_LABEL: Record<CaseCategory, string> = {
   cohort_batch: "Cohort / Batch",
   refund: "Refund",
   certificate: "Certificate",
+  data_privacy: "Data / Privacy",
   other: "Other",
 };
 

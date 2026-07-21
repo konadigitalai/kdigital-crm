@@ -425,6 +425,7 @@ export function PipelineBoard({
       {view === "list" && (
         <div className="mb-3">
           <ViewTabs
+            scope="pipeline_list"
             views={views}
             activeId={activeViewId}
             onSelect={selectView}

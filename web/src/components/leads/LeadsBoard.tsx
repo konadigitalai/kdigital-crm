@@ -788,6 +788,7 @@ export function LeadsBoard({
       <div className="mb-3 flex items-center justify-between gap-3">
         <div className="min-w-0 flex-1">
           <ViewTabs
+            scope="pipeline_list"
             views={views}
             activeId={activeViewId}
             onSelect={selectView}

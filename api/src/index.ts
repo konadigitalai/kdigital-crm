@@ -32,6 +32,7 @@ import { eventsRouter } from "./routes/events.js";
 import { tasksRouter } from "./routes/tasks.js";
 import { messageTemplatesRouter } from "./routes/message-templates.js";
 import { batchesRouter } from "./routes/batches.js";
+import { batchBoardRouter } from "./routes/batchBoard.js";
 import { viewsRouter } from "./routes/views.js";
 import { integrationsRouter } from "./routes/integrations.js";
 import { shareRouter } from "./routes/share.js";
@@ -228,12 +229,13 @@ app.use("/tasks",       readWrite("leads.read", "leads.write"), tasksRouter);
 // Read to list them, send-permission to create/edit/delete.
 app.use("/message-templates", readWrite("messaging.read", "messaging.send"), messageTemplatesRouter);
 app.use("/batches",     batchesRouter);
+app.use("/batches",     batchBoardRouter);
 // Saved views — generic across surfaces (pipeline_list, enrollments_list, …).
 // The mount only checks the caller can read SOME view surface; the router then
 // enforces the correct read perm per scope (pipeline_list ⇒ pipeline.read,
 // enrollments_list ⇒ learners.read) and the visibility checks (personal vs
 // shared, owner vs others).
-app.use("/views",       requireAnyPermission("pipeline.read", "learners.read"), viewsRouter);
+app.use("/views",       requireAnyPermission("pipeline.read", "learners.read", "admin.batches.manage", "cases.read"), viewsRouter);
 // Integrations admin — Slack rules + delivery log.
 app.use("/integrations", readWrite("integrations.read", "integrations.manage"), integrationsRouter);
 // User-facing Slack reads needed by the "Share to Slack" dialog — workspace

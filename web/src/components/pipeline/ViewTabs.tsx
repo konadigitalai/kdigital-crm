@@ -24,7 +24,7 @@ import { createSavedView, deleteSavedView, updateSavedView } from "@/lib/api";
 import { FilterBar } from "@/components/filter/FilterBar";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 import type { FilterField, FilterState } from "@/components/filter/types";
-import type { CurrentUser, SavedView, SavedViewVisibility } from "@/lib/types";
+import type { CurrentUser, SavedView, SavedViewScope, SavedViewVisibility } from "@/lib/types";
 
 export const DEFAULT_VIEW_ID = "__all__";
 
@@ -36,6 +36,15 @@ interface Props {
   views: SavedView[];
   activeId: string;
   onSelect: (id: string) => void;
+
+  /** Which list surface these views belong to. Threaded into createSavedView
+   *  so a view created from this board is stored under the right scope (not
+   *  hardcoded to pipeline_list). Reads use the same scope in the parent. */
+  scope: SavedViewScope;
+
+  /** Label for the implicit default (no-filter) tab. Defaults to "All leads"
+   *  for the pipeline origin; boards pass their own ("All batches", …). */
+  allLabel?: string;
 
   // Builder ingredients — passed in by the parent so the dialog can render
   // a FilterBar and a column picker that match the live table exactly.
@@ -80,6 +89,7 @@ interface Props {
 
 export function ViewTabs({
   views, activeId, onSelect,
+  scope, allLabel = "All leads",
   fields, allColumns, defaultColumns,
   currentFilter, currentColumns,
   onChange,
@@ -193,7 +203,7 @@ export function ViewTabs({
               key={t.id}
               active={isActive}
               onClick={() => onSelect(DEFAULT_VIEW_ID)}
-              label="All leads"
+              label={allLabel}
               count={counts?.[DEFAULT_VIEW_ID]}
               {...dragPropsFor(t.id)}
             />
@@ -251,6 +261,7 @@ export function ViewTabs({
       {editing?.mode === "create" && (
         <ViewDialog
           mode="create"
+          scope={scope}
           fields={fields}
           allColumns={allColumns}
           defaultColumns={defaultColumns}
@@ -268,6 +279,7 @@ export function ViewTabs({
       {editing?.mode === "edit" && (
         <ViewDialog
           mode="edit"
+          scope={scope}
           view={editing.view}
           fields={fields}
           allColumns={allColumns}
@@ -556,7 +568,7 @@ function savedFilterToFilterState(filter: SavedView["filter"]): FilterState {
 // ─── dialog ───────────────────────────────────────────────────────────────
 
 function ViewDialog({
-  mode, view,
+  mode, scope, view,
   fields, allColumns, defaultColumns,
   initialFilter, initialColumns,
   liveFilter, liveColumns,
@@ -564,6 +576,7 @@ function ViewDialog({
   onClose, onSaved, onDeleted,
 }: {
   mode: "create" | "edit";
+  scope: SavedViewScope;
   view?: SavedView;
   fields: FilterField[];
   allColumns: ReadonlyArray<{ key: string; label: string }>;
@@ -633,7 +646,7 @@ function ViewDialog({
         columns: visible.length > 0 ? visible : null,
       };
       if (mode === "create") {
-        const v = await createSavedView("pipeline_list", payload);
+        const v = await createSavedView(scope, payload);
         onSaved(v);
       } else if (view) {
         const v = await updateSavedView(view.id, payload);

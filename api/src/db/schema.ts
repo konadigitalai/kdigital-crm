@@ -637,6 +637,29 @@ export const supportCase = pgTable(
     createdById: uuid("created_by_id").references(() => party.id),
     createdAt:   timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt:   timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+
+    // ── Cases board redesign (post-0080) ──────────────────────────────────
+    // How the case entered the system — powers the "+AUTO" badge + Auto-detected
+    // tab. Display-only: agents/imports set 'auto'; humans 'manual'.
+    source:          text("source").notNull().default("manual"),   // manual | auto
+    // Finer human label the record header shows ("Refund request", …). Falls
+    // back to the category label when null.
+    typeLabel:       text("type_label"),
+    // Intake context for the record page's CASE section.
+    channel:         text("channel"),                              // whatsapp | email | phone | portal
+    raisedBy:        text("raised_by"),                            // learner | internal | system
+    // Splits the "Pending Learner" vs "Pending Internal" display status.
+    pendingWith:     text("pending_with"),                         // learner | internal
+    // First staff response — set on the first comment/reply. Powers "First response".
+    firstResponseAt: timestamp("first_response_at", { withTimezone: true }),
+    // How many times reopened — increments in /reopen. Powers the Reopened tab.
+    reopenCount:     integer("reopen_count").notNull().default(0),
+    // OUTCOME · required-to-close fields.
+    preventable:     boolean("preventable"),
+    rootCause:       text("root_cause"),
+    // Free-text systemic reference ("SN-2624 trainer_employment_id = null"). When
+    // set, the record page shows the red systemic banner. Display-only this pass.
+    systemicRef:     text("systemic_ref"),
   },
   (t) => ({
     requesterKindCheck: check(
@@ -649,7 +672,16 @@ export const supportCase = pgTable(
     ),
     categoryCheck: check(
       "support_case_category_check",
-      sql`${t.category} IN ('billing','technical','content_lms','onboarding','cohort_batch','refund','certificate','other')`,
+      sql`${t.category} IN ('billing','technical','content_lms','onboarding','cohort_batch','refund','certificate','data_privacy','other')`,
+    ),
+    sourceCheck: check("support_case_source_check", sql`${t.source} IN ('manual','auto')`),
+    raisedByCheck: check(
+      "support_case_raised_by_check",
+      sql`${t.raisedBy} IS NULL OR ${t.raisedBy} IN ('learner','internal','system')`,
+    ),
+    pendingWithCheck: check(
+      "support_case_pending_with_check",
+      sql`${t.pendingWith} IS NULL OR ${t.pendingWith} IN ('learner','internal')`,
     ),
     priorityCheck: check("support_case_priority_check", sql`${t.priority} BETWEEN 1 AND 4`),
     resolutionCodeCheck: check(
@@ -665,6 +697,7 @@ export const supportCase = pgTable(
     assigneeIdx: index("support_case_assignee_via_wi_idx").on(t.tenantId, t.workItemId),
     dueIdx:      index("support_case_due_idx").on(t.tenantId, t.dueAt),
     remindIdx:   index("support_case_remind_idx").on(t.tenantId, t.remindAt),
+    sourceIdx:   index("support_case_source_idx").on(t.tenantId, t.source),
   }),
 );
 
@@ -759,6 +792,58 @@ export const batchAssignment = pgTable(
     partyIdx:     index("batch_assignment_party_idx").on(t.tenantId, t.partyId),
     cohortIdx:    index("batch_assignment_cohort_idx").on(t.tenantId, t.cohortId),
     uniqAssignment: uniqueIndex("batch_assignment_uniq").on(t.partyId, t.cohortId),
+  }),
+);
+
+// ─── Batch sessions + attendance (post-0079) ──────────────────────────────
+// One row per ACTUAL class occurrence, materialized from the cohort's schedule
+// (days_of_week + start/end time + date bounds). These persist so the board can
+// compute Coverage % (delivered + recording published), Attendance %, and the
+// recording-SLA rollup — none of which the on-the-fly /batches/sessions feed can.
+export const batchSession = pgTable(
+  "batch_session",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    tenantId: uuid("tenant_id").notNull().references(() => tenant.id),
+    cohortId: uuid("cohort_id").notNull().references(() => cohort.id, { onDelete: "cascade" }),
+    sessionDate: date("session_date").notNull(),
+    startTime: time("start_time"),   // copied from cohort at materialize time
+    endTime:   time("end_time"),
+    status: text("status").notNull().default("planned"),  // planned | delivered | cancelled
+    recordingUrl: text("recording_url"),
+    recordingPublishedAt: timestamp("recording_published_at", { withTimezone: true }),
+    notes: text("notes"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    statusCheck: check("batch_session_status_check", sql`${t.status} IN ('planned','delivered','cancelled')`),
+    // One session per (cohort, date) — makes materialize idempotent.
+    cohortDateUniq: uniqueIndex("batch_session_uniq").on(t.cohortId, t.sessionDate),
+    cohortIdx: index("batch_session_cohort_idx").on(t.tenantId, t.cohortId, t.sessionDate),
+    dateIdx:   index("batch_session_date_idx").on(t.tenantId, t.sessionDate),  // calendar range scans
+  }),
+);
+
+// One row per learner per session. Roster comes from active batch_assignment;
+// unmarked learners simply have no row (treated as unmarked, not absent).
+export const attendance = pgTable(
+  "attendance",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    tenantId: uuid("tenant_id").notNull().references(() => tenant.id),
+    batchSessionId: uuid("batch_session_id").notNull().references(() => batchSession.id, { onDelete: "cascade" }),
+    partyId: uuid("party_id").notNull().references(() => party.id),  // the learner
+    status: text("status").notNull().default("present"),  // present | absent | late | excused
+    markedBy: uuid("marked_by").references(() => party.id, { onDelete: "set null" }),
+    markedAt: timestamp("marked_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    statusCheck: check("attendance_status_check", sql`${t.status} IN ('present','absent','late','excused')`),
+    // One mark per (session, learner) — upsert key.
+    sessionPartyUniq: uniqueIndex("attendance_uniq").on(t.batchSessionId, t.partyId),
+    sessionIdx: index("attendance_session_idx").on(t.tenantId, t.batchSessionId),
+    partyIdx:   index("attendance_party_idx").on(t.tenantId, t.partyId),
   }),
 );
 

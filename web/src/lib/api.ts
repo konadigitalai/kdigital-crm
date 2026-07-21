@@ -4,7 +4,7 @@
 // All routes are tenant-scoped on the server side via `tenantMiddleware`.
 
 import type {
-  AdminUser, Advisor, AdvisorInput, AdvisorRole, AgentCard, AgentCatalogEntry, AgentMode, AgentRunRecord, Batch, BatchInput, BatchSession,
+  AdminUser, Advisor, AdvisorInput, AdvisorRole, AgentCard, AgentCatalogEntry, AgentMode, AgentRunRecord, AttendanceRosterEntry, AttendanceStatus, Batch, BatchBoardRow, BatchBoardSession, BatchBoardSummary, BatchDetailData, BatchInput, BatchSession, BatchSessionDetail, BatchSessionStatus,
   CalendarEventDetail, CalendarEventSummary, CatalogResponse,
   Course, CourseInput, CreateLeadInput, CurrentUser,
   Case, CaseDashboard, CaseDetail, CaseResolutionCode,
@@ -668,6 +668,7 @@ export interface CaseFilter {
   category?: string;
   priority?: number;
   requesterKind?: string;
+  source?: string;
   q?: string;
 }
 
@@ -710,9 +711,23 @@ export async function updateCase(
     assigneeId: string | null;
     dueAt: string | null;
     remindAt: string | null;
+    // board redesign — new patchable fields
+    typeLabel: string | null;
+    channel: string | null;
+    raisedBy: string | null;
+    pendingWith: string | null;
+    source: string;
+    preventable: boolean | null;
+    rootCause: string | null;
+    systemicRef: string | null;
   }>,
 ): Promise<void> {
   await send<void>("PATCH", `/cases/${encodeURIComponent(idOrNumber)}`, patch);
+}
+
+// Escalate = bump to Critical (priority 1) + an activity note. Thin wrapper over PATCH.
+export async function escalateCase(idOrNumber: string): Promise<void> {
+  await send<void>("PATCH", `/cases/${encodeURIComponent(idOrNumber)}`, { priority: 1, escalate: true });
 }
 
 export async function addCaseComment(idOrNumber: string, text: string): Promise<{ id: string }> {
@@ -1213,6 +1228,68 @@ export async function respondToEvent(id: string, rsvp: EventRsvp): Promise<void>
 }
 
 // ── Batch sessions (calendar) ─────────────────────────────────────────────
+
+// Batches operational board (/batches). Enriched cohort rows + KPI summary.
+export async function getBatchesBoard(): Promise<BatchBoardRow[]> {
+  const { batches } = await get<{ batches: BatchBoardRow[] }>("/batches/board");
+  return batches;
+}
+
+export async function getBatchesSummary(): Promise<BatchBoardSummary> {
+  const { summary } = await get<{ summary: BatchBoardSummary }>("/batches/summary");
+  return summary;
+}
+
+// Rich rollups for the batch record page.
+export async function getBatchDetail(id: string): Promise<BatchDetailData> {
+  const { detail } = await get<{ detail: BatchDetailData }>(`/batches/${id}/detail`);
+  return detail;
+}
+
+// Persisted sessions for one batch (detail timeline).
+export async function getBatchDetailSessions(id: string): Promise<BatchSessionDetail[]> {
+  const { sessions } = await get<{ sessions: BatchSessionDetail[] }>(`/batches/${id}/sessions`);
+  return sessions;
+}
+
+// Generate planned sessions from the batch schedule. Idempotent; returns count.
+export async function materializeSessions(id: string, range?: { from?: string; to?: string }): Promise<number> {
+  const { created } = await post<{ created: number }>(`/batches/${id}/sessions/materialize`, range ?? {});
+  return created;
+}
+
+export async function patchBatchSession(
+  sessionId: string,
+  body: { status?: BatchSessionStatus; recordingUrl?: string | null; recordingPublishedAt?: string | boolean | null; notes?: string | null },
+): Promise<BatchSessionDetail> {
+  const { session } = await send<{ session: BatchSessionDetail }>("PATCH", `/batches/sessions/${sessionId}`, body);
+  return session;
+}
+
+export async function getSessionRoster(sessionId: string): Promise<AttendanceRosterEntry[]> {
+  const { roster } = await get<{ roster: AttendanceRosterEntry[] }>(`/batches/sessions/${sessionId}/attendance`);
+  return roster;
+}
+
+export async function saveSessionAttendance(
+  sessionId: string,
+  marks: Array<{ partyId: string; status: AttendanceStatus }>,
+): Promise<number> {
+  const { saved } = await send<{ saved: number }>("PUT", `/batches/sessions/${sessionId}/attendance`, { marks });
+  return saved;
+}
+
+// Persisted board calendar feed across all batches for a date range.
+export async function getBoardSessions(from: string, to: string): Promise<BatchBoardSession[]> {
+  try {
+    const { sessions } = await get<{ sessions: BatchBoardSession[] }>(`/batches/board-sessions?from=${from}&to=${to}`);
+    return sessions;
+  } catch (err) {
+    if ((err as Error).message.includes("→ 401")) return [];
+    if ((err as Error).message.includes("→ 403")) return [];
+    throw err;
+  }
+}
 
 export async function getBatchSessions(from: string, to: string): Promise<BatchSession[]> {
   try {
