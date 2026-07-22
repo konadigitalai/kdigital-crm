@@ -7,8 +7,20 @@ import { partyIdFromAppUserId, resolveActorPartyId, resolveSentinelPartyId } fro
 import { evaluateTriggers } from "../lib/campaigns/triggers.js";
 import { bootstrapConsent } from "../lib/party/consent.js";
 import { composeFullE164 } from "../lib/twilio/phone.js";
+import { syncLeadToInterakt, LEAD_SYNC_COLUMNS, type LeadForSync, type SyncOutcome } from "../lib/interakt.js";
 
 export const leadsRouter = Router();
+
+const INTERAKT_BULK_CAP = 200; // max leads per bulk sync call (rate-limit safety)
+
+// Load the tenant's Interakt Secret Key (base64), or null when unconfigured.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function interaktKey(db: { execute: (q: ReturnType<typeof sql>) => Promise<any> }): Promise<string | null> {
+  const r = await db.execute(sql`SELECT api_key AS "apiKey", enabled FROM interakt_account LIMIT 1`);
+  const row = r.rows[0] as { apiKey: string | null; enabled: boolean } | undefined;
+  if (!row || !row.enabled) return null;
+  return row.apiKey ?? null;
+}
 
 // Canonical values for `lead.lead_status`. Mirrors the CHECK constraint in
 // post-0061 and the /catalog leadStatuses labels. Keep both in sync.
@@ -531,6 +543,121 @@ leadsRouter.get("/", async (req, res, next) => {
       return r.rows;
     });
     res.json({ leads: rows });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ─── Interakt sync ────────────────────────────────────────────────────────
+// Push a lead's details to Interakt (WhatsApp) as a user with custom traits.
+// Requires the tenant's Interakt Secret Key (Settings → Integrations).
+
+const LEAD_SYNC_FROM = sql`
+  FROM lead l
+  JOIN work_item wi ON wi.id = l.work_item_id
+  JOIN party p      ON p.id  = wi.party_id
+  LEFT JOIN app_user au ON au.party_id = l.advisor_id
+  LEFT JOIN program prg ON prg.id = l.program_id
+  LEFT JOIN stack   stk ON stk.id = prg.stack_id
+`;
+
+async function logInteraktActivity(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  db: { execute: (q: ReturnType<typeof sql>) => Promise<any> },
+  wiId: string, actorPartyId: string | null, outcome: SyncOutcome,
+) {
+  const detail =
+    outcome.status === "synced" ? "Lead details pushed to Interakt"
+      : outcome.status === "skipped" ? `Skipped — ${outcome.reason}`
+        : `Failed — ${outcome.error}`;
+  await db.execute(sql`
+    INSERT INTO activity (tenant_id, work_item_id, actor_type, actor_party_id, actor_name, verb, detail, tag, payload, ts)
+    VALUES (current_tenant(), ${wiId}, 'user', ${actorPartyId}, 'You', 'Synced to Interakt', ${detail}, 'you',
+            ${JSON.stringify({ when: "Just now", kind: "interakt", status: outcome.status })}::jsonb, NOW())
+  `);
+}
+
+// POST /leads/:idOrNumber/sync-interakt — sync a single lead.
+leadsRouter.post("/:idOrNumber/sync-interakt", async (req, res, next) => {
+  try {
+    const { idOrNumber } = req.params;
+    const isU = /^[0-9a-fA-F-]{36}$/.test(idOrNumber);
+
+    // Phase 1 (tx): load key + lead.
+    const loaded = await withTenant(req.tenantId!, async (db) => {
+      const key = await interaktKey(db);
+      if (!key) return { kind: "no-key" as const };
+      const r = await db.execute(sql`
+        SELECT wi.id AS "wiId", ${sql.raw(LEAD_SYNC_COLUMNS)}
+        ${LEAD_SYNC_FROM}
+        WHERE ${isU ? sql`wi.id = ${idOrNumber}` : sql`wi.number = ${idOrNumber}`} AND wi.type = 'lead'
+        LIMIT 1
+      `);
+      const lead = r.rows[0] as (LeadForSync & { wiId: string }) | undefined;
+      if (!lead) return { kind: "not-found" as const };
+      return { kind: "ok" as const, key, lead };
+    });
+    if (loaded.kind === "no-key") return res.status(400).json({ error: "Interakt is not configured. Add the API key in Settings → Integrations." });
+    if (loaded.kind === "not-found") return res.status(404).json({ error: "Lead not found" });
+
+    // Phase 2 (no tx): external call.
+    const outcome = await syncLeadToInterakt(loaded.key, loaded.lead);
+
+    // Phase 3 (tx): log + timestamp.
+    await withTenant(req.tenantId!, async (db) => {
+      const actorPartyId = await resolveActorPartyId(db, req.tenantId!, req.userId);
+      await logInteraktActivity(db, loaded.lead.wiId, actorPartyId, outcome);
+      if (outcome.status === "synced") await db.execute(sql`UPDATE interakt_account SET last_sync_at = now()`);
+    });
+
+    if (outcome.status === "failed") return res.status(502).json({ error: outcome.error, outcome });
+    res.json({ outcome });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// POST /leads/sync-interakt — bulk sync. Body: { ids: string[] } (uuids or numbers).
+leadsRouter.post("/sync-interakt", async (req, res, next) => {
+  try {
+    const ids = Array.isArray(req.body?.ids) ? req.body.ids.map((x: unknown) => String(x)) : null;
+    if (!ids || ids.length === 0) return res.status(400).json({ error: "ids array required" });
+    if (ids.length > INTERAKT_BULK_CAP) return res.status(400).json({ error: `too many leads (max ${INTERAKT_BULK_CAP} per sync)` });
+
+    // Phase 1 (tx): load key + all matching leads.
+    const loaded = await withTenant(req.tenantId!, async (db) => {
+      const key = await interaktKey(db);
+      if (!key) return { kind: "no-key" as const };
+      const r = await db.execute(sql`
+        SELECT wi.id AS "wiId", ${sql.raw(LEAD_SYNC_COLUMNS)}
+        ${LEAD_SYNC_FROM}
+        WHERE wi.type = 'lead' AND (wi.id::text = ANY(${ids}) OR wi.number = ANY(${ids}))
+      `);
+      return { kind: "ok" as const, key, leads: r.rows as unknown as (LeadForSync & { wiId: string })[] };
+    });
+    if (loaded.kind === "no-key") return res.status(400).json({ error: "Interakt is not configured. Add the API key in Settings → Integrations." });
+
+    // Phase 2 (no tx): external calls, sequential to respect rate limits.
+    const outcomes: SyncOutcome[] = [];
+    for (const lead of loaded.leads) {
+      outcomes.push(await syncLeadToInterakt(loaded.key, lead));
+    }
+
+    // Phase 3 (tx): log each + timestamp.
+    await withTenant(req.tenantId!, async (db) => {
+      const actorPartyId = await resolveActorPartyId(db, req.tenantId!, req.userId);
+      for (let i = 0; i < loaded.leads.length; i++) {
+        await logInteraktActivity(db, loaded.leads[i]!.wiId, actorPartyId, outcomes[i]!);
+      }
+      if (outcomes.some((o) => o.status === "synced")) await db.execute(sql`UPDATE interakt_account SET last_sync_at = now()`);
+    });
+
+    res.json({
+      synced: outcomes.filter((o) => o.status === "synced").length,
+      skipped: outcomes.filter((o) => o.status === "skipped").length,
+      failed: outcomes.filter((o) => o.status === "failed").length,
+      results: outcomes,
+    });
   } catch (err) {
     next(err);
   }

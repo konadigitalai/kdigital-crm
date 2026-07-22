@@ -8,6 +8,7 @@ import type {
   CalendarEventDetail, CalendarEventSummary, CatalogResponse,
   Course, CourseInput, CreateLeadInput, CurrentUser,
   Case, CaseDashboard, CaseDetail, CaseResolutionCode,
+  InteraktConfig, InteraktSyncOutcome, InteraktBulkResult,
   CreateCaseInput, DeletedLead, EdifyAnswer, EdifySessionSummary, EnrolmentStatus,
   Enrollment, EnrollmentRecord, EnrollmentSummary, EventRsvp, FeedItem,
   ForecastSnapshot, GroupsResponse, InboundEvent, Lead, LeadTask, LeadTaskKind, LeadTaskStatus,
@@ -658,6 +659,27 @@ export async function getRecord(idOrNumber: string): Promise<RecordResponse | nu
     if ((err as Error).message.includes("404")) return null;
     throw err;
   }
+}
+
+// ── Interakt (WhatsApp) sync ────────────────────────────────────────────────
+
+export async function getInteraktConfig(): Promise<InteraktConfig> {
+  return await get<InteraktConfig>("/integrations/interakt");
+}
+
+export async function setInteraktConfig(body: { apiKey?: string | null; enabled?: boolean }): Promise<void> {
+  await send<void>("PUT", "/integrations/interakt", body);
+}
+
+export async function syncLeadToInterakt(idOrNumber: string): Promise<InteraktSyncOutcome> {
+  const { outcome } = await post<{ outcome: InteraktSyncOutcome }>(
+    `/leads/${encodeURIComponent(idOrNumber)}/sync-interakt`, {},
+  );
+  return outcome;
+}
+
+export async function bulkSyncLeadsToInterakt(ids: string[]): Promise<InteraktBulkResult> {
+  return await post<InteraktBulkResult>("/leads/sync-interakt", { ids });
 }
 
 // ── Cases ─────────────────────────────────────────────────────────────────

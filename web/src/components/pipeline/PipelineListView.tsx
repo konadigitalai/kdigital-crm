@@ -14,7 +14,7 @@ import { Icon } from "@/components/ui/Icon";
 import { ScoreRing } from "@/components/ui/ScoreRing";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 import { cn } from "@/lib/cn";
-import { bulkDeleteLeads, bulkUpdateLeads, deleteLead, updateLead, type BulkLeadPatch } from "@/lib/api";
+import { bulkDeleteLeads, bulkSyncLeadsToInterakt, bulkUpdateLeads, deleteLead, updateLead, type BulkLeadPatch } from "@/lib/api";
 import { emitCrmMutation } from "@/lib/live-summary";
 import {
   avatarGradClass, fmtFollowup, gradFor, initialsOf, LEAD_STATUS_FALLBACK_STYLE,
@@ -638,6 +638,9 @@ export function PipelineListView({
   // the sticky bulk action bar above the table.
   const [selected, setSelected] = useState<Set<string>>(() => new Set());
   const [bulkDialogOpen, setBulkDialogOpen] = useState(false);
+  // "Sync to Interakt" bulk action — busy flag + last-run summary line.
+  const [syncingInterakt, setSyncingInterakt] = useState(false);
+  const [interaktSummary, setInteraktSummary] = useState<string | null>(null);
   // Confirm-delete state — describes which delete the modal will run when
   // confirmed. `null` = closed. Single drives row-level delete; bulk drives
   // the toolbar action; both fall through one shared <ConfirmDialog>.
@@ -961,6 +964,28 @@ export function PipelineListView({
     }
   }
 
+  // ─── sync to Interakt (bulk) ──────────────────────────────────────────
+  // Pushes every selected lead's phone number to Interakt (WhatsApp) in one
+  // round-trip, then shows a "N synced · M skipped · K failed" summary. The
+  // backend returns 400 when Interakt isn't configured — surfaced via `error`.
+  async function syncSelectedToInterakt() {
+    const ids = Array.from(selected);
+    if (!ids.length) return;
+    setSyncingInterakt(true);
+    setError(null);
+    setInteraktSummary(null);
+    try {
+      const r = await bulkSyncLeadsToInterakt(ids);
+      setInteraktSummary(
+        `${r.synced} synced · ${r.skipped} skipped (no phone) · ${r.failed} failed`,
+      );
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setSyncingInterakt(false);
+    }
+  }
+
   // ─── delete (bulk) — open the in-app confirm modal ────────────────────
   function deleteSelected() {
     if (!canDelete) return;
@@ -1148,6 +1173,20 @@ export function PipelineListView({
             >
               Update fields
             </button>
+          )}
+          {canWrite && (
+            <button
+              type="button"
+              onClick={syncSelectedToInterakt}
+              disabled={busy || syncingInterakt}
+              className="inline-flex items-center gap-1.5 rounded-md border border-rule bg-paper px-3 py-1 text-[12px] font-semibold text-ink2 hover:border-brand-violet hover:text-brand-violet disabled:opacity-50"
+            >
+              <Icon name="chat" size={12} strokeWidth={2} />
+              {syncingInterakt ? "Syncing…" : "Sync to Interakt"}
+            </button>
+          )}
+          {interaktSummary && (
+            <span className="text-[11.5px] font-semibold text-state-ok">{interaktSummary}</span>
           )}
           {canDelete && (
             <button

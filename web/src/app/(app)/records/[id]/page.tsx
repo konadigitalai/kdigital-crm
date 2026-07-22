@@ -10,6 +10,7 @@ import { EnrollButton } from "@/components/record/EnrollButton";
 import { DeleteLeadButton } from "@/components/record/DeleteLeadButton";
 import { EditLeadButton, type LeadEditable } from "@/components/record/EditLeadDialog";
 import { ShareToSlackButton } from "@/components/share/ShareToSlackButton";
+import { SyncInteraktButton } from "@/components/record/SyncInteraktButton";
 import { SendMessageButton } from "@/components/record/SendMessageButton";
 import { CallButton } from "@/components/record/CallButton";
 import { TimelineTabs } from "@/components/record/TimelineTabs";
@@ -234,6 +235,9 @@ export default async function RecordPage({
                   lead row is preserved for audit. */}
               {!isConverted && (
                 <ShareToSlackButton surface="leads" recordId={lead.number} />
+              )}
+              {!isConverted && canWriteLead && (
+                <SyncInteraktButton idOrNumber={lead.number} />
               )}
               {!isConverted && canSendMessage && (
                 <SendMessageButton

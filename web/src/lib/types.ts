@@ -657,6 +657,24 @@ export interface GroupsResponse {
 // state shape (`{ rules: [...] }`); `columns` is the ordered list of
 // visible column keys.
 
+// Interakt (WhatsApp) sync.
+export interface InteraktConfig {
+  configured: boolean;
+  enabled: boolean;
+  keyMasked: string | null;
+  lastSyncAt: string | null;
+}
+export type InteraktSyncOutcome =
+  | { status: "synced"; number: string | null }
+  | { status: "skipped"; number: string | null; reason: string }
+  | { status: "failed"; number: string | null; error: string };
+export interface InteraktBulkResult {
+  synced: number;
+  skipped: number;
+  failed: number;
+  results: InteraktSyncOutcome[];
+}
+
 export type SavedViewScope = "pipeline_list" | "enrollments_list" | "learners_list" | "batches_list" | "cases_list";
 export type SavedViewVisibility = "personal" | "shared";
 

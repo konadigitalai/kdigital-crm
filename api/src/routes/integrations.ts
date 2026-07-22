@@ -712,5 +712,65 @@ export async function loadShareTarget(tenantId: string, surface: ShareSurface) {
   });
 }
 
+// ─── Interakt (WhatsApp) config ───────────────────────────────────────────
+// The Secret Key is stored server-side only. GET returns a masked view + status;
+// PUT upserts the key/enabled flag. Gated by integrations.read / .manage.
+
+function maskKey(key: string | null): string | null {
+  if (!key) return null;
+  if (key.length <= 8) return "••••";
+  return `${key.slice(0, 4)}••••${key.slice(-4)}`;
+}
+
+integrationsRouter.get("/interakt", async (req, res, next) => {
+  try {
+    const row = await withTenant(req.tenantId!, async (db) => {
+      const r = await db.execute(sql`
+        SELECT api_key AS "apiKey", enabled, last_sync_at AS "lastSyncAt"
+        FROM interakt_account LIMIT 1
+      `);
+      return r.rows[0] as { apiKey: string | null; enabled: boolean; lastSyncAt: string | null } | undefined;
+    });
+    res.json({
+      configured: !!row?.apiKey,
+      enabled: row?.enabled ?? true,
+      keyMasked: maskKey(row?.apiKey ?? null),
+      lastSyncAt: row?.lastSyncAt ?? null,
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+integrationsRouter.put("/interakt", async (req, res, next) => {
+  try {
+    const b = req.body ?? {};
+    // apiKey: undefined = leave unchanged; "" / null = clear; string = set.
+    const hasKey = b.apiKey !== undefined;
+    const apiKey = hasKey ? (b.apiKey ? String(b.apiKey).trim() : null) : undefined;
+    const enabled = b.enabled !== undefined ? Boolean(b.enabled) : undefined;
+
+    await withTenant(req.tenantId!, async (db) => {
+      const existing = await db.execute(sql`SELECT id FROM interakt_account LIMIT 1`);
+      if (existing.rows[0]) {
+        const sets: ReturnType<typeof sql>[] = [];
+        if (apiKey !== undefined) sets.push(sql`api_key = ${apiKey}`);
+        if (enabled !== undefined) sets.push(sql`enabled = ${enabled}`);
+        if (sets.length === 0) return;
+        sets.push(sql`updated_at = now()`);
+        await db.execute(sql`UPDATE interakt_account SET ${sql.join(sets, sql`, `)}`);
+      } else {
+        await db.execute(sql`
+          INSERT INTO interakt_account (tenant_id, api_key, enabled)
+          VALUES (current_tenant(), ${apiKey ?? null}, ${enabled ?? true})
+        `);
+      }
+    });
+    res.json({ ok: true });
+  } catch (err) {
+    next(err);
+  }
+});
+
 export { fetchShareRecord, renderShare };
 

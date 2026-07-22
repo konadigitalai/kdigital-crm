@@ -1845,6 +1845,27 @@ export const twCallEvent = pgTable(
   }),
 );
 
+// ─── Interakt (WhatsApp) sync ─────────────────────────────────────────────
+// One row per tenant holding the Interakt "Secret Key" (already base64 from the
+// Interakt dashboard — used verbatim as `Authorization: Basic <key>`). Powers
+// the "Sync to Interakt" action that pushes lead details to Interakt as user
+// traits. See post-0081-interakt.sql for RLS + grants.
+export const interaktAccount = pgTable(
+  "interakt_account",
+  {
+    id:         uuid("id").primaryKey().defaultRandom(),
+    tenantId:   uuid("tenant_id").notNull().references(() => tenant.id),
+    apiKey:     text("api_key"),               // base64 Secret Key; nullable until configured
+    enabled:    boolean("enabled").notNull().default(true),
+    lastSyncAt: timestamp("last_sync_at", { withTimezone: true }),
+    createdAt:  timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt:  timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    tenantUnique: uniqueIndex("interakt_account_tenant_unique").on(t.tenantId),
+  }),
+);
+
 // Type exports — convenient for routes/seed
 export type Tenant = typeof tenant.$inferSelect;
 export type Stack = typeof stack.$inferSelect;
