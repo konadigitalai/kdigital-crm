@@ -179,10 +179,58 @@ async function provisionUser(claims: JWTPayload): Promise<NonNullable<Request["u
     };
   }
 
-  // 5. No matching row — insert a fresh one. Role defaults to 'admin' for
-  // the first JIT-provisioned user since we expect Phase A's first user
-  // to log in here. (Subsequent users can have their role adjusted after.)
+  // 5. LEARNER PATH. The token's email matches a party that already has a
+  // learner_profile, so this is a student we converted in the CRM and then
+  // created an Auth0 user for by hand. Bind the login to the EXISTING party
+  // — no new party, and crucially no is_internal flip: they are not staff.
   //
+  // Deliberately before the bootstrap branch below, so a learner can never
+  // be mistaken for the tenant's first admin.
+  const learner = await appPool.query<{ party_id: string; name: string | null }>(
+    `SELECT p.id AS party_id, p.name
+     FROM party p
+     JOIN learner_profile lp ON lp.party_id = p.id
+     WHERE p.tenant_id = $1 AND LOWER(p.email) = LOWER($2)
+     LIMIT 1`,
+    [tenantId, email],
+  );
+  if (learner.rows[0]) {
+    const partyId = learner.rows[0].party_id;
+    const ins = await appPool.query<{
+      id: string; tenant_id: string; email: string; name: string | null;
+      role: string; active: boolean;
+    }>(
+      `INSERT INTO app_user (tenant_id, party_id, email, name, role, active, auth0_sub)
+       VALUES ($1, $2, $3, $4, 'learner', true, $5)
+       RETURNING id, tenant_id, email, name, role, active`,
+      [tenantId, partyId, email, name ?? learner.rows[0].name, sub],
+    );
+    const row = ins.rows[0]!;
+    return {
+      id: row.id, tenantId: row.tenant_id, email: row.email,
+      name: row.name, role: row.role, active: row.active,
+    };
+  }
+
+  // 6. Nobody we recognise. Provision as admin ONLY to bootstrap an empty
+  // tenant — the very first human to sign in to a fresh deployment. Once any
+  // app_user exists, an unrecognised email is refused rather than handed an
+  // account: with sign-ups disabled in Auth0 this should be unreachable, and
+  // if it isn't, silently minting admins is the wrong failure mode.
+  const populated = await appPool.query<{ n: string }>(
+    `SELECT count(*)::text AS n FROM app_user WHERE tenant_id = $1`,
+    [tenantId],
+  );
+  if (Number(populated.rows[0]?.n ?? "0") > 0) {
+    console.warn(
+      `[auth] Refusing to provision ${sub} <${email}> — no app_user, and no ` +
+      `party with a learner_profile for that address. Create the CRM record ` +
+      `first (staff: Admin → Advisors; learner: convert an enrolment), then ` +
+      `retry the login.`,
+    );
+    return null;
+  }
+
   // Phase 2 Party Model: create party + primary email contact_point, then
   // insert app_user pointing at it. Wrap in a transaction so a crash mid-
   // way doesn't leave a dangling party.
@@ -274,7 +322,11 @@ export async function authMiddleware(req: Request, res: Response, next: NextFunc
 
     const user = await provisionUser(claims);
     if (!user) {
-      return res.status(403).json({ error: "User cannot be provisioned (no tenant or no email claim)" });
+      // Either there's no tenant / no email claim, or the address is unknown
+      // to this CRM — see the [auth] warning logged by provisionUser for
+      // which. Deliberately vague to the caller: an authenticated stranger
+      // shouldn't learn whether a given address exists in the system.
+      return res.status(403).json({ error: "This account is not set up in the CRM. Contact your administrator." });
     }
 
     // Permissions can arrive in either claim:
