@@ -13,47 +13,70 @@
 //     few seconds early.
 //
 // Completion is sticky server-side, so a re-watch can't undo it.
+//
+// Structure follows the reference designs:
+//
+//   sidebar   searchable lesson list, grouped by module, with per-module counts
+//   main      the lesson, then Overview / Notes / Resources tabs beneath it
+//
+// "Lesson" means a video, recording or trainer note — something you work
+// THROUGH. Documents and links are supporting material, so they surface in
+// the Resources tab rather than as steps in the list. Nobody works through a
+// reading list, and mixing them made a five-step module look like eight.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { saveLmsProgress } from "@/lib/api";
-import { hms, pct, remainingLabel, vimeoEmbedUrl, RESOURCE_LABEL, dueLabel, isOverdue, COURSEWORK_CHIP, COURSEWORK_LABEL, submissionLabel } from "@/lib/lmsUi";
+import {
+  hms, pct, remainingLabel, vimeoEmbedUrl, RESOURCE_LABEL,
+  dueLabel, isOverdue, COURSEWORK_CHIP, COURSEWORK_LABEL, submissionLabel,
+} from "@/lib/lmsUi";
 import { cn } from "@/lib/cn";
-import type { LmsBatchDetail, LmsResource } from "@/lib/types";
+import { LessonTabs } from "./LessonTabs";
+import type { LmsBatchDetail, LmsResource, ResourceKind } from "@/lib/types";
 
 const HEARTBEAT_MS = 15_000;
 const COMPLETE_AT = 0.95;
 
-function KindIcon({ kind }: { kind: LmsResource["kind"] }) {
-  const common = { width: 14, height: 14, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: 2, strokeLinecap: "round" as const, strokeLinejoin: "round" as const };
-  if (kind === "video" || kind === "recording") return <svg {...common} fill="currentColor" stroke="none"><path d="M8 5v14l11-7z" /></svg>;
-  if (kind === "document") return <svg {...common}><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" /><path d="M14 2v6h6" /></svg>;
-  if (kind === "link") return <svg {...common}><path d="M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.5 1.5" /><path d="M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7L12 19" /></svg>;
-  return <svg {...common}><path d="M4 6h16M4 12h16M4 18h10" /></svg>;
+function KindIcon({ kind, className }: { kind: ResourceKind; className?: string }) {
+  const p = { width: 14, height: 14, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor",
+              strokeWidth: 2, strokeLinecap: "round" as const, strokeLinejoin: "round" as const, className };
+  if (kind === "video" || kind === "recording")
+    return <svg {...p} fill="currentColor" stroke="none"><path d="M8 5v14l11-7z" /></svg>;
+  if (kind === "document")
+    return <svg {...p}><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" /><path d="M14 2v6h6" /></svg>;
+  if (kind === "link")
+    return <svg {...p}><path d="M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.5 1.5" /><path d="M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7L12 19" /></svg>;
+  return <svg {...p}><path d="M4 6h16M4 12h16M4 18h10" /></svg>;
 }
+
+// What counts as a lesson — something a learner works through, in order.
+const LESSON_KINDS: ResourceKind[] = ["video", "recording", "note"];
 
 export function BatchPlayer({ detail }: { detail: LmsBatchDetail }) {
   const router = useRouter();
   const params = useSearchParams();
   const requested = params.get("r");
 
-  const playable = useMemo(
-    () => detail.resources.filter((r) => r.kind === "video" || r.kind === "recording"),
+  const [query, setQuery] = useState("");
+
+  // Lessons are the spine of the sidebar; documents and links hang off the
+  // Resources tab instead.
+  const lessons = useMemo(
+    () => detail.resources.filter((r) => LESSON_KINDS.includes(r.kind)),
     [detail.resources],
   );
 
-  // Open the requested resource, else the first unfinished one, else the first.
   const initial = useMemo(() => {
-    if (requested && detail.resources.some((r) => r.id === requested)) return requested;
-    const unfinished = detail.resources.find((r) => !r.completedAt);
-    return unfinished?.id ?? detail.resources[0]?.id ?? null;
-  }, [requested, detail.resources]);
+    if (requested && lessons.some((r) => r.id === requested)) return requested;
+    const unfinished = lessons.find((r) => !r.completedAt);
+    return unfinished?.id ?? lessons[0]?.id ?? null;
+  }, [requested, lessons]);
 
   const [activeId, setActiveId] = useState<string | null>(initial);
-  const active = detail.resources.find((r) => r.id === activeId) ?? null;
+  const active = lessons.find((r) => r.id === activeId) ?? null;
 
-  // Local completion overlay so ticks appear immediately without a refetch.
   const [doneIds, setDoneIds] = useState<Set<string>>(
     () => new Set(detail.resources.filter((r) => r.completedAt).map((r) => r.id)),
   );
@@ -69,7 +92,6 @@ export function BatchPlayer({ detail }: { detail: LmsBatchDetail }) {
     const r = activeRef.current;
     if (!r) return;
     const pos = positionRef.current;
-    // Don't spam the API when the position hasn't meaningfully moved.
     if (!force && Math.abs(pos - savedRef.current) < 5) return;
     savedRef.current = pos;
     const complete = !!r.durationSeconds && pos / r.durationSeconds >= COMPLETE_AT;
@@ -77,11 +99,11 @@ export function BatchPlayer({ detail }: { detail: LmsBatchDetail }) {
       await saveLmsProgress(r.id, pos, complete);
       if (complete && !doneIds.has(r.id)) {
         setDoneIds((prev) => new Set(prev).add(r.id));
-        router.refresh();   // pull fresh percentages into the server-rendered header
+        router.refresh();
       }
     } catch {
-      // Offline or session expired — the next heartbeat retries. Losing a few
-      // seconds of position is not worth interrupting playback for.
+      // Offline or expired session — the next heartbeat retries. Losing a few
+      // seconds of position isn't worth interrupting playback for.
     }
   }, [doneIds, router]);
 
@@ -124,19 +146,22 @@ export function BatchPlayer({ detail }: { detail: LmsBatchDetail }) {
     try {
       await saveLmsProgress(r.id, r.durationSeconds ?? positionRef.current, true);
       router.refresh();
-    } catch { /* optimistic; heartbeat will retry */ }
+    } catch { /* optimistic; heartbeat retries */ }
   };
 
-  const requiredTotal = detail.resources.filter((r) => r.required).length;
-  const requiredDone = detail.resources.filter((r) => r.required && isDone(r.id)).length;
+  const requiredTotal = lessons.filter((r) => r.required).length;
+  const requiredDone = lessons.filter((r) => r.required && isDone(r.id)).length;
+
+  const activeModule = active ? detail.modules.find((m) => m.id === active.moduleId) : null;
 
   return (
-    <div className="grid gap-6 lg:grid-cols-[1fr_22rem]">
+    <div className="grid gap-6 lg:grid-cols-[1fr_23rem]">
       <div className="min-w-0 space-y-5">
         {active ? (
           <>
-            <div className="overflow-hidden rounded-2xl bg-black">
-              {(active.kind === "video" || active.kind === "recording") && active.videoRef ? (
+            {/* ── the thing itself ───────────────────────────────────────── */}
+            {(active.kind === "video" || active.kind === "recording") && active.videoRef ? (
+              <div className="overflow-hidden rounded-2xl bg-black">
                 <div className="relative aspect-video">
                   <iframe
                     key={active.id}
@@ -147,36 +172,63 @@ export function BatchPlayer({ detail }: { detail: LmsBatchDetail }) {
                     allowFullScreen
                   />
                 </div>
-              ) : active.kind === "recording" && active.recordingUrl ? (
-                <div className="aspect-video">
-                  <video src={active.recordingUrl} controls className="h-full w-full" />
-                </div>
-              ) : active.kind === "note" ? (
-                <div className="whitespace-pre-wrap bg-white p-7 text-[15px] leading-relaxed text-ink">
+              </div>
+            ) : active.kind === "recording" && active.recordingUrl ? (
+              <div className="overflow-hidden rounded-2xl bg-black">
+                <video src={active.recordingUrl} controls className="aspect-video w-full" />
+              </div>
+            ) : active.kind === "note" ? (
+              <article className="rounded-2xl border border-black/5 bg-white p-8">
+                {/* Notes are markdown-ish. Rendering the raw text in a readable
+                    measure beats a half-implemented parser that mangles it. */}
+                <div className="whitespace-pre-wrap text-[15px] leading-[1.75] text-ink/85">
                   {active.body}
                 </div>
-              ) : active.kind === "link" && active.externalUrl ? (
-                <div className="bg-white p-7">
-                  <a href={active.externalUrl} target="_blank" rel="noreferrer"
-                     className="text-indigo-700 underline underline-offset-2">
-                    {active.externalUrl}
-                  </a>
-                </div>
-              ) : (
-                <div className="bg-white p-7 text-sm text-ink/55">
-                  This resource has no preview. Ask your trainer if you think that&rsquo;s wrong.
-                </div>
-              )}
-            </div>
+              </article>
+            ) : active.kind === "link" && active.externalUrl ? (
+              <div className="rounded-2xl border border-black/5 bg-white p-8">
+                <p className="font-mono text-[10px] uppercase tracking-wide text-ink/45">External resource</p>
+                <p className="mt-2 break-all text-sm text-ink/60">{active.externalUrl}</p>
+                <a
+                  href={active.externalUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="mt-5 inline-flex items-center gap-2 rounded-full bg-ink px-5 py-2.5 text-sm font-medium text-white transition hover:bg-ink/90"
+                >
+                  Open link
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+                    <path d="M7 17 17 7M9 7h8v8" />
+                  </svg>
+                </a>
+              </div>
+            ) : active.kind === "document" ? (
+              <div className="rounded-2xl border border-black/5 bg-white p-8 text-center">
+                <p className="font-serif text-xl">Document</p>
+                <p className="mx-auto mt-2 max-w-sm text-sm text-ink/55">
+                  File storage isn&rsquo;t configured yet, so this document can&rsquo;t be opened.
+                  Ask your trainer to share it as a link.
+                </p>
+              </div>
+            ) : (
+              <div className="rounded-2xl border border-dashed border-black/10 bg-white/50 p-10 text-center text-sm text-ink/55">
+                This resource has no preview. Ask your trainer if you think that&rsquo;s wrong.
+              </div>
+            )}
 
+            {/* ── title, provenance, completion ──────────────────────────── */}
             <div className="flex flex-wrap items-start justify-between gap-4">
               <div className="min-w-0">
-                <p className="font-mono text-[10px] uppercase tracking-[0.12em] text-ink/45">
-                  {RESOURCE_LABEL[active.kind]}
-                  {active.durationSeconds ? ` · ${hms(active.durationSeconds)}` : ""}
-                  {!active.required ? " · optional" : ""}
+                <h2 className="font-serif text-3xl leading-tight">{active.title}</h2>
+                {/* Provenance line from the reference: where this sits, what
+                    it is, which batch, who teaches it. */}
+                <p className="mt-1.5 font-mono text-[10px] uppercase tracking-[0.1em] text-ink/45">
+                  {[
+                    activeModule?.title,
+                    RESOURCE_LABEL[active.kind],
+                    detail.batch.code,
+                    detail.batch.trainerName,
+                  ].filter(Boolean).join(" · ")}
                 </p>
-                <h2 className="mt-1 font-serif text-2xl leading-tight">{active.title}</h2>
               </div>
               <button
                 type="button"
@@ -189,16 +241,41 @@ export function BatchPlayer({ detail }: { detail: LmsBatchDetail }) {
                     : "bg-ink text-white hover:bg-ink/90",
                 )}
               >
-                {isDone(active.id) ? "Completed" : "Mark complete"}
+                {isDone(active.id) ? "✓ Completed" : "Mark complete"}
               </button>
             </div>
+
+            <LessonTabs
+              resource={active}
+              module={activeModule ?? null}
+              batch={detail.batch}
+              attachments={detail.resources.filter(
+                (r) => r.moduleId === active.moduleId && !LESSON_KINDS.includes(r.kind),
+              )}
+              completed={isDone(active.id)}
+              positionRef={positionRef}
+            />
           </>
         ) : (
           <div className="rounded-2xl border border-dashed border-black/10 bg-white/50 p-10 text-center">
-            <h2 className="font-serif text-2xl">No content published yet</h2>
-            <p className="mx-auto mt-2 max-w-md text-sm text-ink/55">
-              Your trainer hasn&rsquo;t published any modules for this batch. Check back shortly.
-            </p>
+            {detail.modules.length === 0 ? (
+              <>
+                <h2 className="font-serif text-2xl">No content published yet</h2>
+                <p className="mx-auto mt-2 max-w-md text-sm text-ink/55">
+                  Your trainer hasn&rsquo;t published any modules for this batch. Check back shortly.
+                </p>
+              </>
+            ) : (
+              <>
+                <h2 className="font-serif text-2xl">Nothing to open yet</h2>
+                <p className="mx-auto mt-2 max-w-md text-sm text-ink/55">
+                  {detail.modules.length === 1
+                    ? `“${detail.modules[0]!.title}” is published but has no material in it yet.`
+                    : "Your modules are published but none of them has any material in it yet."}
+                  {" "}Your trainer is still adding to them.
+                </p>
+              </>
+            )}
           </div>
         )}
 
@@ -234,66 +311,114 @@ export function BatchPlayer({ detail }: { detail: LmsBatchDetail }) {
         ) : null}
       </div>
 
+      {/* ── sidebar: searchable lesson list, grouped by module ────────────── */}
       <aside className="lg:sticky lg:top-24 lg:self-start">
         <div className="rounded-2xl border border-black/5 bg-white">
-          <div className="border-b border-black/5 p-5">
-            <div className="flex items-baseline justify-between">
-              <h3 className="font-mono text-[11px] uppercase tracking-[0.12em] text-ink/45">Modules</h3>
+          <div className="border-b border-black/5 p-4">
+            <div className="relative">
+              <svg className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-ink/35"
+                   width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+                <circle cx="11" cy="11" r="7" /><path d="m20 20-3.5-3.5" />
+              </svg>
+              <input
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                placeholder="Search lessons"
+                className="w-full rounded-lg border border-black/10 py-2 pl-9 pr-3 text-sm outline-none focus:border-indigo-400"
+              />
+            </div>
+            <div className="mt-3 flex items-baseline justify-between">
+              <span className="font-mono text-[10px] uppercase tracking-wide text-ink/45">
+                {requiredDone} of {requiredTotal} done
+              </span>
               <span className="text-sm font-medium text-indigo-700">{pct(requiredDone, requiredTotal)}%</span>
             </div>
-            <span className="mt-2 block h-1.5 overflow-hidden rounded-full bg-black/10">
-              <span className="block h-full rounded-full bg-indigo-500" style={{ width: `${pct(requiredDone, requiredTotal)}%` }} />
+            <span className="mt-1.5 block h-1.5 overflow-hidden rounded-full bg-black/10">
+              <span className="block h-full rounded-full bg-indigo-500 transition-[width]"
+                    style={{ width: `${pct(requiredDone, requiredTotal)}%` }} />
             </span>
-            <p className="mt-1.5 text-xs text-ink/45">{requiredDone} of {requiredTotal} required items</p>
           </div>
 
-          <div className="max-h-[32rem] overflow-y-auto p-2">
-            {detail.modules.map((m) => {
-              const items = detail.resources.filter((r) => r.moduleId === m.id);
+          <div className="max-h-[34rem] overflow-y-auto p-2">
+            {detail.modules.map((m, mi) => {
+              const all = lessons.filter((r) => r.moduleId === m.id);
+              // Search filters the items but keeps the module heading, so the
+              // structure doesn't rearrange itself while you type.
+              const items = query.trim()
+                ? all.filter((r) => r.title.toLowerCase().includes(query.trim().toLowerCase()))
+                : all;
+              if (query.trim() && items.length === 0) return null;
+
+              const done = all.filter((r) => r.required && isDone(r.id)).length;
+              const total = all.filter((r) => r.required).length;
+
               return (
-                <div key={m.id} className="mb-2">
-                  <p className="px-3 pb-1 pt-3 font-mono text-[10px] uppercase tracking-wide text-ink/45">
-                    {m.title}
-                  </p>
-                  <ul>
-                    {items.map((r) => {
-                      const on = r.id === activeId;
-                      const complete = isDone(r.id);
-                      return (
-                        <li key={r.id}>
-                          <button
-                            type="button"
-                            onClick={() => { void flush(true); setActiveId(r.id); }}
-                            className={cn(
-                              "flex w-full items-center gap-2.5 rounded-lg px-3 py-2 text-left text-sm transition",
-                              on ? "bg-indigo-50 font-medium text-indigo-900" : "hover:bg-black/5",
-                            )}
-                          >
-                            <span className={cn("grid h-5 w-5 shrink-0 place-items-center rounded-full",
-                              complete ? "bg-emerald-500 text-white" : "border border-black/15 text-ink/40")}>
-                              {complete
-                                ? <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><path d="M20 6 9 17l-5-5" /></svg>
-                                : <KindIcon kind={r.kind} />}
-                            </span>
-                            <span className="min-w-0 flex-1">
-                              <span className="block truncate">{r.title}</span>
-                              {r.durationSeconds ? (
-                                <span className="font-mono text-[10px] text-ink/40">
-                                  {complete ? hms(r.durationSeconds) : (remainingLabel(r) ?? hms(r.durationSeconds))}
-                                </span>
-                              ) : null}
-                            </span>
-                          </button>
-                        </li>
-                      );
-                    })}
-                    {items.length === 0 ? (
-                      <li className="px-3 py-2 text-xs text-ink/40">No items yet</li>
+                <div key={m.id} className="mb-3">
+                  <div className="flex items-baseline justify-between gap-2 px-3 pb-1.5 pt-2">
+                    <p className="min-w-0 truncate font-mono text-[10px] uppercase tracking-[0.1em] text-ink/45">
+                      Module {mi + 1} · {m.title}
+                    </p>
+                    {total > 0 ? (
+                      <span className={cn("shrink-0 font-mono text-[10px]",
+                        done === total ? "text-emerald-600" : "text-ink/40")}>
+                        {done}/{total}
+                      </span>
                     ) : null}
-                  </ul>
+                  </div>
+
+                  {items.length === 0 ? (
+                    <p className="px-3 py-1.5 text-xs text-ink/40">No lessons yet</p>
+                  ) : (
+                    <ul>
+                      {items.map((r) => {
+                        const on = r.id === activeId;
+                        const complete = isDone(r.id);
+                        return (
+                          <li key={r.id}>
+                            <button
+                              type="button"
+                              onClick={() => { void flush(true); setActiveId(r.id); }}
+                              className={cn(
+                                "flex w-full items-start gap-2.5 border-l-2 py-2 pl-2.5 pr-3 text-left text-sm transition",
+                                on
+                                  ? "border-indigo-500 bg-indigo-50/70 font-medium text-indigo-900"
+                                  : "border-transparent hover:bg-black/[0.04]",
+                              )}
+                            >
+                              <span className={cn(
+                                "mt-0.5 grid h-5 w-5 shrink-0 place-items-center rounded-full",
+                                complete ? "bg-emerald-500 text-white"
+                                         : on ? "border border-indigo-300 text-indigo-500"
+                                              : "border border-black/15 text-ink/40",
+                              )}>
+                                {complete
+                                  ? <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><path d="M20 6 9 17l-5-5" /></svg>
+                                  : <KindIcon kind={r.kind} />}
+                              </span>
+                              <span className="min-w-0 flex-1">
+                                <span className="block leading-snug">{r.title}</span>
+                                <span className="mt-0.5 block font-mono text-[10px] text-ink/40">
+                                  {r.durationSeconds
+                                    ? (complete ? hms(r.durationSeconds) : (remainingLabel(r) ?? hms(r.durationSeconds)))
+                                    : RESOURCE_LABEL[r.kind]}
+                                  {!r.required ? " · optional" : ""}
+                                </span>
+                              </span>
+                            </button>
+                          </li>
+                        );
+                      })}
+                    </ul>
+                  )}
                 </div>
               );
             })}
+
+            {query.trim() && lessons.every((r) => !r.title.toLowerCase().includes(query.trim().toLowerCase())) ? (
+              <p className="px-3 py-6 text-center text-sm text-ink/45">
+                No lessons match &ldquo;{query.trim()}&rdquo;.
+              </p>
+            ) : null}
           </div>
         </div>
       </aside>

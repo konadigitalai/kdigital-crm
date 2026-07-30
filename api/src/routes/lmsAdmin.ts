@@ -52,7 +52,12 @@ lmsAdminRouter.get("/batches", async (req, res, next) => {
         FROM cohort c
         LEFT JOIN course co ON co.id = c.course_id
         LEFT JOIN party  tp ON tp.id = c.trainer_id
-        WHERE ${q ? sql`(c.name ILIKE ${'%' + q + '%'} OR c.code ILIKE ${'%' + q + '%'})` : sql`true`}
+        -- Enabled only. A disabled batch is archived: authoring content for
+        -- it is wasted work, and it was this screen showing the archive
+        -- that made three retired duplicates look like live batches.
+        -- Re-enable it in the CRM Batches board to bring it back here.
+        WHERE c.enabled = true
+          AND ${q ? sql`(c.name ILIKE ${'%' + q + '%'} OR c.code ILIKE ${'%' + q + '%'})` : sql`true`}
         ORDER BY c.status, c.start_date DESC NULLS LAST, c.name
       `);
       return r.rows;

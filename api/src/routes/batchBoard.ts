@@ -171,6 +171,10 @@ batchBoardRouter.get("/board", requirePermission("admin.batches.manage"), async 
         LEFT JOIN party  tp ON tp.id = c.trainer_id
         LEFT JOIN party  cp ON cp.id = c.co_trainer_id
         ${PRIMARY_STACK_LATERAL}
+        -- Live batches only. This is an operational board — archived batches
+        -- would be noise on every rollup and row. They stay reachable and
+        -- re-enableable via the admin cohorts screen (routes/cohorts.ts),
+        -- which deliberately has no enabled filter.
         WHERE c.enabled = true
         ORDER BY
           CASE c.status WHEN 'running' THEN 0 WHEN 'upcoming' THEN 1
@@ -234,6 +238,8 @@ batchBoardRouter.get("/summary", requirePermission("admin.batches.manage"), asyn
              WHERE s.cohort_id = c.id AND s.status = 'delivered'
                AND a.status IN ('present','late'))                AS "attPresent"
         FROM cohort c
+        -- Counters stay on live batches. An archived one would inflate
+        -- "unstaffed" and drag Avg coverage down permanently.
         WHERE c.enabled = true
       `);
       return r.rows as Array<{

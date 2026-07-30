@@ -2109,3 +2109,23 @@ export async function copyLmsContent(
     {},
   );
 }
+
+// ─── LMS — private learner notes ──────────────────────────────────────────
+// Scoped server-side to the caller. Never pass a party id from here.
+
+export async function getLmsNotes(resourceId: string): Promise<T.LmsNote[]> {
+  const { notes } = await get<{ notes: T.LmsNote[] }>(
+    `/lms/resources/${encodeURIComponent(resourceId)}/notes`);
+  return notes;
+}
+
+export async function addLmsNote(
+  resourceId: string, body: string, positionSeconds = 0,
+): Promise<T.LmsNote> {
+  return post(`/lms/resources/${encodeURIComponent(resourceId)}/notes`,
+    { body, positionSeconds });
+}
+
+export async function deleteLmsNote(id: string): Promise<void> {
+  await send<void>("DELETE", `/lms/notes/${encodeURIComponent(id)}`);
+}

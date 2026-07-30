@@ -49,8 +49,9 @@ export default async function BatchDetail({ params }: { params: Promise<{ id: st
             href={batch.joinUrl}
             target="_blank"
             rel="noreferrer"
-            className="shrink-0 rounded-full bg-ink px-5 py-2.5 text-sm font-medium text-white transition hover:bg-ink/90"
+            className="flex shrink-0 items-center gap-2 rounded-full bg-ink px-5 py-2.5 text-sm font-medium text-white transition hover:bg-ink/90"
           >
+            <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
             Join live class
           </a>
         ) : null}

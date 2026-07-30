@@ -1752,3 +1752,11 @@ export interface LmsSubmissionRow {
   learnerEmail: string | null;
   learnerNumber: string | null;
 }
+
+export interface LmsNote {
+  id: string;
+  positionSeconds: number;
+  body: string;
+  createdAt: string;
+  updatedAt: string;
+}

@@ -58,6 +58,12 @@ const ALL_CARDS: SettingsCard[] = [
   { section: "Operations", href: "/admin/courses",  icon: "graduation-cap", title: "Courses",
     blurb: "Reusable course modules linked to programs.",
     requires: "admin.courses.manage" },
+  // The full batch inventory, including archived ones. Distinct from the
+  // top-level Batches board, which is operational and shows live batches
+  // only — this is where a disabled batch is found and re-enabled.
+  { section: "Operations", href: "/admin/cohorts",  icon: "batches", title: "Batches",
+    blurb: "Every batch including archived. Create, edit, and re-enable disabled batches.",
+    requires: "admin.batches.manage" },
 
   // Channels — third-party integrations
   { section: "Channels", href: "/admin/integrations/slack",    icon: "globe",          title: "Slack",

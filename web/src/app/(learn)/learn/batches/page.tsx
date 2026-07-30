@@ -87,15 +87,31 @@ export default async function MyLearning() {
                       <dd className="mt-0.5 font-medium">{b.resourcesDone} of {b.resourceCount}</dd>
                     </div>
                   </dl>
-                  <Link
-                    href={`/learn/batches/${b.id}`}
-                    className={cn(
-                      "rounded-full px-5 py-2.5 text-sm font-medium transition",
-                      done ? "border border-black/10 hover:bg-black/5" : "bg-ink text-white hover:bg-ink/90",
-                    )}
-                  >
-                    {done ? "Review batch" : "Open batch"}
-                  </Link>
+                  <div className="flex flex-wrap items-center gap-2">
+                    {/* The single place the room link lives. A learner opens
+                        My learning to get to a class, so it belongs on the
+                        card rather than one level deeper. Hidden once the
+                        batch is done — there is nothing left to join. */}
+                    {b.joinUrl && !done ? (
+                      <a
+                        href={b.joinUrl}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="rounded-full border border-black/15 px-5 py-2.5 text-sm font-medium transition hover:bg-black/5"
+                      >
+                        Join live class
+                      </a>
+                    ) : null}
+                    <Link
+                      href={`/learn/batches/${b.id}`}
+                      className={cn(
+                        "rounded-full px-5 py-2.5 text-sm font-medium transition",
+                        done ? "border border-black/10 hover:bg-black/5" : "bg-ink text-white hover:bg-ink/90",
+                      )}
+                    >
+                      {done ? "Review batch" : "Open batch"}
+                    </Link>
+                  </div>
                 </div>
               </li>
             );

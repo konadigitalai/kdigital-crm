@@ -153,10 +153,23 @@ export function ContentEditor({
                     </span>
                   </span>
                 </button>
-                <span className={cn("rounded-full px-2.5 py-0.5 text-[11px] font-medium",
-                  m.status === "published" ? "bg-emerald-100 text-emerald-800" : "bg-amber-100 text-amber-900")}>
-                  {m.status}
-                </span>
+                {/* A published module with nothing in it is invisible to
+                    learners in every practical sense — the batch page has
+                    nothing to open. Say so here rather than letting someone
+                    believe publishing was the last step. */}
+                {m.status === "published" && resources.length === 0 ? (
+                  <span
+                    title="Published, but there is nothing in it — learners see an empty batch"
+                    className="rounded-full bg-amber-100 px-2.5 py-0.5 text-[11px] font-medium text-amber-900"
+                  >
+                    published · empty
+                  </span>
+                ) : (
+                  <span className={cn("rounded-full px-2.5 py-0.5 text-[11px] font-medium",
+                    m.status === "published" ? "bg-emerald-100 text-emerald-800" : "bg-amber-100 text-amber-900")}>
+                    {m.status}
+                  </span>
+                )}
                 <button
                   type="button"
                   disabled={pending}

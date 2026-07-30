@@ -37,6 +37,7 @@ async function callerPartyId(db: Parameters<Parameters<typeof withTenant>[1]>[0]
 const myCohorts = (partyId: string) => sql`
   SELECT ba.cohort_id
   FROM batch_assignment ba
+  JOIN cohort c ON c.id = ba.cohort_id AND c.enabled
   WHERE ba.party_id = ${partyId} AND ba.status = 'active'
 `;
 
@@ -133,6 +134,7 @@ lmsRouter.get("/batches/:cohortId", async (req, res, next) => {
         FROM cohort c
         JOIN batch_assignment ba
           ON ba.cohort_id = c.id AND ba.party_id = ${partyId} AND ba.status = 'active'
+        -- archived batches are invisible to learners, not just unlisted
         LEFT JOIN course co ON co.id = c.course_id
         LEFT JOIN party  tp ON tp.id = c.trainer_id
         WHERE c.id = ${cohortId}
@@ -220,8 +222,9 @@ lmsRouter.put("/resources/:id/progress", async (req, res, next) => {
         SELECT mr.id
         FROM module_resource mr
         JOIN module m ON m.id = mr.module_id
+        JOIN cohort c ON c.id = m.cohort_id AND c.enabled
         JOIN batch_assignment ba
-          ON ba.cohort_id = m.cohort_id AND ba.party_id = ${partyId} AND ba.status='active'
+          ON ba.cohort_id = c.id AND ba.party_id = ${partyId} AND ba.status='active'
         WHERE mr.id = ${resourceId} AND m.status='published' AND m.enabled AND mr.enabled
       `);
       if (!ok.rows[0]) return null;
@@ -270,6 +273,7 @@ lmsRouter.get("/schedule", async (req, res, next) => {
         JOIN cohort c ON c.id = bs.cohort_id
         JOIN batch_assignment ba
           ON ba.cohort_id = c.id AND ba.party_id = ${partyId} AND ba.status='active'
+          AND c.enabled
         LEFT JOIN party tp ON tp.id = c.trainer_id
         WHERE bs.session_date BETWEEN current_date AND current_date + ${days}::int
           AND bs.status <> 'cancelled'
@@ -287,6 +291,7 @@ lmsRouter.get("/schedule", async (req, res, next) => {
         JOIN cohort c ON c.id = m.cohort_id
         JOIN batch_assignment ba
           ON ba.cohort_id = c.id AND ba.party_id = ${partyId} AND ba.status='active'
+          AND c.enabled
         LEFT JOIN LATERAL (
           SELECT status FROM submission
           WHERE coursework_id = cw.id AND party_id = ${partyId}
@@ -328,6 +333,7 @@ lmsRouter.get("/work", async (req, res, next) => {
         JOIN cohort c ON c.id = m.cohort_id
         JOIN batch_assignment ba
           ON ba.cohort_id = c.id AND ba.party_id = ${partyId} AND ba.status='active'
+          AND c.enabled
         LEFT JOIN LATERAL (
           SELECT id, status, attempt, score, feedback, submitted_at, graded_at
           FROM submission
@@ -391,8 +397,9 @@ lmsRouter.post("/coursework/:id/submit", async (req, res, next) => {
         SELECT cw.id, cw.due_at, cw.closes_at
         FROM coursework cw
         JOIN module m ON m.id = cw.module_id AND m.status='published' AND m.enabled
+        JOIN cohort c ON c.id = m.cohort_id AND c.enabled
         JOIN batch_assignment ba
-          ON ba.cohort_id = m.cohort_id AND ba.party_id = ${partyId} AND ba.status='active'
+          ON ba.cohort_id = c.id AND ba.party_id = ${partyId} AND ba.status='active'
         WHERE cw.id = ${courseworkId} AND cw.enabled
       `);
       const row = cw.rows[0] as { closes_at: string | null; due_at: string | null } | undefined;
@@ -448,6 +455,7 @@ lmsRouter.get("/today", async (req, res, next) => {
         JOIN cohort c ON c.id = bs.cohort_id
         JOIN batch_assignment ba
           ON ba.cohort_id = c.id AND ba.party_id = ${partyId} AND ba.status='active'
+          AND c.enabled
         LEFT JOIN party tp ON tp.id = c.trainer_id
         WHERE bs.session_date >= current_date AND bs.status = 'planned'
         ORDER BY bs.session_date, bs.start_time NULLS LAST
@@ -462,6 +470,7 @@ lmsRouter.get("/today", async (req, res, next) => {
         JOIN cohort c ON c.id = m.cohort_id
         JOIN batch_assignment ba
           ON ba.cohort_id = c.id AND ba.party_id = ${partyId} AND ba.status='active'
+          AND c.enabled
         LEFT JOIN LATERAL (
           SELECT status FROM submission
           WHERE coursework_id = cw.id AND party_id = ${partyId}
@@ -486,6 +495,7 @@ lmsRouter.get("/today", async (req, res, next) => {
         JOIN cohort c ON c.id = m.cohort_id
         JOIN batch_assignment ba
           ON ba.cohort_id = c.id AND ba.party_id = ${partyId} AND ba.status='active'
+          AND c.enabled
         WHERE rp.party_id = ${partyId}
           AND rp.completed_at IS NULL
           AND rp.position_seconds > 0
@@ -501,5 +511,91 @@ lmsRouter.get("/today", async (req, res, next) => {
     });
     if (!out) return res.status(404).json({ error: "No learner record for this account" });
     res.json(out);
+  } catch (err) { next(err); }
+});
+
+// ─── Private notes ───────────────────────────────────────────────────────
+// A learner's own notes on a lesson, pinned to a playback position. Never
+// visible to trainers or other learners: every query filters on the caller's
+// party_id, and reachability of the lesson is re-derived through
+// batch_assignment rather than trusted from the id in the URL.
+
+lmsRouter.get("/resources/:id/notes", async (req, res, next) => {
+  try {
+    const resourceId = String(req.params.id);
+    const rows = await withTenant(req.tenantId!, async (db) => {
+      const partyId = await callerPartyId(db, req.userId!);
+      if (!partyId) return [];
+      const r = await db.execute(sql`
+        SELECT n.id, n.position_seconds AS "positionSeconds", n.body,
+               n.created_at AS "createdAt", n.updated_at AS "updatedAt"
+        FROM learner_note n
+        -- The join chain is the access check: a note is only readable if the
+        -- learner can still reach the lesson it hangs off.
+        JOIN module_resource mr ON mr.id = n.resource_id
+        JOIN module m ON m.id = mr.module_id AND m.status='published' AND m.enabled
+        JOIN cohort c ON c.id = m.cohort_id AND c.enabled
+        JOIN batch_assignment ba
+          ON ba.cohort_id = c.id AND ba.party_id = ${partyId} AND ba.status='active'
+        WHERE n.resource_id = ${resourceId} AND n.party_id = ${partyId}
+        ORDER BY n.position_seconds, n.created_at
+      `);
+      return r.rows;
+    });
+    res.json({ notes: rows });
+  } catch (err) { next(err); }
+});
+
+lmsRouter.post("/resources/:id/notes", async (req, res, next) => {
+  try {
+    if (!req.permissions?.has("lms.progress.write.self")) {
+      return res.status(403).json({ error: "Missing permission: lms.progress.write.self" });
+    }
+    const resourceId = String(req.params.id);
+    const body = String(req.body?.body ?? "").trim();
+    if (!body) return res.status(400).json({ error: "body is required" });
+    const position = Math.max(0, Math.floor(Number(req.body?.positionSeconds ?? 0)) || 0);
+
+    const out = await withTenant(req.tenantId!, async (db) => {
+      const partyId = await callerPartyId(db, req.userId!);
+      if (!partyId) return null;
+      const ok = await db.execute(sql`
+        SELECT mr.id FROM module_resource mr
+        JOIN module m ON m.id = mr.module_id AND m.status='published' AND m.enabled
+        JOIN cohort c ON c.id = m.cohort_id AND c.enabled
+        JOIN batch_assignment ba
+          ON ba.cohort_id = c.id AND ba.party_id = ${partyId} AND ba.status='active'
+        WHERE mr.id = ${resourceId} AND mr.enabled
+      `);
+      if (!ok.rows[0]) return null;
+      const r = await db.execute(sql`
+        INSERT INTO learner_note (tenant_id, party_id, resource_id, position_seconds, body)
+        VALUES (current_tenant(), ${partyId}, ${resourceId}, ${position}, ${body})
+        RETURNING id, position_seconds AS "positionSeconds", body,
+                  created_at AS "createdAt", updated_at AS "updatedAt"
+      `);
+      return r.rows[0];
+    });
+    if (!out) return res.status(404).json({ error: "Lesson not found" });
+    res.status(201).json(out);
+  } catch (err) { next(err); }
+});
+
+lmsRouter.delete("/notes/:id", async (req, res, next) => {
+  try {
+    const id = String(req.params.id);
+    const out = await withTenant(req.tenantId!, async (db) => {
+      const partyId = await callerPartyId(db, req.userId!);
+      if (!partyId) return null;
+      // party_id in the WHERE is what stops one learner deleting another's.
+      const r = await db.execute(sql`
+        DELETE FROM learner_note
+        WHERE id = ${id} AND party_id = ${partyId}
+        RETURNING id
+      `);
+      return r.rows[0] ?? null;
+    });
+    if (!out) return res.status(404).json({ error: "Note not found" });
+    res.json({ ok: true });
   } catch (err) { next(err); }
 });
