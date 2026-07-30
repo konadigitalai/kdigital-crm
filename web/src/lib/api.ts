@@ -177,6 +177,10 @@ export async function getAgentRuns(): Promise<AgentCard[]> {
     return runs;
   } catch (err) {
     if ((err as Error).message.includes("→ 401")) return [];
+    // 403 = permission not granted. The home page calls this on every load,
+    // so throwing takes the page down for anyone without agents.read —
+    // including an LMS admin who legitimately has no CRM permissions.
+    if ((err as Error).message.includes("→ 403")) return [];
     throw err;
   }
 }
@@ -201,6 +205,10 @@ export async function getActivityFeed(limit = 10): Promise<FeedItem[]> {
     return feed;
   } catch (err) {
     if ((err as Error).message.includes("→ 401")) return [];
+    // 403 = permission not granted. The home page calls this on every load,
+    // so throwing takes the page down for anyone without agents.read —
+    // including an LMS admin who legitimately has no CRM permissions.
+    if ((err as Error).message.includes("→ 403")) return [];
     throw err;
   }
 }
@@ -812,6 +820,10 @@ export async function getSavedViews(scope: SavedViewScope): Promise<SavedView[]>
     return views;
   } catch (err) {
     if ((err as Error).message.includes("→ 401")) return [];
+    // 403 = permission not granted. The home page calls this on every load,
+    // so throwing takes the page down for anyone without agents.read —
+    // including an LMS admin who legitimately has no CRM permissions.
+    if ((err as Error).message.includes("→ 403")) return [];
     throw err;
   }
 }
@@ -1030,6 +1042,10 @@ export async function getAgentCatalog(): Promise<AgentCatalogEntry[]> {
     return agents;
   } catch (err) {
     if ((err as Error).message.includes("→ 401")) return [];
+    // 403 = permission not granted. The home page calls this on every load,
+    // so throwing takes the page down for anyone without agents.read —
+    // including an LMS admin who legitimately has no CRM permissions.
+    if ((err as Error).message.includes("→ 403")) return [];
     throw err;
   }
 }
@@ -1040,6 +1056,10 @@ export async function getAgentRunHistory(key: string, limit = 10): Promise<Agent
     return runs;
   } catch (err) {
     if ((err as Error).message.includes("→ 401")) return [];
+    // 403 = permission not granted. The home page calls this on every load,
+    // so throwing takes the page down for anyone without agents.read —
+    // including an LMS admin who legitimately has no CRM permissions.
+    if ((err as Error).message.includes("→ 403")) return [];
     throw err;
   }
 }
@@ -1093,6 +1113,10 @@ export async function getEdifySessions(limit = 50): Promise<EdifySessionSummary[
     return sessions;
   } catch (err) {
     if ((err as Error).message.includes("→ 401")) return [];
+    // 403 = permission not granted. The home page calls this on every load,
+    // so throwing takes the page down for anyone without agents.read —
+    // including an LMS admin who legitimately has no CRM permissions.
+    if ((err as Error).message.includes("→ 403")) return [];
     throw err;
   }
 }
@@ -1132,6 +1156,10 @@ export async function getLeaves(opts: { userId?: string; from?: string; to?: str
     return leaves;
   } catch (err) {
     if ((err as Error).message.includes("→ 401")) return [];
+    // 403 = permission not granted. The home page calls this on every load,
+    // so throwing takes the page down for anyone without agents.read —
+    // including an LMS admin who legitimately has no CRM permissions.
+    if ((err as Error).message.includes("→ 403")) return [];
     throw err;
   }
 }
@@ -1176,6 +1204,10 @@ export async function getLeadTasks(params: {
     // Same posture as getEvents: an unauthenticated read is an empty calendar,
     // not a crashed page.
     if ((err as Error).message.includes("→ 401")) return [];
+    // 403 = permission not granted. The home page calls this on every load,
+    // so throwing takes the page down for anyone without agents.read —
+    // including an LMS admin who legitimately has no CRM permissions.
+    if ((err as Error).message.includes("→ 403")) return [];
     throw err;
   }
 }
@@ -1228,6 +1260,10 @@ export async function getEvents(from?: string, to?: string): Promise<CalendarEve
     return events;
   } catch (err) {
     if ((err as Error).message.includes("→ 401")) return [];
+    // 403 = permission not granted. The home page calls this on every load,
+    // so throwing takes the page down for anyone without agents.read —
+    // including an LMS admin who legitimately has no CRM permissions.
+    if ((err as Error).message.includes("→ 403")) return [];
     throw err;
   }
 }
