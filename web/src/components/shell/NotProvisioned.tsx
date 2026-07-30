@@ -11,7 +11,17 @@
 // Sign out is the important control: without it the session cookie persists
 // and every navigation lands back here with no way forward.
 
-export function NotProvisioned({ email }: { email?: string | null }) {
+// `reason` distinguishes two states that look identical to the user but need
+// different instructions:
+//   "no-record"      — the CRM has never heard of this address
+//   "no-permissions" — the account exists, but no Auth0 role was assigned, so
+//                      the token carries an empty permissions claim
+// The second used to crash the app: AppShell fetches /agents/recent and
+// /summary on every render, both 403, and the exception took the page down.
+export function NotProvisioned({
+  email, reason = "no-record",
+}: { email?: string | null; reason?: "no-record" | "no-permissions" }) {
+  const noPerms = reason === "no-permissions";
   return (
     <div className="grid min-h-screen place-items-center bg-[#f7f5f0] px-6">
       <div className="max-w-md rounded-2xl border border-black/5 bg-white p-8 text-center shadow-sm">
@@ -21,14 +31,19 @@ export function NotProvisioned({ email }: { email?: string | null }) {
           </svg>
         </span>
 
-        <h1 className="mt-5 font-serif text-2xl">Account not set up</h1>
+        <h1 className="mt-5 font-serif text-2xl">
+          {noPerms ? "No access yet" : "Account not set up"}
+        </h1>
         <p className="mt-3 text-sm text-ink/60">
           You signed in successfully{email ? <> as <span className="font-medium text-ink/80">{email}</span></> : null},
-          but this address isn&rsquo;t registered in the CRM yet.
+          {noPerms
+            ? " but your account hasn’t been given access to anything yet."
+            : " but this address isn’t registered in the CRM yet."}
         </p>
         <p className="mt-3 text-sm text-ink/60">
-          Ask an administrator to add you — staff are created under Admin ▸ Advisors,
-          learners when their enrolment is converted.
+          {noPerms
+            ? "Ask an administrator to assign you a role. You’ll need to sign out and back in afterwards — permissions are set when you log in."
+            : "Ask an administrator to add you — staff are created under Admin ▸ Advisors, learners when their enrolment is converted."}
         </p>
 
         <a

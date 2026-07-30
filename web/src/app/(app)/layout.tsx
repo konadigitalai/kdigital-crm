@@ -39,5 +39,11 @@ export default async function AppGroupLayout({ children }: { children: React.Rea
   const hasCrm = CRM_PERMISSIONS.some((p) => perms.has(p));
   if (!hasCrm && perms.has("lms.read.self")) redirect("/learn");
 
+  // Authenticated, known to the CRM, but the token carries no permission that
+  // reaches any surface — almost always an Auth0 role that was never assigned.
+  // AppShell would render, fetch /agents/recent and /summary, 403 on both, and
+  // take the page down. Tell them what's missing instead.
+  if (!hasCrm) return <NotProvisioned email={me.email} reason="no-permissions" />;
+
   return <AppShell>{children}</AppShell>;
 }

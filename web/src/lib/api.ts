@@ -187,6 +187,10 @@ export async function getRecentRuns(): Promise<RecentRun[]> {
     return recent;
   } catch (err) {
     if ((err as Error).message.includes("→ 401")) return [];
+    // 403 = authenticated but this permission isn't granted. AppShell calls
+    // this on every render, so throwing takes the whole app down for a user
+    // whose Auth0 role simply hasn't been assigned yet. Degrade instead.
+    if ((err as Error).message.includes("→ 403")) return [];
     throw err;
   }
 }
@@ -224,7 +228,10 @@ export async function getSummary(): Promise<SummaryResponse> {
   try {
     return await get<SummaryResponse>("/summary");
   } catch (err) {
-    if ((err as Error).message.includes("→ 401")) {
+    if ((err as Error).message.includes("→ 401") || (err as Error).message.includes("→ 403")) {
+      // 403 = authenticated but no leads/cases permission. AppShell renders
+      // this on every page, so throwing would 500 the app for a user whose
+      // Auth0 role hasn't been assigned yet. Empty counters are honest here.
       return {
         overall: { total: 0, hot: 0, warm: 0, cold: 0, hotOvernight: 0, pendingApprovals: 0, liveAgents: 0 },
         byStage: [],
