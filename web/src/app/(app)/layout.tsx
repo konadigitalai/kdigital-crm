@@ -1,5 +1,6 @@
 import { redirect } from "next/navigation";
 import { AppShell } from "@/components/shell/AppShell";
+import { NotProvisioned } from "@/components/shell/NotProvisioned";
 import { getCurrentUser } from "@/lib/api";
 
 // Same URL serves both audiences. A learner holds none of the CRM
@@ -23,10 +24,20 @@ const CRM_PERMISSIONS = [
 
 export default async function AppGroupLayout({ children }: { children: React.ReactNode }) {
   const me = await getCurrentUser();
-  if (me) {
-    const perms = new Set(me.permissions);
-    const hasCrm = CRM_PERMISSIONS.some((p) => perms.has(p));
-    if (!hasCrm && perms.has("lms.read.self")) redirect("/learn");
-  }
+
+  // null means the API wouldn't give us a user: either the session lapsed
+  // between middleware and this fetch (401), or Auth0 authenticated someone
+  // the CRM has no record for (403). Middleware already handles the first
+  // case before we get here, so in practice this is the second.
+  //
+  // Rendering AppShell anyway would fire /agents/recent and /summary, get
+  // 403 on both, and blow up with a stack trace — which is what used to
+  // happen. Show them what to do instead.
+  if (!me) return <NotProvisioned />;
+
+  const perms = new Set(me.permissions);
+  const hasCrm = CRM_PERMISSIONS.some((p) => perms.has(p));
+  if (!hasCrm && perms.has("lms.read.self")) redirect("/learn");
+
   return <AppShell>{children}</AppShell>;
 }

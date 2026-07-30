@@ -10,11 +10,15 @@
 import { redirect } from "next/navigation";
 import { getCurrentUser, getLmsMe, getLmsWork } from "@/lib/api";
 import { LearnShell } from "@/components/learn/LearnShell";
+import { NotProvisioned } from "@/components/shell/NotProvisioned";
 import type { LmsMe } from "@/lib/types";
 
 export default async function LearnLayout({ children }: { children: React.ReactNode }) {
   const me = await getCurrentUser();
-  if (!me) redirect("/auth/login");
+  // A 403 from /me surfaces here as null. Redirecting to /auth/login would
+  // loop: the Auth0 session is perfectly valid, it is the CRM record that is
+  // missing. Show the same explanation the CRM side shows.
+  if (!me) return <NotProvisioned />;
 
   const perms = new Set(me.permissions);
   const canLearn = perms.has("lms.read.self");

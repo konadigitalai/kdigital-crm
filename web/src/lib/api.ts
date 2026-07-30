@@ -210,6 +210,12 @@ export async function getCurrentUser(): Promise<CurrentUser | null> {
     // pass and this server fetch. Render with a null user; the next request will
     // be redirected by middleware.
     if ((err as Error).message.includes("→ 401")) return null;
+    // 403 means Auth0 authenticated them but the CRM has no record — no
+    // app_user, and no party carrying a learner_profile. That's a legitimate
+    // state (someone added to the tenant before their CRM record exists), not
+    // an exception. Rethrowing it crashed the layout with a 500 stack trace
+    // instead of telling them what to do.
+    if ((err as Error).message.includes("→ 403")) return null;
     throw err;
   }
 }
