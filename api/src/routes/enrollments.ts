@@ -450,10 +450,22 @@ enrollmentsRouter.post("/:idOrNumber/convert", async (req, res, next) => {
       `);
 
       // Seed the learner profile row (idempotent).
+      //
+      // `number` is the LRN-#### the learner sees in the LMS portal header and
+      // quotes on support requests. post-0083 added the column and backfilled
+      // existing rows; this is where new ones get theirs. Without it every
+      // learner converted after that migration would carry a null identifier.
+      //
+      // COALESCE on conflict so re-running the conversion can't burn a
+      // sequence value or renumber someone who already has one.
       await db.execute(sql`
-        INSERT INTO learner_profile (party_id, tenant_id)
-        VALUES (${enr.partyId}, current_tenant())
-        ON CONFLICT DO NOTHING
+        INSERT INTO learner_profile (party_id, tenant_id, number)
+        VALUES (
+          ${enr.partyId}, current_tenant(),
+          'LRN-' || lpad(nextval('seq_learner')::text, 4, '0')
+        )
+        ON CONFLICT (party_id) DO UPDATE
+          SET number = COALESCE(learner_profile.number, EXCLUDED.number)
       `);
 
       await db.execute(sql`
