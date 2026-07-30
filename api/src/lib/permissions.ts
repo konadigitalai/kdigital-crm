@@ -43,6 +43,29 @@ export const PERMISSIONS = [
   "media.read",
   "media.upload",
   "media.manage",
+
+  // ─── LMS ───────────────────────────────────────────────────────────────
+  // Two populations, deliberately disjoint.
+  //
+  // Staff side. lms.content.manage also covers updating cohort.status, so an
+  // LMS admin can move a batch to 'running' without being granted
+  // admin.batches.manage — that permission would surface the whole CRM
+  // Batches module in their nav. Creating and deleting batches stays
+  // CRM-side.
+  "lms.content.manage",
+  "lms.grade",
+
+  // Learner side. `.self` follows leaves.read.self / events.manage.self.
+  //
+  // NOTE: the suffix is a naming convention, not an enforcement mechanism.
+  // RLS is tenant-scoped and will happily return another learner's rows.
+  // Every route carrying one of these MUST filter on req.user.partyId and
+  // join through batch_assignment. The permission says "may read LMS data";
+  // only the query says "…their own".
+  "lms.read.self",
+  "lms.progress.write.self",
+  "lms.submit.self",
+  "lms.requests.write.self",
 ] as const;
 
 export type Permission = (typeof PERMISSIONS)[number];
@@ -205,6 +228,26 @@ export const MODULE_CATALOG: ModuleAccess[] = [
       { key: "manage", label: "Manage", permission: "media.manage" },
     ],
   },
+  {
+    key: "lms_admin",
+    label: "LMS administration",
+    description: "Build modules inside a batch, attach videos and documents, set coursework and due dates, update batch status, and grade submissions.",
+    levels: [
+      { key: "content", label: "Manage content", permission: "lms.content.manage" },
+      { key: "grade",   label: "Grade",          permission: "lms.grade" },
+    ],
+  },
+  {
+    key: "lms_learner",
+    label: "LMS (learner)",
+    description: "The student portal. Every level is scoped to the signed-in learner's own batches and submissions — never anyone else's.",
+    levels: [
+      { key: "read",     label: "View own batches",  permission: "lms.read.self" },
+      { key: "progress", label: "Track progress",    permission: "lms.progress.write.self" },
+      { key: "submit",   label: "Submit coursework", permission: "lms.submit.self" },
+      { key: "requests", label: "Raise requests",    permission: "lms.requests.write.self" },
+    ],
+  },
 ];
 
 // Quick-fill presets shown above the checkbox grid in the group editor.
@@ -242,6 +285,22 @@ const TRAINER_PERMS: Permission[] = [
   "leaves.read.self",
 ];
 
+// LMS admin gets NO CRM permissions on purpose. navItems.ts gates every
+// entry on a permission, so this person signs in and sees the LMS admin
+// surface and nothing else — no Leads, no Cases, no Pipeline.
+const LMS_ADMIN_PERMS: Permission[] = [
+  "lms.content.manage",
+  "lms.grade",
+];
+
+// The student. Four permissions, all self-scoped, nothing else in the CRM.
+const LMS_LEARNER_PERMS: Permission[] = [
+  "lms.read.self",
+  "lms.progress.write.self",
+  "lms.submit.self",
+  "lms.requests.write.self",
+];
+
 const REPORTS_ONLY_PERMS: Permission[] = [
   "leads.read",
   "pipeline.read",
@@ -275,6 +334,18 @@ export const PRESETS: PermissionPreset[] = [
     name: "Reports only",
     description: "Read across modules; no edits anywhere.",
     permissions: REPORTS_ONLY_PERMS,
+  },
+  {
+    key: "lms_admin",
+    name: "LMS admin",
+    description: "Build batch content and grade. No CRM access.",
+    permissions: LMS_ADMIN_PERMS,
+  },
+  {
+    key: "lms_learner",
+    name: "LMS learner",
+    description: "Student portal only — their own batches and submissions.",
+    permissions: LMS_LEARNER_PERMS,
   },
 ];
 
@@ -320,5 +391,15 @@ export const SYSTEM_GROUPS: Array<{ name: string; description: string; permissio
     name: "Reports only",
     description: PRESETS[3]!.description,
     permissions: REPORTS_ONLY_PERMS,
+  },
+  {
+    name: "LMS admin",
+    description: PRESETS[4]!.description,
+    permissions: LMS_ADMIN_PERMS,
+  },
+  {
+    name: "LMS learner",
+    description: PRESETS[5]!.description,
+    permissions: LMS_LEARNER_PERMS,
   },
 ];

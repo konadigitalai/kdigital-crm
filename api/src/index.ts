@@ -21,6 +21,8 @@ import { cohortsRouter } from "./routes/cohorts.js";
 import { coursesRouter } from "./routes/courses.js";
 import { convertRouter } from "./routes/convert.js";
 import { learnersRouter } from "./routes/learners.js";
+import { lmsRouter } from "./routes/lms.js";
+import { lmsAdminRouter } from "./routes/lmsAdmin.js";
 import { enrollmentsRouter } from "./routes/enrollments.js";
 import { approvalsRouter } from "./routes/approvals.js";
 import { casesRouter } from "./routes/cases.js";
@@ -193,6 +195,16 @@ app.use("/learners", readWrite("learners.read", "learners.write"), learnersRoute
 // Enrollments — the enrolment record + fee ledger + payment verification +
 // enrolled→learner conversion. Reuses the learners permission surface.
 app.use("/enrollments", readWrite("learners.read", "learners.write"), enrollmentsRouter);
+// ─── LMS ─────────────────────────────────────────────────────────────────
+// /lms is the student portal. Every handler re-derives access from the
+// caller's party_id via batch_assignment — RLS is tenant-scoped and will
+// NOT keep one learner out of another's rows. See routes/lms.ts.
+app.use("/lms", requirePermission("lms.read.self"), lmsRouter);
+// /lms-admin builds batch content. Deliberately not gated on
+// admin.batches.manage: that would surface the whole CRM Batches module in
+// an LMS admin's sidebar. Grading is gated separately on lms.grade.
+app.use("/lms-admin", requirePermission("lms.content.manage"), lmsAdminRouter);
+
 app.use("/approvals", approvalsRouter);
 app.use("/cases",    readWrite("cases.read",    "cases.write"),    casesRouter);
 app.use("/pipeline", readWrite("pipeline.read", "pipeline.write"), pipelineRouter);

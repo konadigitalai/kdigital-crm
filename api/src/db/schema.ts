@@ -891,6 +891,192 @@ export const onboardingTask = pgTable("onboarding_task", {
   step: text("step"),
 });
 
+// ─── LMS (post-0083) ──────────────────────────────────────────────────────
+// The learner-facing layer. Shape mirrors the existing batch spine:
+//
+//   cohort (batch) → module → module_resource
+//                           → coursework → submission
+//
+// A learner reaches a module because they hold a batch_assignment on its
+// cohort. That is the entire access rule — nothing here restates it, and
+// RLS does NOT enforce it (RLS is tenant-scoped only). Every learner route
+// must filter on the caller's party_id.
+
+// Ordered units of study inside ONE batch. Modules hang off cohort rather
+// than course on purpose: each batch's trainer curates their own material.
+export const module = pgTable(
+  "module",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    tenantId: uuid("tenant_id").notNull().references(() => tenant.id),
+    cohortId: uuid("cohort_id").notNull().references(() => cohort.id, { onDelete: "cascade" }),
+    rank: integer("rank").notNull().default(0),
+    title: text("title").notNull(),
+    summary: text("summary"),
+    // Draft modules are invisible to learners; admins build then publish.
+    status: text("status").notNull().default("draft"),
+    enabled: boolean("enabled").notNull().default(true),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    cohortIdx: index("module_cohort_idx").on(t.tenantId, t.cohortId, t.rank),
+    statusCheck: check("module_status_check", sql`${t.status} IN ('draft','published')`),
+  }),
+);
+
+// One row per piece of material. `kind` selects which payload column is
+// meaningful — a CHECK guarantees the matching one is populated, so a video
+// row can always be played and a link row always resolves.
+export const moduleResource = pgTable(
+  "module_resource",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    tenantId: uuid("tenant_id").notNull().references(() => tenant.id),
+    moduleId: uuid("module_id").notNull().references(() => module.id, { onDelete: "cascade" }),
+    rank: integer("rank").notNull().default(0),
+    title: text("title").notNull(),
+    kind: text("kind").notNull(),  // video | recording | document | note | link
+    // Vimeo ID only, never a URL — the embed template and privacy options
+    // then live in one place in code instead of in every row.
+    videoProvider: text("video_provider"),
+    videoRef: text("video_ref"),
+    durationSeconds: integer("duration_seconds"),
+    // kind='recording': point at the class rather than copying its URL, so
+    // batch_session stays the single source of truth for recordings.
+    batchSessionId: uuid("batch_session_id").references(() => batchSession.id, { onDelete: "set null" }),
+    body: text("body"),                 // kind='note' — markdown
+    mediaAssetId: uuid("media_asset_id"), // kind='document' — FK added SQL-side
+    externalUrl: text("external_url"),  // kind='link'
+    // Only required resources count toward module completion.
+    required: boolean("required").notNull().default(true),
+    enabled: boolean("enabled").notNull().default(true),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    moduleIdx: index("module_resource_module_idx").on(t.tenantId, t.moduleId, t.rank),
+    sessionIdx: index("module_resource_session_idx").on(t.tenantId, t.batchSessionId),
+    kindCheck: check("module_resource_kind_check",
+      sql`${t.kind} IN ('video','recording','document','note','link')`),
+    durationCheck: check("module_resource_duration_check",
+      sql`${t.durationSeconds} IS NULL OR ${t.durationSeconds} > 0`),
+    // module_resource_payload_check is SQL-side (post-0083) — it spans four
+    // columns conditionally on kind, which Drizzle can't express inline.
+  }),
+);
+
+// Per learner per resource. Facts only: position + completion. Every "44%"
+// in the UI is computed from these — a stored percentage would go stale the
+// moment an admin adds a resource.
+export const resourceProgress = pgTable(
+  "resource_progress",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    tenantId: uuid("tenant_id").notNull().references(() => tenant.id),
+    partyId: uuid("party_id").notNull().references(() => party.id),
+    resourceId: uuid("resource_id").notNull().references(() => moduleResource.id, { onDelete: "cascade" }),
+    positionSeconds: integer("position_seconds").notNull().default(0),
+    completedAt: timestamp("completed_at", { withTimezone: true }),
+    lastSeenAt: timestamp("last_seen_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    // Upsert key for PUT …/progress.
+    uniq: uniqueIndex("resource_progress_uniq").on(t.partyId, t.resourceId),
+    partyIdx: index("resource_progress_party_idx").on(t.tenantId, t.partyId),
+    resourceIdx: index("resource_progress_resource_idx").on(t.tenantId, t.resourceId),
+    positionCheck: check("resource_progress_position_check", sql`${t.positionSeconds} >= 0`),
+  }),
+);
+
+// Labs, assignments and assessments. Due dates live here rather than in a
+// separate per-batch window table: a module belongs to exactly one batch, so
+// definition and instance are the same row.
+export const coursework = pgTable(
+  "coursework",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    tenantId: uuid("tenant_id").notNull().references(() => tenant.id),
+    moduleId: uuid("module_id").notNull().references(() => module.id, { onDelete: "cascade" }),
+    rank: integer("rank").notNull().default(0),
+    type: text("type").notNull(),   // lab | assignment | assessment
+    title: text("title").notNull(),
+    brief: text("brief"),
+    maxScore: numeric("max_score", { precision: 6, scale: 2 }),
+    passScore: numeric("pass_score", { precision: 6, scale: 2 }),
+    // 'auto' is reserved. v1 grades by trainer — auto-grading needs a
+    // question bank or an external autograder posting scores back.
+    grading: text("grading").notNull().default("trainer"),
+    opensAt: timestamp("opens_at", { withTimezone: true }),
+    dueAt: timestamp("due_at", { withTimezone: true }),
+    closesAt: timestamp("closes_at", { withTimezone: true }),
+    enabled: boolean("enabled").notNull().default(true),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    moduleIdx: index("coursework_module_idx").on(t.tenantId, t.moduleId, t.rank),
+    dueIdx: index("coursework_due_idx").on(t.tenantId, t.dueAt),
+    typeCheck: check("coursework_type_check", sql`${t.type} IN ('lab','assignment','assessment')`),
+    gradingCheck: check("coursework_grading_check", sql`${t.grading} IN ('trainer','auto')`),
+    windowCheck: check("coursework_window_check",
+      sql`${t.closesAt} IS NULL OR ${t.dueAt} IS NULL OR ${t.closesAt} >= ${t.dueAt}`),
+  }),
+);
+
+export const submission = pgTable(
+  "submission",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    tenantId: uuid("tenant_id").notNull().references(() => tenant.id),
+    courseworkId: uuid("coursework_id").notNull().references(() => coursework.id, { onDelete: "cascade" }),
+    partyId: uuid("party_id").notNull().references(() => party.id),
+    attempt: integer("attempt").notNull().default(1),
+    status: text("status").notNull().default("draft"),
+    submittedAt: timestamp("submitted_at", { withTimezone: true }),
+    content: jsonb("content").notNull().default(sql`'{}'::jsonb`),
+    score: numeric("score", { precision: 6, scale: 2 }),
+    feedback: text("feedback"),
+    gradedBy: uuid("graded_by").references(() => party.id, { onDelete: "set null" }),
+    gradedAt: timestamp("graded_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    uniq: uniqueIndex("submission_uniq").on(t.courseworkId, t.partyId, t.attempt),
+    courseworkIdx: index("submission_coursework_idx").on(t.tenantId, t.courseworkId),
+    partyIdx: index("submission_party_idx").on(t.tenantId, t.partyId),
+    statusIdx: index("submission_status_idx").on(t.tenantId, t.status),
+    statusCheck: check("submission_status_check",
+      sql`${t.status} IN ('draft','submitted','late','graded','returned')`),
+    attemptCheck: check("submission_attempt_check", sql`${t.attempt} > 0`),
+    scoreCheck: check("submission_score_check", sql`${t.score} IS NULL OR ${t.score} >= 0`),
+    // A graded row must actually carry a score.
+    gradedCheck: check("submission_graded_check", sql`${t.status} <> 'graded' OR ${t.score} IS NOT NULL`),
+  }),
+);
+
+// v1 stores a reference to a file an admin uploads — not a render pipeline.
+export const certificate = pgTable(
+  "certificate",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    tenantId: uuid("tenant_id").notNull().references(() => tenant.id),
+    enrolmentId: uuid("enrolment_id").notNull().references(() => enrolment.id, { onDelete: "cascade" }),
+    partyId: uuid("party_id").notNull().references(() => party.id),
+    number: text("number"),   // 'KD-CERT-20114', from seq_certificate
+    issuedAt: timestamp("issued_at", { withTimezone: true }).notNull().defaultNow(),
+    url: text("url"),
+    mediaAssetId: uuid("media_asset_id"),  // FK added SQL-side
+    revokedAt: timestamp("revoked_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    partyIdx: index("certificate_party_idx").on(t.tenantId, t.partyId),
+    enrolmentIdx: index("certificate_enrolment_idx").on(t.tenantId, t.enrolmentId),
+  }),
+);
+
 export const agentRun = pgTable(
   "agent_run",
   {
