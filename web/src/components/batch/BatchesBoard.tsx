@@ -35,6 +35,7 @@ import {
 } from "./BatchesKanban";
 import { BATCH_CHART_RANGES, BatchesChartView, type BatchChartRange } from "./BatchesChartView";
 import { BatchesCalendarView } from "./BatchesCalendarView";
+import { BATCH_STATUS_CLS as STATUS_CLS } from "@/lib/batchStatus";
 
 type ViewMode = "list" | "kanban" | "chart" | "calendar";
 const VIEW_MODES: readonly ViewMode[] = ["list", "kanban", "chart", "calendar"];
@@ -47,12 +48,6 @@ export const BATCHES_SEARCH_SLOT_ID = "batches-search-slot";
 
 const POLL_MS = 45_000;
 
-const STATUS_CLS: Record<string, string> = {
-  upcoming:  "bg-[rgba(31,63,207,.08)]  text-brand-blue",
-  running:   "bg-[rgba(46,158,106,.10)] text-state-ok",
-  completed: "bg-warm2                  text-mute",
-  cancelled: "bg-[rgba(217,83,79,.10)]  text-state-warn",
-};
 const STATUS_OPTIONS = [
   { value: "upcoming",  label: "Upcoming",  cls: STATUS_CLS.upcoming },
   { value: "running",   label: "Running",   cls: STATUS_CLS.running },

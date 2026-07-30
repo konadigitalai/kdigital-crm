@@ -2,22 +2,9 @@ import Link from "next/link";
 import { getLmsBatches } from "@/lib/api";
 import { pct } from "@/lib/lmsUi";
 import { cn } from "@/lib/cn";
+import { batchStatusCls, batchStatusLabel, BATCH_STATUS_PILL } from "@/lib/batchStatus";
 
 export const dynamic = "force-dynamic";
-
-const STATUS_CHIP: Record<string, string> = {
-  running: "bg-indigo-100 text-indigo-800",
-  upcoming: "bg-sky-100 text-sky-800",
-  completed: "bg-emerald-100 text-emerald-800",
-  cancelled: "bg-black/10 text-ink/60",
-};
-
-const STATUS_LABEL: Record<string, string> = {
-  running: "In progress",
-  upcoming: "Starting soon",
-  completed: "Completed",
-  cancelled: "Cancelled",
-};
 
 function range(start: string | null, end: string | null): string {
   const f = (s: string) => new Date(s).toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" });
@@ -62,9 +49,8 @@ export default async function MyLearning() {
                           {b.code}
                         </span>
                       ) : null}
-                      <span className={cn("rounded-full px-2.5 py-0.5 text-[11px] font-medium",
-                        STATUS_CHIP[b.status] ?? "bg-black/10 text-ink/60")}>
-                        {STATUS_LABEL[b.status] ?? b.status}
+                      <span className={cn(BATCH_STATUS_PILL, batchStatusCls(b.status))}>
+                        {batchStatusLabel(b.status)}
                       </span>
                     </div>
                     <h2 className="mt-2 font-serif text-2xl leading-tight">{b.name}</h2>

@@ -16,13 +16,8 @@ import { LearnerDescription } from "@/components/learner/LearnerDescription";
 import { FeeLedgerCard } from "@/components/learner/FeeLedgerCard";
 import { TimelineTabs } from "@/components/record/TimelineTabs";
 import { ShareToSlackButton } from "@/components/share/ShareToSlackButton";
+import { BATCH_STATUS_CLS } from "@/lib/batchStatus";
 
-const BATCH_STATUS_CLS: Record<BatchStatus, string> = {
-  upcoming:  "bg-[rgba(31,63,207,.08)]  text-brand-blue",
-  running:   "bg-[rgba(46,158,106,.10)] text-state-ok",
-  completed: "bg-warm2                  text-mute",
-  cancelled: "bg-[rgba(217,83,79,.10)]  text-state-warn",
-};
 
 // Read-only badge style for a learner's batch_assignment.status. The
 // learner page never mutates this — status changes happen in the Batches

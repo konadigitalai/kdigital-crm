@@ -9,6 +9,7 @@ import Link from "next/link";
 import { cn } from "@/lib/cn";
 import { avatarGradClass, gradFor, initialsOf, shortName } from "@/lib/ui";
 import type { BatchBoardRow } from "@/lib/types";
+import { BATCH_STATUS_CLS as STATUS_CLS } from "@/lib/batchStatus";
 
 export type BatchGroupBy = "status" | "stack" | "slot" | "trainer";
 
@@ -36,12 +37,6 @@ export function batchGroupKey(b: BatchBoardRow, by: BatchGroupBy): string {
 // rather than an alphabetised jumble.
 const STATUS_ORDER = ["upcoming", "running", "completed", "cancelled"];
 
-const STATUS_CLS: Record<string, string> = {
-  upcoming:  "bg-[rgba(31,63,207,.08)]  text-brand-blue",
-  running:   "bg-[rgba(46,158,106,.10)] text-state-ok",
-  completed: "bg-warm2                  text-mute",
-  cancelled: "bg-[rgba(217,83,79,.10)]  text-state-warn",
-};
 
 const PALETTE = [
   { dot: "bg-brand-violet",  hex: "#6B1FB8" },

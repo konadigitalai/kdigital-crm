@@ -10,6 +10,7 @@ import { FilterBar } from "@/components/filter/FilterBar";
 import { useFilter } from "@/components/filter/useFilter";
 import type { FilterField } from "@/components/filter/types";
 import { TrainerPicker } from "@/components/admin/TrainerPicker";
+import { BATCH_STATUS_CLS as STATUS_CLS } from "@/lib/batchStatus";
 
 interface StaffMember { id: string; name: string; email: string; role: string }
 const WEEKDAYS: { code: WeekDay; label: string }[] = [
@@ -23,12 +24,6 @@ const WEEKDAYS: { code: WeekDay; label: string }[] = [
 ];
 
 const STATUSES: BatchStatus[] = ["upcoming", "running", "completed", "cancelled"];
-const STATUS_CLS: Record<BatchStatus, string> = {
-  upcoming:  "bg-[rgba(31,63,207,.08)]  text-brand-blue",
-  running:   "bg-[rgba(46,158,106,.10)] text-state-ok",
-  completed: "bg-warm2                  text-mute",
-  cancelled: "bg-[rgba(217,83,79,.10)]  text-state-warn",
-};
 const SLOTS: BatchSlot[] = ["morning", "afternoon", "evening"];
 
 function buildFields(rows: Batch[]): FilterField[] {

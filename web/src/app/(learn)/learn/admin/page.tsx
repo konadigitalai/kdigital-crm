@@ -1,15 +1,9 @@
 import Link from "next/link";
 import { getLmsAdminBatches } from "@/lib/api";
 import { cn } from "@/lib/cn";
+import { batchStatusCls, batchStatusLabel, BATCH_STATUS_PILL } from "@/lib/batchStatus";
 
 export const dynamic = "force-dynamic";
-
-const STATUS_CHIP: Record<string, string> = {
-  running: "bg-indigo-100 text-indigo-800",
-  upcoming: "bg-sky-100 text-sky-800",
-  completed: "bg-emerald-100 text-emerald-800",
-  cancelled: "bg-black/10 text-ink/60",
-};
 
 export default async function LmsAdminHome({
   searchParams,
@@ -86,9 +80,8 @@ export default async function LmsAdminHome({
                     </div>
                   </td>
                   <td className="px-5 py-3">
-                    <span className={cn("rounded-full px-2.5 py-0.5 text-[11px] font-medium",
-                      STATUS_CHIP[b.status] ?? "bg-black/10 text-ink/60")}>
-                      {b.status}
+                    <span className={cn(BATCH_STATUS_PILL, batchStatusCls(b.status))}>
+                      {batchStatusLabel(b.status)}
                     </span>
                   </td>
                   <td className="px-5 py-3 text-right tabular-nums">{b.learnerCount}</td>

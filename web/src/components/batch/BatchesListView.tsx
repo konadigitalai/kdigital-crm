@@ -13,13 +13,8 @@ import { cn } from "@/lib/cn";
 import { avatarGradClass, gradFor, initialsOf, shortName } from "@/lib/ui";
 import type { BatchBoardRow, WeekDay } from "@/lib/types";
 import { batchGroupKey, type BatchGroupBy } from "./BatchesKanban";
+import { BATCH_STATUS_CLS as STATUS_CLS } from "@/lib/batchStatus";
 
-const STATUS_CLS: Record<string, string> = {
-  upcoming:  "bg-[rgba(31,63,207,.08)]  text-brand-blue",
-  running:   "bg-[rgba(46,158,106,.10)] text-state-ok",
-  completed: "bg-warm2                  text-mute",
-  cancelled: "bg-[rgba(217,83,79,.10)]  text-state-warn",
-};
 
 const WEEKDAY_LABEL: Record<WeekDay, string> = {
   mon: "Mon", tue: "Tue", wed: "Wed", thu: "Thu", fri: "Fri", sat: "Sat", sun: "Sun",

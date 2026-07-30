@@ -17,13 +17,8 @@ import { getBatchDetailSessions, patchBatchSession } from "@/lib/api";
 import type { BatchDetailData, BatchSessionDetail } from "@/lib/types";
 import { MaterializeSessionsButton } from "./MaterializeSessionsButton";
 import { SessionAttendancePanel } from "./SessionAttendancePanel";
+import { BATCH_STATUS_CLS as STATUS_CLS } from "@/lib/batchStatus";
 
-const STATUS_CLS: Record<string, string> = {
-  upcoming:  "bg-[rgba(31,63,207,.08)]  text-brand-blue",
-  running:   "bg-[rgba(46,158,106,.10)] text-state-ok",
-  completed: "bg-warm2                  text-mute",
-  cancelled: "bg-[rgba(217,83,79,.10)]  text-state-warn",
-};
 
 const SESSION_STATUS_CLS: Record<string, string> = {
   planned:   "bg-warm2                  text-mute",
