@@ -43,8 +43,17 @@ export function LearnShell({
     : href === "/learn/work" ? badges?.work
     : undefined;
 
+  // globals.css pins `html, body { height: 100vh; overflow: hidden }` because
+  // the CRM shell scrolls inside its own panes. The portal is an ordinary
+  // document-flow page, so under that rule it was simply clipped at the
+  // viewport with no way to reach anything below the fold — you could see the
+  // "+ Resource" button and never scroll to the form it opened.
+  //
+  // Own the scrolling here rather than changing the global rule, which the
+  // whole CRM depends on. The header stays sticky because it lives inside
+  // this scroll container.
   return (
-    <div className="min-h-screen bg-[#f7f5f0]">
+    <div className="h-screen overflow-y-auto bg-[#f7f5f0]">
       <header className="sticky top-0 z-30 border-b border-black/5 bg-[#fdfcfa]/95 backdrop-blur">
         <div className="mx-auto flex h-16 max-w-6xl items-center gap-6 px-5">
           <Link href="/learn" className="flex shrink-0 items-center gap-2">

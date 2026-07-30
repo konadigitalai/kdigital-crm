@@ -19,6 +19,7 @@ import {
   updateLmsBatch, ApiError,
 } from "@/lib/api";
 import { hms, RESOURCE_LABEL, COURSEWORK_CHIP, COURSEWORK_LABEL } from "@/lib/lmsUi";
+import { batchStatusLabel } from "@/lib/batchStatus";
 import { cn } from "@/lib/cn";
 import type {
   LmsAdminBatch, LmsAdminContent, ResourceKind, CourseworkType,
@@ -46,6 +47,12 @@ export function ContentEditor({
   const [openModule, setOpenModule] = useState<string | null>(content.modules[0]?.id ?? null);
   const [addingTo, setAddingTo] = useState<{ moduleId: string; what: "resource" | "coursework" } | null>(null);
   const [newModuleTitle, setNewModuleTitle] = useState("");
+  // Controlled so the join link has a real Save button. It used to write on
+  // blur, which gave no confirmation — you couldn't tell a saved link from one
+  // that had silently failed.
+  const [joinUrl, setJoinUrl] = useState(batch.joinUrl ?? "");
+  const [joinSaved, setJoinSaved] = useState(false);
+  const joinDirty = joinUrl.trim() !== (batch.joinUrl ?? "").trim();
 
   const run = (fn: () => Promise<unknown>) => {
     setError(null);
@@ -76,21 +83,45 @@ export function ContentEditor({
               onChange={(e) => run(() => updateLmsBatch(batch.id, { status: e.target.value }))}
               className="mt-1 block rounded-lg border border-black/10 bg-white px-3 py-2 text-sm"
             >
-              {STATUSES.map((s) => <option key={s} value={s}>{s}</option>)}
+              {STATUSES.map((s) => (
+                <option key={s} value={s}>{batchStatusLabel(s)}</option>
+              ))}
             </select>
           </label>
-          <label className="block flex-1 min-w-[16rem]">
-            <span className="text-xs text-ink/50">Live class join link (applies to every session)</span>
-            <input
-              defaultValue={batch.joinUrl ?? ""}
-              placeholder="https://meet.google.com/…"
-              onBlur={(e) => {
-                const v = e.target.value.trim();
-                if (v !== (batch.joinUrl ?? "")) run(() => updateLmsBatch(batch.id, { joinUrl: v || null }));
-              }}
-              className="mt-1 w-full rounded-lg border border-black/10 bg-white px-3 py-2 text-sm outline-none focus:border-indigo-400"
-            />
-          </label>
+
+          <div className="min-w-[18rem] flex-1">
+            <label className="block">
+              <span className="text-xs text-ink/50">Live class join link (applies to every session)</span>
+              <input
+                value={joinUrl}
+                onChange={(e) => { setJoinUrl(e.target.value); setJoinSaved(false); }}
+                placeholder="https://us06web.zoom.us/j/… or https://meet.google.com/…"
+                className="mt-1 w-full rounded-lg border border-black/10 bg-white px-3 py-2 text-sm outline-none focus:border-indigo-400"
+              />
+            </label>
+            <div className="mt-2 flex flex-wrap items-center gap-3">
+              <button
+                type="button"
+                disabled={pending || !joinDirty}
+                onClick={() => run(async () => {
+                  await updateLmsBatch(batch.id, { joinUrl: joinUrl.trim() || null });
+                  setJoinSaved(true);
+                })}
+                className="rounded-full bg-ink px-4 py-1.5 text-xs font-medium text-white transition hover:bg-ink/90 disabled:opacity-40"
+              >
+                {pending ? "Saving…" : joinDirty ? "Save link" : "Saved"}
+              </button>
+              {joinSaved && !joinDirty ? (
+                <span className="text-xs text-emerald-700">
+                  Saved — learners see a Join button on this batch and on every scheduled class.
+                </span>
+              ) : (
+                <span className="text-xs text-ink/45">
+                  Learners see this as a Join button on the batch page, Today, and each class in Schedule.
+                </span>
+              )}
+            </div>
+          </div>
         </div>
       </section>
 
