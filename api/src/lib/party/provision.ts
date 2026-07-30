@@ -26,7 +26,9 @@ export type ProvisionResult = { partyId: string; created: boolean };
  * @param client - a pg PoolClient with app.tenant_id already set.
  * @param tenantId - the tenant this user belongs to.
  * @param email - required; unique within the tenant.
- * @param name - display name (nullable, but strongly recommended).
+ * @param name - display name. Strongly recommended, but may be null: since
+ *   `party.name` is NOT NULL we fall back to the email's local part rather
+ *   than letting the insert fail. See the comment at the insert below.
  */
 export async function provisionPartyForInternalUser(
   client: PoolClient,
@@ -62,11 +64,24 @@ export async function provisionPartyForInternalUser(
   }
 
   // 2. Insert a fresh party.
+  //
+  // party.name is NOT NULL. The Auth0 JIT path passes null whenever the
+  // access token carries no `name` claim, which is the normal shape unless
+  // the post-login Action explicitly copies one across. Passing that null
+  // through aborts the transaction, and because provisioning runs inside
+  // the auth middleware it takes down every request for that user — the
+  // whole app 500s and nobody can log in. Only ever hit on a database with
+  // no pre-existing party for the address, which is exactly what a freshly
+  // seeded tenant looks like.
+  //
+  // Fall back to the email's local part. Cosmetic and easily corrected
+  // later; the alternative is an unusable deployment.
+  const displayName = name?.trim() || email.split("@")[0] || email;
   const inserted = await client.query<{ id: string }>(
     `INSERT INTO party (tenant_id, kind, name, email, is_internal, identifiers, attributes)
      VALUES ($1, 'person', $2, $3, true, '{}'::jsonb, '{}'::jsonb)
      RETURNING id`,
-    [tenantId, name, email],
+    [tenantId, displayName, email],
   );
   const partyId = inserted.rows[0]!.id;
 
