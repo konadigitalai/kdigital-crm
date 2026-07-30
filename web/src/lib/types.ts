@@ -1515,3 +1515,240 @@ export interface TimelineRow {
   ts: string;
 }
 
+
+// ─── LMS ──────────────────────────────────────────────────────────────────
+// Mirrors api/src/routes/lms.ts (learner) and lmsAdmin.ts (staff). Progress
+// percentages are never sent over the wire — the API returns counts and the
+// UI divides, so a stale denominator can't survive a content change.
+
+export type ResourceKind = "video" | "recording" | "document" | "note" | "link";
+export type CourseworkType = "lab" | "assignment" | "assessment";
+export type SubmissionStatus = "draft" | "submitted" | "late" | "graded" | "returned";
+
+export interface LmsMe {
+  partyId: string;
+  name: string | null;
+  email: string | null;
+  learnerNumber: string | null;
+  learnerStatus: string | null;
+  activeBatches: number;
+  completedBatches: number;
+}
+
+export interface LmsBatchSummary {
+  id: string;
+  name: string;
+  code: string | null;
+  status: string;
+  startDate: string | null;
+  endDate: string | null;
+  timeLabel: string | null;
+  joinUrl: string | null;
+  courseName: string | null;
+  trainerName: string | null;
+  moduleCount: number;
+  resourceCount: number;
+  resourcesDone: number;
+}
+
+export interface LmsModule {
+  id: string;
+  rank: number;
+  title: string;
+  summary: string | null;
+}
+
+export interface LmsResource {
+  id: string;
+  moduleId: string;
+  rank: number;
+  title: string;
+  kind: ResourceKind;
+  videoProvider: string | null;
+  videoRef: string | null;
+  durationSeconds: number | null;
+  body: string | null;
+  externalUrl: string | null;
+  required: boolean;
+  recordingUrl: string | null;
+  positionSeconds: number;
+  completedAt: string | null;
+}
+
+export interface LmsCourseworkLite {
+  id: string;
+  moduleId: string;
+  type: CourseworkType;
+  title: string;
+  brief: string | null;
+  maxScore: string | null;
+  dueAt: string | null;
+  closesAt: string | null;
+  submissionStatus: SubmissionStatus | null;
+  score: string | null;
+  submittedAt: string | null;
+}
+
+export interface LmsBatchDetail {
+  batch: {
+    id: string; name: string; code: string | null; status: string;
+    startDate: string | null; endDate: string | null; joinUrl: string | null;
+    courseName: string | null; trainerName: string | null;
+  };
+  modules: LmsModule[];
+  resources: LmsResource[];
+  coursework: LmsCourseworkLite[];
+}
+
+export interface LmsClass {
+  id: string;
+  sessionDate: string;
+  startTime: string | null;
+  endTime: string | null;
+  status?: string;
+  joinUrl: string | null;
+  recordingUrl?: string | null;
+  cohortId: string;
+  batchName: string;
+  batchCode: string | null;
+  trainerName: string | null;
+}
+
+export interface LmsDeadline {
+  id: string;
+  type: CourseworkType;
+  title: string;
+  dueAt: string | null;
+  closesAt?: string | null;
+  cohortId?: string;
+  batchName: string;
+  batchCode: string | null;
+  moduleTitle: string | null;
+  submissionStatus: SubmissionStatus | null;
+}
+
+export interface LmsToday {
+  nextClasses: LmsClass[];
+  dueSoon: Array<{
+    id: string; type: CourseworkType; title: string; dueAt: string | null;
+    moduleTitle: string | null; batchName: string; batchCode: string | null;
+  }>;
+  resume: Array<{
+    id: string; title: string; kind: ResourceKind; durationSeconds: number | null;
+    positionSeconds: number; moduleId: string; moduleTitle: string;
+    cohortId: string; batchName: string;
+  }>;
+}
+
+export interface LmsWorkItem {
+  id: string;
+  type: CourseworkType;
+  title: string;
+  brief: string | null;
+  maxScore: string | null;
+  passScore: string | null;
+  grading: string;
+  opensAt: string | null;
+  dueAt: string | null;
+  closesAt: string | null;
+  moduleId: string;
+  moduleTitle: string;
+  cohortId: string;
+  batchName: string;
+  batchCode: string | null;
+  submissionId: string | null;
+  submissionStatus: SubmissionStatus | null;
+  attempt: number | null;
+  score: string | null;
+  feedback: string | null;
+  submittedAt: string | null;
+  gradedAt: string | null;
+}
+
+export interface LmsWork {
+  items: LmsWorkItem[];
+  stats: { dueThisWeek: number; graded: number; averagePct: number | null };
+}
+
+// ─── LMS admin ────────────────────────────────────────────────────────────
+
+export interface LmsAdminBatch {
+  id: string;
+  name: string;
+  code: string | null;
+  status: string;
+  startDate: string | null;
+  endDate: string | null;
+  joinUrl: string | null;
+  courseName: string | null;
+  trainerName: string | null;
+  moduleCount: number;
+  publishedCount: number;
+  learnerCount: number;
+}
+
+export interface LmsAdminModule {
+  id: string;
+  rank: number;
+  title: string;
+  summary: string | null;
+  status: "draft" | "published";
+  enabled: boolean;
+  resourceCount: number;
+  courseworkCount: number;
+}
+
+export interface LmsAdminResource {
+  id: string;
+  moduleId: string;
+  rank: number;
+  title: string;
+  kind: ResourceKind;
+  videoProvider: string | null;
+  videoRef: string | null;
+  durationSeconds: number | null;
+  body: string | null;
+  mediaAssetId: string | null;
+  externalUrl: string | null;
+  batchSessionId: string | null;
+  required: boolean;
+  enabled: boolean;
+}
+
+export interface LmsAdminCoursework {
+  id: string;
+  moduleId: string;
+  rank: number;
+  type: CourseworkType;
+  title: string;
+  brief: string | null;
+  maxScore: string | null;
+  passScore: string | null;
+  grading: string;
+  opensAt: string | null;
+  dueAt: string | null;
+  closesAt: string | null;
+  enabled: boolean;
+  awaitingGrading: number;
+}
+
+export interface LmsAdminContent {
+  modules: LmsAdminModule[];
+  resources: LmsAdminResource[];
+  coursework: LmsAdminCoursework[];
+}
+
+export interface LmsSubmissionRow {
+  id: string;
+  attempt: number;
+  status: SubmissionStatus;
+  submittedAt: string | null;
+  content: Record<string, unknown>;
+  score: string | null;
+  feedback: string | null;
+  gradedAt: string | null;
+  partyId: string;
+  learnerName: string | null;
+  learnerEmail: string | null;
+  learnerNumber: string | null;
+}

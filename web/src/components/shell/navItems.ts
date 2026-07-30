@@ -56,6 +56,10 @@ export function buildNavItems(summary: SummaryResponse): NavItem[] {
     // were the same tool twice. The /pipeline route itself still resolves —
     // old bookmarks and links keep working — it's just not advertised.
     { href: "/batches",                   icon: "batches",         label: "Batches",                        requires: "admin.batches.manage" },
+    // The LMS lives in its own route group with its own shell (the CRM shell
+    // fetches data an LMS-only admin can't read). This entry is the way in
+    // from the CRM; the portal itself has a switcher back.
+    { href: "/learn/admin",               icon: "graduation-cap",  label: "Academy",                        requires: "lms.content.manage" },
     { href: "/calendar",                  icon: "calendar",        label: "Calendar",                       requires: "events.manage.self" },
     { href: "/agents",                    icon: "robot",           label: "Agents",                         requires: "agents.read" },
     { href: "/settings",                  icon: "settings",        label: "Settings", requiresAny: SETTINGS_ANY_PERMISSIONS },

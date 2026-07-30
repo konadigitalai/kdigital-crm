@@ -1906,3 +1906,157 @@ export async function uploadMediaAsset(
   });
   return asset;
 }
+
+// Namespace import — the LMS surface adds ~20 types and listing them all in
+// a named import would be noise.
+import type * as T from "./types";
+
+// ─── LMS — learner portal ─────────────────────────────────────────────────
+// Everything here is scoped server-side to the signed-in learner. The client
+// never passes a party id; the API derives it from the token and joins
+// through batch_assignment. Don't add a "?partyId=" parameter to any of
+// these — that would move an authorisation decision onto the client.
+
+export async function getLmsMe(): Promise<T.LmsMe> {
+  return get<T.LmsMe>("/lms/me");
+}
+
+export async function getLmsToday(): Promise<T.LmsToday> {
+  return get<T.LmsToday>("/lms/today");
+}
+
+export async function getLmsBatches(): Promise<T.LmsBatchSummary[]> {
+  const { batches } = await get<{ batches: T.LmsBatchSummary[] }>("/lms/batches");
+  return batches;
+}
+
+export async function getLmsBatch(cohortId: string): Promise<T.LmsBatchDetail> {
+  return get<T.LmsBatchDetail>(`/lms/batches/${encodeURIComponent(cohortId)}`);
+}
+
+export async function getLmsSchedule(days = 14): Promise<{ classes: T.LmsClass[]; deadlines: T.LmsDeadline[] }> {
+  return get<{ classes: T.LmsClass[]; deadlines: T.LmsDeadline[] }>(`/lms/schedule?days=${days}`);
+}
+
+export async function getLmsWork(): Promise<T.LmsWork> {
+  return get<T.LmsWork>("/lms/work");
+}
+
+/** Save playback position. Fired on a timer by the player, so keep it cheap.
+ *  `completed` is sticky server-side — passing false never un-completes. */
+export async function saveLmsProgress(
+  resourceId: string,
+  positionSeconds: number,
+  completed = false,
+): Promise<{ positionSeconds: number; completedAt: string | null }> {
+  return send("PUT", `/lms/resources/${encodeURIComponent(resourceId)}/progress`, {
+    positionSeconds: Math.max(0, Math.floor(positionSeconds)),
+    completed,
+  });
+}
+
+export async function submitLmsCoursework(
+  courseworkId: string,
+  content: Record<string, unknown>,
+): Promise<{ id: string; status: string; submittedAt: string }> {
+  return post(`/lms/coursework/${encodeURIComponent(courseworkId)}/submit`, { content });
+}
+
+// ─── LMS — admin ──────────────────────────────────────────────────────────
+
+export async function getLmsAdminBatches(q?: string): Promise<T.LmsAdminBatch[]> {
+  const qs = q ? `?q=${encodeURIComponent(q)}` : "";
+  const { batches } = await get<{ batches: T.LmsAdminBatch[] }>(`/lms-admin/batches${qs}`);
+  return batches;
+}
+
+export async function updateLmsBatch(
+  id: string, patch: { status?: string; joinUrl?: string | null },
+): Promise<T.LmsAdminBatch> {
+  return send("PATCH", `/lms-admin/batches/${encodeURIComponent(id)}`, patch);
+}
+
+export async function getLmsAdminContent(cohortId: string): Promise<T.LmsAdminContent> {
+  return get<T.LmsAdminContent>(`/lms-admin/batches/${encodeURIComponent(cohortId)}/modules`);
+}
+
+export async function createLmsModule(
+  cohortId: string, body: { title: string; summary?: string | null; status?: string },
+): Promise<T.LmsAdminModule> {
+  return post(`/lms-admin/batches/${encodeURIComponent(cohortId)}/modules`, body);
+}
+
+export async function updateLmsModule(
+  id: string, patch: Partial<{ title: string; summary: string | null; status: string; rank: number; enabled: boolean }>,
+): Promise<T.LmsAdminModule> {
+  return send("PATCH", `/lms-admin/modules/${encodeURIComponent(id)}`, patch);
+}
+
+export async function deleteLmsModule(id: string): Promise<void> {
+  await send<void>("DELETE", `/lms-admin/modules/${encodeURIComponent(id)}`);
+}
+
+export async function createLmsResource(
+  moduleId: string,
+  body: {
+    title: string; kind: T.ResourceKind; videoRef?: string | null;
+    durationSeconds?: number | null; body?: string | null;
+    externalUrl?: string | null; mediaAssetId?: string | null;
+    batchSessionId?: string | null; required?: boolean;
+  },
+): Promise<T.LmsAdminResource> {
+  return post(`/lms-admin/modules/${encodeURIComponent(moduleId)}/resources`, body);
+}
+
+export async function updateLmsResource(
+  id: string, patch: Record<string, unknown>,
+): Promise<T.LmsAdminResource> {
+  return send("PATCH", `/lms-admin/resources/${encodeURIComponent(id)}`, patch);
+}
+
+export async function deleteLmsResource(id: string): Promise<void> {
+  await send<void>("DELETE", `/lms-admin/resources/${encodeURIComponent(id)}`);
+}
+
+export async function createLmsCoursework(
+  moduleId: string,
+  body: {
+    title: string; type: T.CourseworkType; brief?: string | null;
+    maxScore?: number | null; passScore?: number | null;
+    dueAt?: string | null; closesAt?: string | null; opensAt?: string | null;
+  },
+): Promise<T.LmsAdminCoursework> {
+  return post(`/lms-admin/modules/${encodeURIComponent(moduleId)}/coursework`, body);
+}
+
+export async function updateLmsCoursework(
+  id: string, patch: Record<string, unknown>,
+): Promise<T.LmsAdminCoursework> {
+  return send("PATCH", `/lms-admin/coursework/${encodeURIComponent(id)}`, patch);
+}
+
+export async function deleteLmsCoursework(id: string): Promise<void> {
+  await send<void>("DELETE", `/lms-admin/coursework/${encodeURIComponent(id)}`);
+}
+
+export async function getLmsSubmissions(courseworkId: string): Promise<T.LmsSubmissionRow[]> {
+  const { submissions } = await get<{ submissions: T.LmsSubmissionRow[] }>(
+    `/lms-admin/coursework/${encodeURIComponent(courseworkId)}/submissions`,
+  );
+  return submissions;
+}
+
+export async function gradeLmsSubmission(
+  id: string, body: { score: number; feedback?: string | null; status?: "graded" | "returned" },
+): Promise<T.LmsSubmissionRow> {
+  return send("PATCH", `/lms-admin/submissions/${encodeURIComponent(id)}`, body);
+}
+
+export async function copyLmsContent(
+  targetCohortId: string, sourceCohortId: string,
+): Promise<{ ok: true; modulesCopied: number; note: string }> {
+  return post(
+    `/lms-admin/batches/${encodeURIComponent(targetCohortId)}/copy-from/${encodeURIComponent(sourceCohortId)}`,
+    {},
+  );
+}
