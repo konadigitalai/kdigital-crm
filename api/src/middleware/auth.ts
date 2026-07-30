@@ -126,6 +126,47 @@ async function provisionUser(claims: JWTPayload): Promise<NonNullable<Request["u
          RETURNING id, tenant_id, email, name, role, active`,
         [wantEmail, wantName, row.id],
       );
+      // Heal the party and its primary contact_point too. app_user used to
+      // be the only row corrected here, which left the person's `party`
+      // stranded on the `…@auth0.local` placeholder from the login that
+      // first provisioned them. That party is what the CRM actually shows
+      // (Learners, pickers, dedup) and what the LMS learner lookup matches
+      // on by email — so a stale one is not cosmetic.
+      //
+      // Guarded against collisions: if another party in the tenant already
+      // holds the real address, leave it alone rather than trip the unique
+      // index mid-request. That case wants a human merge, not a silent write.
+      try {
+        await appPool.query(
+          `UPDATE party p
+              SET email = $2, name = COALESCE($3, p.name)
+            FROM app_user u
+           WHERE u.id = $1
+             AND p.id = u.party_id
+             AND p.email IS DISTINCT FROM $2
+             AND NOT EXISTS (
+               SELECT 1 FROM party x
+                WHERE x.tenant_id = p.tenant_id
+                  AND LOWER(x.email) = LOWER($2)
+                  AND x.id <> p.id
+             )`,
+          [row.id, wantEmail, wantName],
+        );
+        await appPool.query(
+          `UPDATE contact_point cp
+              SET value = $2, updated_at = now()
+             FROM app_user u
+            WHERE u.id = $1
+              AND cp.party_id = u.party_id
+              AND cp.kind = 'email' AND cp.is_primary
+              AND cp.value IS DISTINCT FROM $2`,
+          [row.id, wantEmail],
+        );
+      } catch (err) {
+        // Never fail the request over a cosmetic backfill — the caller is
+        // already authenticated and app_user is correct.
+        console.warn("[auth] party self-heal skipped:", (err as Error).message);
+      }
       const updRow = upd.rows[0] ?? row;
       return {
         id: updRow.id, tenantId: updRow.tenant_id, email: updRow.email,
