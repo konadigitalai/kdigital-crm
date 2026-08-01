@@ -154,9 +154,19 @@ export function BatchPlayer({ detail }: { detail: LmsBatchDetail }) {
 
   const activeModule = active ? detail.modules.find((m) => m.id === active.moduleId) : null;
 
+  // The module's assessment, if it has one — what "Quiz me" opens. Submission
+  // lives on My work, so this is a jump to the right row there rather than a
+  // second quiz UI: one place to answer, one place to see the mark.
+  const quiz = active
+    ? detail.coursework.find((cw) => cw.moduleId === active.moduleId && cw.type === "assessment") ?? null
+    : null;
+
   return (
-    <div className="grid gap-6 lg:grid-cols-[1fr_23rem]">
-      <div className="min-w-0 space-y-5">
+    // Sidebar leads on desktop, matching the reference. On a phone it drops
+    // BELOW the lesson (order-2): nobody wants to scroll past forty lesson
+    // titles to reach the video they tapped.
+    <div className="grid gap-6 lg:grid-cols-[22rem_1fr]">
+      <div className="order-1 min-w-0 space-y-5 lg:order-2">
         {active ? (
           <>
             {/* ── the thing itself ───────────────────────────────────────── */}
@@ -230,25 +240,53 @@ export function BatchPlayer({ detail }: { detail: LmsBatchDetail }) {
                   ].filter(Boolean).join(" · ")}
                 </p>
               </div>
-              <button
-                type="button"
-                onClick={markComplete}
-                disabled={isDone(active.id)}
-                className={cn(
-                  "shrink-0 rounded-full px-5 py-2.5 text-sm font-medium transition",
-                  isDone(active.id)
-                    ? "cursor-default bg-emerald-100 text-emerald-800"
-                    : "bg-ink text-white hover:bg-ink/90",
+              <div className="flex shrink-0 items-center gap-2">
+                <button
+                  type="button"
+                  onClick={markComplete}
+                  disabled={isDone(active.id)}
+                  className={cn(
+                    "rounded-full px-5 py-2.5 text-sm font-medium transition",
+                    isDone(active.id)
+                      ? "cursor-default bg-emerald-100 text-emerald-800"
+                      : "bg-ink text-white hover:bg-ink/90",
+                  )}
+                >
+                  {isDone(active.id) ? "✓ Completed" : "Mark complete"}
+                </button>
+
+                {quiz ? (
+                  <Link
+                    href={`/learn/work?item=${encodeURIComponent(quiz.id)}`}
+                    title={quiz.title}
+                    className="flex items-center gap-1.5 rounded-full border border-black/15 px-5 py-2.5 text-sm font-medium transition hover:bg-black/5"
+                  >
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="m12 3 2.6 5.6 6.1.8-4.5 4.2 1.2 6L12 16.8 6.6 19.6l1.2-6L3.3 9.4l6.1-.8z" />
+                    </svg>
+                    Quiz me
+                  </Link>
+                ) : (
+                  // Shown disabled rather than hidden: the absence is the
+                  // useful signal — this module simply has no assessment.
+                  <span
+                    title="This module has no assessment yet"
+                    className="flex cursor-default items-center gap-1.5 rounded-full border border-black/10 px-5 py-2.5 text-sm font-medium text-ink/30"
+                  >
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="m12 3 2.6 5.6 6.1.8-4.5 4.2 1.2 6L12 16.8 6.6 19.6l1.2-6L3.3 9.4l6.1-.8z" />
+                    </svg>
+                    Quiz me
+                  </span>
                 )}
-              >
-                {isDone(active.id) ? "✓ Completed" : "Mark complete"}
-              </button>
+              </div>
             </div>
 
             <LessonTabs
               resource={active}
               module={activeModule ?? null}
               batch={detail.batch}
+              sessions={detail.sessions}
               attachments={detail.resources.filter(
                 (r) => r.moduleId === active.moduleId && !LESSON_KINDS.includes(r.kind),
               )}
@@ -312,7 +350,7 @@ export function BatchPlayer({ detail }: { detail: LmsBatchDetail }) {
       </div>
 
       {/* ── sidebar: searchable lesson list, grouped by module ────────────── */}
-      <aside className="lg:sticky lg:top-24 lg:self-start">
+      <aside className="order-2 lg:order-1 lg:sticky lg:top-24 lg:self-start">
         <div className="rounded-2xl border border-black/5 bg-white">
           <div className="border-b border-black/5 p-4">
             <div className="relative">

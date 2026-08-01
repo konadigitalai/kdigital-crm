@@ -73,6 +73,28 @@ export function dateLabel(iso: string | null | undefined): string {
   });
 }
 
+/** "4 Aug 2026 – 12 Jan 2027". One spelling of a date range for the whole
+ *  portal — programme cards, course rows and the batch header all use it. */
+export function dateRangeLabel(start: string | null, end: string | null): string {
+  const f = (s: string) =>
+    new Date(s).toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" });
+  if (start && end) return `${f(start)} – ${f(end)}`;
+  if (start) return `From ${f(start)}`;
+  if (end) return `Until ${f(end)}`;
+  return "Dates to be confirmed";
+}
+
+/** Shorter form for a course row inside a programme, where the year is
+ *  already established by the header: "4 Aug – 22 Aug". */
+export function shortRangeLabel(start: string | null, end: string | null): string {
+  const f = (s: string) =>
+    new Date(s).toLocaleDateString(undefined, { day: "numeric", month: "short" });
+  if (start && end) return `${f(start)} – ${f(end)}`;
+  if (start) return `From ${f(start)}`;
+  if (end) return `Until ${f(end)}`;
+  return "Dates TBC";
+}
+
 export const RESOURCE_LABEL: Record<ResourceKind, string> = {
   video: "Video",
   recording: "Class recording",
@@ -117,8 +139,25 @@ export function submissionLabel(s: SubmissionStatus | null): string {
  *  settings. Do that per video — there is no way to enforce it from here.
  */
 export function vimeoEmbedUrl(videoRef: string, startAt = 0): string {
-  const base = `https://player.vimeo.com/video/${encodeURIComponent(videoRef)}`;
+  const { id, hash } = splitVimeoRef(videoRef);
+  const base = `https://player.vimeo.com/video/${encodeURIComponent(id)}`;
   const params = new URLSearchParams({ dnt: "1", title: "0", byline: "0", portrait: "0" });
+  // Unlisted videos ("Hide from Vimeo") only play when the embed carries their
+  // private hash. Without it the player answers 403 with the same "because of
+  // its privacy settings" screen a domain block produces.
+  if (hash) params.set("h", hash);
   if (startAt > 0) params.set("t", `${Math.floor(startAt)}s`);
   return `${base}?${params.toString()}`;
+}
+
+/** Split a stored reference into its Vimeo id and optional privacy hash.
+ *
+ *  An unlisted video's link is vimeo.com/1214797433/ab12cd34ef — the trailing
+ *  segment is required to play it. We keep the pair in `video_ref` as
+ *  "id/hash" rather than adding a column: this function and the admin's
+ *  vimeoRef() parser are the only two places that know the convention, and
+ *  nothing else reads video_ref. A bare id (public video) has no hash. */
+export function splitVimeoRef(ref: string): { id: string; hash: string | null } {
+  const [id, hash] = ref.trim().split(/[/:]/, 2);
+  return { id: (id ?? "").trim(), hash: hash?.trim() || null };
 }

@@ -13,8 +13,38 @@ import { sql } from "drizzle-orm";
 import { withTenant } from "../db/app.js";
 import { requirePermission } from "../middleware/require.js";
 import { partyIdFromAppUserId } from "../lib/party/resolve.js";
+import { lookupVimeo, vimeoConfigured } from "../lib/vimeo.js";
 
 export const lmsAdminRouter = Router();
+
+// ─── GET /lms-admin/vimeo/resolve?url= ───────────────────────────────────
+// Turn a pasted Vimeo link into a ref that will actually play, plus its title
+// and length.
+//
+// The whole point is the privacy hash. Vimeo omits it from the share panel's
+// "Copy link" field, but an "Embed only" video is unplayable without it — so
+// admins pasted the obvious thing and got a dead player every time. Here the
+// server asks Vimeo for the real embed URL and takes the hash from that.
+//
+// Behind lms.content.manage with the rest of this router; the token stays on
+// the server. 501 when unconfigured, so the UI can fall back to manual entry
+// rather than showing an error that looks like the paste was wrong.
+
+lmsAdminRouter.get("/vimeo/resolve", async (req, res) => {
+  const input = String(req.query.url ?? req.query.q ?? "").trim();
+  if (!input) return res.status(400).json({ error: "url is required" });
+  if (!vimeoConfigured()) {
+    return res.status(501).json({ error: "Vimeo lookup isn't configured on the server" });
+  }
+  try {
+    res.json(await lookupVimeo(input));
+  } catch (err) {
+    // Deliberately 400, not 500: every failure here is something the admin can
+    // act on — wrong link, wrong account, expired token — and a 500 would just
+    // read as "the CRM is broken".
+    res.status(400).json({ error: err instanceof Error ? err.message : "Vimeo lookup failed" });
+  }
+});
 
 const RESOURCE_KINDS = ["video", "recording", "document", "note", "link"] as const;
 const COURSEWORK_TYPES = ["lab", "assignment", "assessment"] as const;
@@ -31,19 +61,64 @@ const num = (v: unknown): number | null => {
   return Number.isFinite(n) ? n : null;
 };
 
+// ─── GET /lms-admin/programmes ───────────────────────────────────────────
+// Just enough to drive the programme filter on the content screen: which
+// programmes exist, and how much of their content is still empty. The count
+// of batches lacking a published module is what an admin is actually hunting
+// for, so it comes back with the list rather than after a drill-down.
+
+lmsAdminRouter.get("/programmes", async (req, res, next) => {
+  try {
+    const rows = await withTenant(req.tenantId!, async (db) => {
+      const r = await db.execute(sql`
+        WITH batches AS (
+          SELECT pc.program_id, c.id AS cohort_id,
+                 (SELECT count(*)::int FROM module m
+                    WHERE m.cohort_id = c.id AND m.status='published') AS published
+          FROM cohort c
+          JOIN program_course pc ON pc.course_id = c.course_id
+          WHERE c.enabled = true
+        )
+        SELECT pr.id, pr.code, pr.name,
+               (SELECT count(*)::int FROM program_course pc WHERE pc.program_id = pr.id) AS "courseCount",
+               COALESCE(b.total, 0) AS "batchCount",
+               COALESCE(b.empty, 0) AS "emptyCount"
+        FROM program pr
+        LEFT JOIN LATERAL (
+          SELECT count(*)::int AS total,
+                 count(*) FILTER (WHERE published = 0)::int AS empty
+          FROM batches WHERE batches.program_id = pr.id
+        ) b ON true
+        WHERE pr.enabled = true
+        ORDER BY pr.name
+      `);
+      return r.rows;
+    });
+    res.json({ programmes: rows });
+  } catch (err) { next(err); }
+});
+
 // ─── GET /lms-admin/batches ──────────────────────────────────────────────
 // Every batch, with how much content it already has. `?q=` filters by name
-// or code so this stays usable once there are hundreds.
+// or code so this stays usable once there are hundreds; `?programme=` narrows
+// to one programme, which is how the learner-facing portal groups them.
 
 lmsAdminRouter.get("/batches", async (req, res, next) => {
   try {
     const q = str(req.query.q);
+    const programme = str(req.query.programme);
     const rows = await withTenant(req.tenantId!, async (db) => {
       const r = await db.execute(sql`
         SELECT
           c.id, c.name, c.code, c.status, c.start_date AS "startDate",
           c.end_date AS "endDate", c.join_url AS "joinUrl",
           co.name AS "courseName", tp.name AS "trainerName",
+          -- A course can belong to more than one programme. Rather than
+          -- duplicate the batch row per programme, take the first by name and
+          -- flag the rest — the admin needs to know the batch is shared, not
+          -- to see it three times in a table they're scanning for gaps.
+          pr.id AS "programmeId", pr.code AS "programmeCode", pr.name AS "programmeName",
+          pr.n  AS "programmeCount",
           (SELECT count(*)::int FROM module m WHERE m.cohort_id = c.id)     AS "moduleCount",
           (SELECT count(*)::int FROM module m
              WHERE m.cohort_id = c.id AND m.status='published')             AS "publishedCount",
@@ -52,12 +127,25 @@ lmsAdminRouter.get("/batches", async (req, res, next) => {
         FROM cohort c
         LEFT JOIN course co ON co.id = c.course_id
         LEFT JOIN party  tp ON tp.id = c.trainer_id
+        LEFT JOIN LATERAL (
+          SELECT p.id, p.code, p.name,
+                 count(*) OVER ()::int AS n
+          FROM program_course pc
+          JOIN program p ON p.id = pc.program_id AND p.enabled
+          WHERE pc.course_id = c.course_id
+          ORDER BY p.name
+          LIMIT 1
+        ) pr ON true
         -- Enabled only. A disabled batch is archived: authoring content for
         -- it is wasted work, and it was this screen showing the archive
         -- that made three retired duplicates look like live batches.
         -- Re-enable it in the CRM Batches board to bring it back here.
         WHERE c.enabled = true
           AND ${q ? sql`(c.name ILIKE ${'%' + q + '%'} OR c.code ILIKE ${'%' + q + '%'})` : sql`true`}
+          AND ${programme
+            ? sql`EXISTS (SELECT 1 FROM program_course pc
+                          WHERE pc.course_id = c.course_id AND pc.program_id = ${programme})`
+            : sql`true`}
         ORDER BY c.status, c.start_date DESC NULLS LAST, c.name
       `);
       return r.rows;

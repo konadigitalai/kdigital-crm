@@ -34,12 +34,26 @@ export default async function ManageBatch({ params }: { params: Promise<{ id: st
               </span>
             ) : null}
             <span className="text-sm text-ink/55">{batch.courseName ?? "—"}</span>
+            {batch.programmeName ? (
+              <Link
+                href={`/learn/admin?programme=${encodeURIComponent(batch.programmeId!)}`}
+                className="text-sm text-indigo-700 hover:underline"
+              >
+                {batch.programmeCode ? `${batch.programmeCode} · ` : ""}{batch.programmeName}
+              </Link>
+            ) : null}
           </div>
           <h1 className="mt-2 font-serif text-4xl tracking-tight">{batch.name}</h1>
           <p className="mt-1 text-sm text-ink/55">
             {batch.learnerCount} {batch.learnerCount === 1 ? "learner" : "learners"} assigned
             {batch.trainerName ? ` · ${batch.trainerName}` : ""}
           </p>
+          {batch.programmeCount && batch.programmeCount > 1 ? (
+            <p className="mt-2 rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-900">
+              This batch&rsquo;s course sits in {batch.programmeCount} programmes — content edited
+              here is what learners on all of them see.
+            </p>
+          ) : null}
         </div>
       </header>
 

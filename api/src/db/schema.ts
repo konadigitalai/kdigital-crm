@@ -367,6 +367,9 @@ export const program = pgTable("program", {
   id: uuid("id").primaryKey().defaultRandom(),
   tenantId: uuid("tenant_id").notNull().references(() => tenant.id),
   stackId: uuid("stack_id").notNull().references(() => stack.id),
+  // Short code the learner portal prints — "PRG-11". Filled by a DB default
+  // off seq_program (post-0086), so no insert path has to remember it.
+  code: text("code"),
   name: text("name").notNull(),
   description: text("description"),
   price: numeric("price", { precision: 12, scale: 2 }),

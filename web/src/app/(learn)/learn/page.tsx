@@ -17,7 +17,7 @@ function greeting(): string {
  *  rather than a generic welcome. Built from counts we already have. */
 function summaryLine(batches: number, due: number, classes: number): string {
   const bits: string[] = [];
-  if (batches > 0) bits.push(batches === 1 ? "You're on one programme" : `You're running ${batches} programmes side by side`);
+  if (batches > 0) bits.push(batches === 1 ? "You're on one batch" : `You're running ${batches} batches side by side`);
   if (due > 0) bits.push(due === 1 ? "one thing is due this week" : `${due} things are due this week`);
   if (classes > 0) bits.push(classes === 1 ? "and you have a class coming up" : "and you have classes coming up");
   if (!bits.length) return "Nothing scheduled right now. Enjoy the quiet.";
@@ -191,7 +191,7 @@ export default async function LearnToday() {
               </span>
             </p>
             <Link href="/learn/batches" className="mt-3 inline-block text-sm text-indigo-700 hover:underline">
-              See all programmes →
+              See all batches →
             </Link>
           </section>
 
@@ -218,7 +218,7 @@ export default async function LearnToday() {
 
           {active.length > 0 ? (
             <section className="rounded-2xl border border-black/5 bg-white p-5">
-              <h2 className="font-mono text-[11px] uppercase tracking-[0.12em] text-ink/45">Your programmes</h2>
+              <h2 className="font-mono text-[11px] uppercase tracking-[0.12em] text-ink/45">Your batches</h2>
               <ul className="mt-4 space-y-4">
                 {active.map((b) => {
                   const p = pct(b.resourcesDone, b.resourceCount);

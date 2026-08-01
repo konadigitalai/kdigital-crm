@@ -1,6 +1,6 @@
 "use client";
 
-// The panel under a lesson: Overview · Notes · Resources.
+// The panel under a lesson: Overview · Notes · Resources · Ask Kona.
 //
 // Split out of BatchPlayer because notes carry their own fetch + mutation
 // lifecycle, and folding that into the player would have made one component
@@ -13,18 +13,19 @@
 
 import { useEffect, useState, useTransition } from "react";
 import { addLmsNote, deleteLmsNote, getLmsNotes } from "@/lib/api";
-import { hms, RESOURCE_LABEL } from "@/lib/lmsUi";
+import { hms, RESOURCE_LABEL, shortRangeLabel } from "@/lib/lmsUi";
 import { cn } from "@/lib/cn";
-import type { LmsBatchDetail, LmsNote, LmsResource } from "@/lib/types";
+import type { LmsBatchDetail, LmsBatchSessions, LmsNote, LmsResource } from "@/lib/types";
 
-type TabKey = "overview" | "notes" | "resources";
+type TabKey = "overview" | "notes" | "resources" | "kona";
 
 export function LessonTabs({
-  resource, module: mod, batch, attachments, completed, positionRef,
+  resource, module: mod, batch, sessions, attachments, completed, positionRef,
 }: {
   resource: LmsResource;
   module: { id: string; title: string } | null;
   batch: LmsBatchDetail["batch"];
+  sessions: LmsBatchSessions;
   attachments: LmsResource[];
   completed: boolean;
   /** Live playhead, so a note pins to where the learner actually is. */
@@ -83,7 +84,17 @@ export function LessonTabs({
     { key: "overview", label: "Overview" },
     { key: "notes", label: "Notes", badge: notes?.length || undefined },
     { key: "resources", label: "Resources", badge: attachments.length || undefined },
+    { key: "kona", label: "Ask Kona" },
   ];
+
+  // What the Live classes panel leads with. Recordings are the thing learners
+  // come back for once a course has ended, so the count of them is the
+  // headline rather than the batch name.
+  const recordingLine =
+    sessions.total === 0 ? "No classes scheduled yet"
+    : sessions.recorded === 0 ? "No recordings published yet"
+    : sessions.recorded >= sessions.total ? `All ${sessions.total} sessions recorded`
+    : `${sessions.recorded} of ${sessions.total} sessions recorded`;
 
   return (
     <div>
@@ -151,19 +162,48 @@ export function LessonTabs({
                 <p className="font-mono text-[10px] uppercase tracking-wide text-ink/45">
                   Live classes{batch.code ? ` · ${batch.code}` : ""}
                 </p>
-                <p className="mt-3 text-sm font-medium">{batch.name}</p>
-                <p className="mt-1 text-sm text-ink/55">
-                  {batch.trainerName ? `${batch.trainerName} · ` : ""}
-                  {batch.startDate && batch.endDate
-                    ? `${new Date(batch.startDate).toLocaleDateString(undefined, { day: "numeric", month: "short" })} – ${new Date(batch.endDate).toLocaleDateString(undefined, { day: "numeric", month: "short" })}`
-                    : "Dates to be confirmed"}
-                </p>
-                {batch.joinUrl ? (
-                  <a href={batch.joinUrl} target="_blank" rel="noreferrer"
-                     className="mt-4 inline-block text-sm font-medium text-indigo-700 hover:underline">
-                    Join the live class →
-                  </a>
-                ) : null}
+
+                <div className="mt-3 flex items-start justify-between gap-3 border-l-2 border-indigo-400 pl-3">
+                  <div className="min-w-0">
+                    <p className="text-sm font-medium">{recordingLine}</p>
+                    <p className="mt-1 text-sm text-ink/55">
+                      {shortRangeLabel(
+                        sessions.firstDate ?? batch.startDate,
+                        sessions.lastDate ?? batch.endDate,
+                      )}
+                    </p>
+                  </div>
+                  {sessions.latestRecordingUrl ? (
+                    <a
+                      href={sessions.latestRecordingUrl}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="shrink-0 text-sm font-medium text-indigo-700 hover:underline"
+                    >
+                      Watch
+                    </a>
+                  ) : null}
+                </div>
+
+                <div className="mt-4 border-t border-black/5 pt-3 text-sm text-ink/55">
+                  {batch.status === "completed" ? (
+                    <>
+                      {batch.endDate
+                        ? `Course ended ${new Date(batch.endDate).toLocaleDateString(undefined, { day: "numeric", month: "short" })}. `
+                        : "This course has ended. "}
+                      Recordings stay available here.
+                    </>
+                  ) : batch.joinUrl ? (
+                    <a href={batch.joinUrl} target="_blank" rel="noreferrer"
+                       className="font-medium text-indigo-700 hover:underline">
+                      Join the live class →
+                    </a>
+                  ) : batch.status === "upcoming" && batch.startDate ? (
+                    `Classes start ${new Date(batch.startDate).toLocaleDateString(undefined, { day: "numeric", month: "short" })}.`
+                  ) : (
+                    "Your trainer hasn't published a join link yet."
+                  )}
+                </div>
               </div>
             </div>
           </div>
@@ -260,6 +300,38 @@ export function LessonTabs({
               ))}
             </ul>
           )
+        ) : null}
+
+        {tab === "kona" ? (
+          // Deliberately not a chat box that does nothing. An input that
+          // silently discards what you type is worse than no input: it reads
+          // as broken rather than unbuilt. Say plainly what it will do, and
+          // point at the two things that DO answer a question today.
+          <div className="rounded-2xl border border-black/5 bg-white p-8 text-center">
+            <span className="mx-auto grid h-12 w-12 place-items-center rounded-full bg-indigo-50 text-indigo-700">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+              </svg>
+            </span>
+            <p className="mt-4 font-serif text-xl">Ask Kona about this lesson</p>
+            <p className="mx-auto mt-2 max-w-sm text-sm text-ink/55">
+              Kona will answer questions grounded in{" "}
+              <span className="font-medium text-ink/70">{resource.title}</span> and its
+              resources — what a term meant, why a step was taken, what to revise.
+              It isn&rsquo;t switched on yet.
+            </p>
+            <p className="mx-auto mt-4 max-w-sm text-sm text-ink/55">
+              In the meantime, ask{" "}
+              {batch.trainerName ? (
+                <span className="font-medium text-ink/70">{batch.trainerName}</span>
+              ) : "your trainer"}{" "}
+              in class, or{" "}
+              <a href="/learn/help" className="font-medium text-indigo-700 hover:underline">
+                raise a request
+              </a>{" "}
+              and an advisor replies within a day.
+            </p>
+          </div>
         ) : null}
       </div>
     </div>

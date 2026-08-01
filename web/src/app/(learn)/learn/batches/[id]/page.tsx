@@ -23,10 +23,10 @@ export default async function BatchDetail({ params }: { params: Promise<{ id: st
 
   return (
     <div className="space-y-6">
-      <nav className="flex items-center gap-2 text-sm text-ink/50">
+      <nav className="flex flex-wrap items-center gap-2 text-sm text-ink/50">
         <Link href="/learn/batches" className="hover:underline">My learning</Link>
         <span aria-hidden>/</span>
-        <span className="text-ink/70">{batch.name}</span>
+        <span className="text-ink/70">{batch.courseName ?? batch.name}</span>
       </nav>
 
       <header className="flex flex-wrap items-start justify-between gap-4">

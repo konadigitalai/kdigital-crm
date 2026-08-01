@@ -2013,8 +2013,26 @@ export async function submitLmsCoursework(
 
 // ─── LMS — admin ──────────────────────────────────────────────────────────
 
-export async function getLmsAdminBatches(q?: string): Promise<T.LmsAdminBatch[]> {
-  const qs = q ? `?q=${encodeURIComponent(q)}` : "";
+/** Resolve a pasted Vimeo link server-side: the privacy hash an "Embed only"
+ *  video needs, plus its title and length. Throws ApiError 501 when the server
+ *  has no VIMEO_ACCESS_TOKEN — callers should fall back to manual entry. */
+export async function resolveVimeo(url: string): Promise<T.VimeoLookup> {
+  return get<T.VimeoLookup>(`/lms-admin/vimeo/resolve?url=${encodeURIComponent(url)}`);
+}
+
+export async function getLmsAdminProgrammes(): Promise<T.LmsAdminProgramme[]> {
+  const { programmes } = await get<{ programmes: T.LmsAdminProgramme[] }>("/lms-admin/programmes");
+  return programmes;
+}
+
+export async function getLmsAdminBatches(
+  q?: string,
+  programme?: string,
+): Promise<T.LmsAdminBatch[]> {
+  const params = new URLSearchParams();
+  if (q) params.set("q", q);
+  if (programme) params.set("programme", programme);
+  const qs = params.size ? `?${params}` : "";
   const { batches } = await get<{ batches: T.LmsAdminBatch[] }>(`/lms-admin/batches${qs}`);
   return batches;
 }

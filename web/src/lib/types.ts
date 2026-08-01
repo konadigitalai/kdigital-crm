@@ -1547,8 +1547,15 @@ export interface LmsBatchSummary {
   courseName: string | null;
   trainerName: string | null;
   moduleCount: number;
+  /** Required lessons in published modules, and how many are done. */
   resourceCount: number;
   resourcesDone: number;
+  /** Delivered classes, and how many this learner was marked present for. */
+  classesHeld: number;
+  classesAttended: number;
+  /** Scheduled classes and how many have a recording published. */
+  sessionCount: number;
+  recordedCount: number;
 }
 
 export interface LmsModule {
@@ -1589,12 +1596,22 @@ export interface LmsCourseworkLite {
   submittedAt: string | null;
 }
 
+export interface LmsBatchSessions {
+  total: number;
+  delivered: number;
+  recorded: number;
+  firstDate: string | null;
+  lastDate: string | null;
+  latestRecordingUrl: string | null;
+}
+
 export interface LmsBatchDetail {
   batch: {
     id: string; name: string; code: string | null; status: string;
     startDate: string | null; endDate: string | null; joinUrl: string | null;
     courseName: string | null; trainerName: string | null;
   };
+  sessions: LmsBatchSessions;
   modules: LmsModule[];
   resources: LmsResource[];
   coursework: LmsCourseworkLite[];
@@ -1672,6 +1689,33 @@ export interface LmsWork {
 
 // ─── LMS admin ────────────────────────────────────────────────────────────
 
+/** What the server resolved a pasted Vimeo link to. `ref` is what gets stored
+ *  in the lesson — it carries the privacy hash the share link leaves out. */
+export interface VimeoLookup {
+  ref: string;
+  id: string;
+  hash: string | null;
+  title: string | null;
+  durationSeconds: number | null;
+  thumbnailUrl: string | null;
+  privacyView: string | null;
+  /** 'public' · 'whitelist' (specific domains) · 'private' (nowhere). */
+  privacyEmbed: string | null;
+  /** True only for 'public' — a whitelisted video still needs this domain. */
+  embeddable: boolean;
+  domainRestricted: boolean;
+}
+
+export interface LmsAdminProgramme {
+  id: string;
+  code: string | null;
+  name: string;
+  courseCount: number;
+  batchCount: number;
+  /** Batches in this programme with nothing published — the gap an admin hunts. */
+  emptyCount: number;
+}
+
 export interface LmsAdminBatch {
   id: string;
   name: string;
@@ -1682,6 +1726,11 @@ export interface LmsAdminBatch {
   joinUrl: string | null;
   courseName: string | null;
   trainerName: string | null;
+  programmeId: string | null;
+  programmeCode: string | null;
+  programmeName: string | null;
+  /** How many programmes use this batch's course. >1 means edits are shared. */
+  programmeCount: number | null;
   moduleCount: number;
   publishedCount: number;
   learnerCount: number;

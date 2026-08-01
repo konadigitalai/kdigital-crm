@@ -7,7 +7,7 @@
 // fields (a link and a note) because that covers labs and written work, and
 // an empty schema would have meant building a form builder first.
 
-import { useMemo, useState, useTransition } from "react";
+import { useEffect, useMemo, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { submitLmsCoursework } from "@/lib/api";
 import { ApiError } from "@/lib/api";
@@ -26,7 +26,7 @@ function scorePct(item: LmsWorkItem): number | null {
   return Math.round((Number(item.score) / max) * 100);
 }
 
-export function WorkList({ work }: { work: LmsWork }) {
+export function WorkList({ work, focusId }: { work: LmsWork; focusId?: string }) {
   const router = useRouter();
   const [filter, setFilter] = useState<Filter>("all");
   const [openId, setOpenId] = useState<string | null>(null);
@@ -46,6 +46,15 @@ export function WorkList({ work }: { work: LmsWork }) {
     : filter === "due" ? (i.submissionStatus == null || i.submissionStatus === "draft")
     : i.submissionStatus === "graded",
   ), [work.items, filter]);
+
+  // Arriving from a lesson's "Quiz me" — bring the item into view and ring it,
+  // rather than dropping someone at the top of a list of thirty and letting
+  // them hunt. The filter is already "all", so the row is guaranteed present.
+  useEffect(() => {
+    if (!focusId) return;
+    const el = document.getElementById(`cw-${focusId}`);
+    el?.scrollIntoView({ behavior: "smooth", block: "center" });
+  }, [focusId]);
 
   const submit = (item: LmsWorkItem) => {
     setError(null);
@@ -113,7 +122,16 @@ export function WorkList({ work }: { work: LmsWork }) {
             const closed = !!item.closesAt && new Date(item.closesAt).getTime() < Date.now();
             const p = scorePct(item);
             return (
-              <li key={item.id} className="rounded-2xl border border-black/5 bg-white p-5">
+              <li
+                key={item.id}
+                id={`cw-${item.id}`}
+                className={cn(
+                  "rounded-2xl border bg-white p-5 transition",
+                  focusId === item.id
+                    ? "border-indigo-400 ring-2 ring-indigo-200"
+                    : "border-black/5",
+                )}
+              >
                 <div className="flex flex-wrap items-start gap-4">
                   <span className={cn("grid h-11 w-11 shrink-0 place-items-center rounded-xl font-mono text-[10px] font-semibold", COURSEWORK_CHIP[item.type])}>
                     {COURSEWORK_LABEL[item.type]}

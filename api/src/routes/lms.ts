@@ -41,6 +41,15 @@ const myCohorts = (partyId: string) => sql`
   WHERE ba.party_id = ${partyId} AND ba.status = 'active'
 `;
 
+// What the portal calls a "lesson": something you work THROUGH, in order.
+// Documents and links are supporting material — they surface in a lesson's
+// Resources tab and have no completion of their own.
+//
+// Progress counts these kinds ONLY. It used to count every required resource,
+// which meant a required document capped a learner below 100% forever: the
+// sidebar never lists one, so there was no way to open it and mark it done.
+const LESSON_KINDS = sql`('video','recording','note')`;
+
 // ─── GET /lms/me ─────────────────────────────────────────────────────────
 // Portal header: display name + LRN number + headline counts.
 
@@ -74,8 +83,11 @@ lmsRouter.get("/me", async (req, res, next) => {
 // ─── GET /lms/batches ────────────────────────────────────────────────────
 // "My learning". One row per assigned batch with computed progress.
 //
-// Progress counts only REQUIRED resources in PUBLISHED modules, so adding a
+// Progress counts only REQUIRED lessons in PUBLISHED modules, so adding a
 // draft module or an optional reading can never move a learner backwards.
+//
+// Attendance and recording counts ride along because the card shows them and
+// a second round trip per batch to fetch them would be silly.
 
 lmsRouter.get("/batches", async (req, res, next) => {
   try {
@@ -88,8 +100,31 @@ lmsRouter.get("/batches", async (req, res, next) => {
           SELECT m.cohort_id, mr.id AS resource_id
           FROM module m
           JOIN module_resource mr ON mr.module_id = m.id AND mr.enabled AND mr.required
+            AND mr.kind IN ${LESSON_KINDS}
           WHERE m.cohort_id IN (SELECT cohort_id FROM mine)
             AND m.status = 'published' AND m.enabled
+        ),
+        -- Attendance is over DELIVERED classes only. Counting planned ones
+        -- would show a learner sliding from 100% to 60% purely because the
+        -- term is young and most of its classes haven't happened yet.
+        cls AS (
+          SELECT bs.cohort_id,
+                 count(*)::int                                               AS held,
+                 count(*) FILTER (WHERE a.status IN ('present','late'))::int  AS attended
+          FROM batch_session bs
+          LEFT JOIN attendance a ON a.batch_session_id = bs.id AND a.party_id = ${partyId}
+          WHERE bs.status = 'delivered'
+            AND bs.cohort_id IN (SELECT cohort_id FROM mine)
+          GROUP BY bs.cohort_id
+        ),
+        rec AS (
+          SELECT bs.cohort_id,
+                 count(*)::int                                              AS sessions,
+                 count(*) FILTER (WHERE bs.recording_url IS NOT NULL)::int   AS recorded
+          FROM batch_session bs
+          WHERE bs.status <> 'cancelled'
+            AND bs.cohort_id IN (SELECT cohort_id FROM mine)
+          GROUP BY bs.cohort_id
         )
         SELECT
           c.id, c.name, c.code, c.status, c.start_date AS "startDate",
@@ -102,11 +137,17 @@ lmsRouter.get("/batches", async (req, res, next) => {
           (SELECT count(*)::int FROM res
              JOIN resource_progress rp
                ON rp.resource_id = res.resource_id AND rp.party_id = ${partyId}
-             WHERE res.cohort_id = c.id AND rp.completed_at IS NOT NULL)      AS "resourcesDone"
+             WHERE res.cohort_id = c.id AND rp.completed_at IS NOT NULL)      AS "resourcesDone",
+          COALESCE(cl.held, 0)     AS "classesHeld",
+          COALESCE(cl.attended, 0) AS "classesAttended",
+          COALESCE(rc.sessions, 0) AS "sessionCount",
+          COALESCE(rc.recorded, 0) AS "recordedCount"
         FROM cohort c
         JOIN mine ON mine.cohort_id = c.id
         LEFT JOIN course co ON co.id = c.course_id
         LEFT JOIN party  tp ON tp.id = c.trainer_id
+        LEFT JOIN cls    cl ON cl.cohort_id = c.id
+        LEFT JOIN rec    rc ON rc.cohort_id = c.id
         ORDER BY c.status, c.start_date DESC NULLS LAST, c.name
       `);
       return r.rows;
@@ -140,6 +181,22 @@ lmsRouter.get("/batches/:cohortId", async (req, res, next) => {
         WHERE c.id = ${cohortId}
       `);
       if (!head.rows[0]) return null;
+
+      // The "Live classes" panel: how many classes ran, how many are watchable
+      // now, and the newest recording so "Watch" has somewhere to go.
+      const sessions = await db.execute(sql`
+        SELECT
+          count(*) FILTER (WHERE bs.status <> 'cancelled')::int          AS "total",
+          count(*) FILTER (WHERE bs.status = 'delivered')::int           AS "delivered",
+          count(*) FILTER (WHERE bs.recording_url IS NOT NULL)::int      AS "recorded",
+          min(bs.session_date) FILTER (WHERE bs.status <> 'cancelled')   AS "firstDate",
+          max(bs.session_date) FILTER (WHERE bs.status <> 'cancelled')   AS "lastDate",
+          (SELECT bs2.recording_url FROM batch_session bs2
+             WHERE bs2.cohort_id = ${cohortId} AND bs2.recording_url IS NOT NULL
+             ORDER BY bs2.session_date DESC LIMIT 1)                     AS "latestRecordingUrl"
+        FROM batch_session bs
+        WHERE bs.cohort_id = ${cohortId}
+      `);
 
       const modules = await db.execute(sql`
         SELECT m.id, m.rank, m.title, m.summary
@@ -186,6 +243,7 @@ lmsRouter.get("/batches/:cohortId", async (req, res, next) => {
 
       return {
         batch: head.rows[0],
+        sessions: sessions.rows[0],
         modules: modules.rows,
         resources: resources.rows,
         coursework: coursework.rows,
