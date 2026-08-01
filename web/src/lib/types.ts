@@ -1689,23 +1689,6 @@ export interface LmsWork {
 
 // ─── LMS admin ────────────────────────────────────────────────────────────
 
-/** What the server resolved a pasted Vimeo link to. `ref` is what gets stored
- *  in the lesson — it carries the privacy hash the share link leaves out. */
-export interface VimeoLookup {
-  ref: string;
-  id: string;
-  hash: string | null;
-  title: string | null;
-  durationSeconds: number | null;
-  thumbnailUrl: string | null;
-  privacyView: string | null;
-  /** 'public' · 'whitelist' (specific domains) · 'private' (nowhere). */
-  privacyEmbed: string | null;
-  /** True only for 'public' — a whitelisted video still needs this domain. */
-  embeddable: boolean;
-  domainRestricted: boolean;
-}
-
 export interface LmsAdminProgramme {
   id: string;
   code: string | null;

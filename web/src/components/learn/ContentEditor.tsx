@@ -19,13 +19,13 @@
 // Content authoring is low-frequency, and a stale tree after a failed write is
 // far more confusing than a 300ms wait.
 
-import { useEffect, useMemo, useRef, useState, useTransition } from "react";
+import { useEffect, useMemo, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import {
   createLmsModule, updateLmsModule, deleteLmsModule,
   createLmsResource, updateLmsResource, deleteLmsResource,
   createLmsCoursework, updateLmsCoursework, deleteLmsCoursework,
-  updateLmsBatch, resolveVimeo, ApiError,
+  updateLmsBatch, ApiError,
 } from "@/lib/api";
 import {
   hms, vimeoEmbedUrl, splitVimeoRef, RESOURCE_LABEL, COURSEWORK_CHIP, COURSEWORK_LABEL,
@@ -34,7 +34,7 @@ import { batchStatusLabel } from "@/lib/batchStatus";
 import { cn } from "@/lib/cn";
 import type {
   LmsAdminBatch, LmsAdminContent, LmsAdminModule, LmsAdminResource,
-  LmsAdminCoursework, ResourceKind, CourseworkType, VimeoLookup,
+  LmsAdminCoursework, ResourceKind, CourseworkType,
 } from "@/lib/types";
 
 const KINDS: ResourceKind[] = ["video", "recording", "note", "link", "document"];
@@ -125,129 +125,6 @@ function sameNumber(typed: string, stored: string | number | null): boolean {
   return Number(a) === Number(b);
 }
 
-/** The Vimeo link field, which resolves what you pasted against Vimeo.
- *
- *  Admins copy the share link, because that is what a link is for. But an
- *  "Embed only" video is unplayable without its privacy hash, and Vimeo leaves
- *  that hash out of the share panel's Copy link field — it lives only in the
- *  `</>` embed snippet. Rather than train everyone to click a different button,
- *  the server looks the video up and fills the hash in.
- *
- *  Resolving also brings back the title and the real duration, so neither has
- *  to be typed. It fires on blur; if the server has no Vimeo token the field
- *  quietly stays manual rather than showing an error that reads like the paste
- *  was wrong. */
-function VimeoField({
-  value, onChange, onResolved,
-}: {
-  value: string;
-  onChange: (v: string) => void;
-  onResolved: (l: VimeoLookup) => void;
-}) {
-  const [state, setState] = useState<
-    { t: "idle" } | { t: "loading" } | { t: "ok"; l: VimeoLookup } | { t: "err"; msg: string } | { t: "manual" }
-  >({ t: "idle" });
-  const lastResolved = useRef<string>("");
-  // Named in the warning below — "add your domain" is useless without saying
-  // which one. Read after mount; the server has no window.
-  const [host, setHost] = useState<string | null>(null);
-  useEffect(() => setHost(window.location.host), []);
-
-  const resolve = async (raw: string) => {
-    const v = raw.trim();
-    if (!v || v === lastResolved.current) return;
-    lastResolved.current = v;
-    setState({ t: "loading" });
-    try {
-      const l = await resolveVimeo(v);
-      // Store the canonical ref — this is the string that actually plays.
-      onChange(l.ref);
-      lastResolved.current = l.ref;
-      onResolved(l);
-      setState({ t: "ok", l });
-    } catch (err) {
-      // 501 = no token on the server. Not the admin's problem and not an
-      // error: fall back to manual entry with a hint about the embed code.
-      if (err instanceof ApiError && err.status === 501) { setState({ t: "manual" }); return; }
-      setState({
-        t: "err",
-        msg: err instanceof ApiError
-          ? String((err.body as { error?: string })?.error ?? err.message)
-          : "Couldn't check that link with Vimeo",
-      });
-    }
-  };
-
-  return (
-    <div>
-      <div className="flex gap-2">
-        <input
-          value={value}
-          onChange={(e) => { onChange(e.target.value); setState({ t: "idle" }); }}
-          onBlur={(e) => void resolve(e.target.value)}
-          placeholder="Paste the Vimeo link"
-          className={INPUT}
-        />
-        <button
-          type="button"
-          onClick={() => { lastResolved.current = ""; void resolve(value); }}
-          disabled={!value.trim() || state.t === "loading"}
-          className="shrink-0 rounded-lg border border-black/15 px-3 py-2 text-xs font-medium transition hover:bg-black/5 disabled:opacity-40"
-        >
-          {state.t === "loading" ? "Checking…" : "Check"}
-        </button>
-      </div>
-
-      {state.t === "ok" ? (
-        <div className="mt-1.5 space-y-1 text-xs">
-          <p className="text-emerald-700">
-            ✓ {state.l.title ?? "Found on Vimeo"}
-            {state.l.durationSeconds ? ` · ${hms(state.l.durationSeconds)}` : ""}
-            {state.l.hash ? " · private hash added" : ""}
-          </p>
-          {state.l.domainRestricted ? (
-            // The single commonest cause of a dead lesson, and invisible from
-            // inside the iframe — so it is called out by name, with the domain.
-            <p className="text-amber-700">
-              Vimeo restricts this video to <strong>specific domains</strong>. It will
-              still show &ldquo;because of its privacy settings&rdquo; until{" "}
-              {host ? <code>{host}</code> : "this site's domain"} is added on Vimeo under
-              Privacy → Where can this be embedded.
-            </p>
-          ) : !state.l.embeddable ? (
-            <p className="text-rose-700">
-              Vimeo has embedding switched off for this video entirely, so it won&rsquo;t
-              play here. Set &ldquo;Where can this be embedded&rdquo; to Anywhere or to
-              specific domains.
-            </p>
-          ) : null}
-          {state.l.privacyView === "disable" && state.l.hash ? (
-            <p className="text-ink/45">
-              Private on Vimeo — the hash in the link is what grants access, so anyone
-              reading the page source can watch it outside the portal.
-            </p>
-          ) : null}
-        </div>
-      ) : null}
-
-      {state.t === "err" ? <p className="mt-1.5 text-xs text-rose-700">{state.msg}</p> : null}
-
-      {state.t === "manual" ? (
-        <p className="mt-1.5 text-xs text-ink/45">
-          Automatic lookup is off (no Vimeo token on the server). If the video is
-          &ldquo;Embed only&rdquo;, paste the <code>&lt;/&gt;</code> Embed snippet instead of
-          Copy link — the share link omits the private hash it needs.
-        </p>
-      ) : null}
-
-      {state.t === "idle" ? (
-        <p className="mt-1.5 text-xs text-ink/45">
-          Paste the share link — the private hash, title and length are filled in for you.
-        </p>
-      ) : null}
-    </div>
-  );
-}
 
 /** Shown under a video preview. Vimeo's "Because of its privacy settings…"
  *  screen has exactly two causes and neither is visible from inside the
@@ -269,7 +146,11 @@ function EmbedHelp({ hasHash }: { hasHash: boolean }) {
           On Vimeo open the video, then <strong>Settings → Privacy → &ldquo;Where can this
           be embedded?&rdquo;</strong> and choose <strong>Anywhere</strong>, or pick specific
           domains and add {host ? <code>{host}</code> : "this site's domain"}.
-          Domain allowlisting needs a Vimeo Plus plan or higher.
+        </p>
+        <p>
+          The account-level list under Settings → Videos only applies to videos
+          uploaded <em>after</em> you change it — existing videos keep the list they
+          were created with and have to be updated one by one.
         </p>
         <p>
           Also check <strong>&ldquo;Who can watch this video&rdquo;</strong> isn&rsquo;t set to
@@ -982,17 +863,11 @@ function ResourcePane({ resource: r, pending, run, onDeleted }: {
 
         {timed ? (
           <div className="grid gap-4 sm:grid-cols-[1fr_9rem]">
-            <Field label="Vimeo link or ID">
-              <VimeoField
-                value={ref}
-                onChange={setRef}
-                onResolved={(l) => {
-                  // Only fill blanks — never overwrite a title an admin wrote
-                  // by hand just because Vimeo happens to know a different one.
-                  if (!title.trim() && l.title) setTitle(l.title);
-                  if (!minutes.trim() && l.durationSeconds) setMinutes(minutesOf(l.durationSeconds));
-                }}
-              />
+            <Field
+              label="Vimeo link or ID"
+              hint="Paste the share link. If the video is unlisted its link ends in a private hash (vimeo.com/123456789/ab12cd34ef) — keep it, the video won't play without it."
+            >
+              <input value={ref} onChange={(e) => setRef(e.target.value)} className={INPUT} />
             </Field>
             <Field label="Length (min)">
               <input
@@ -1254,15 +1129,11 @@ function ResourceForm({
 
       {kind === "video" || kind === "recording" ? (
         <div className="grid gap-4 sm:grid-cols-[1fr_9rem]">
-          <Field label="Vimeo link or ID">
-            <VimeoField
-              value={ref}
-              onChange={setRef}
-              onResolved={(l) => {
-                if (!title.trim() && l.title) setTitle(l.title);
-                if (!minutes.trim() && l.durationSeconds) setMinutes(minutesOf(l.durationSeconds));
-              }}
-            />
+          <Field
+            label="Vimeo link or ID"
+            hint="Paste the share link, including the private hash if the video is unlisted."
+          >
+            <input value={ref} onChange={(e) => setRef(e.target.value)} placeholder="https://vimeo.com/…" className={INPUT} />
           </Field>
           <Field label="Length (min)">
             <input value={minutes} onChange={(e) => setMinutes(e.target.value)} inputMode="numeric" className={INPUT} />

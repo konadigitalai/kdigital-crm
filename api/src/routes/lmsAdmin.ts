@@ -13,38 +13,8 @@ import { sql } from "drizzle-orm";
 import { withTenant } from "../db/app.js";
 import { requirePermission } from "../middleware/require.js";
 import { partyIdFromAppUserId } from "../lib/party/resolve.js";
-import { lookupVimeo, vimeoConfigured } from "../lib/vimeo.js";
 
 export const lmsAdminRouter = Router();
-
-// ─── GET /lms-admin/vimeo/resolve?url= ───────────────────────────────────
-// Turn a pasted Vimeo link into a ref that will actually play, plus its title
-// and length.
-//
-// The whole point is the privacy hash. Vimeo omits it from the share panel's
-// "Copy link" field, but an "Embed only" video is unplayable without it — so
-// admins pasted the obvious thing and got a dead player every time. Here the
-// server asks Vimeo for the real embed URL and takes the hash from that.
-//
-// Behind lms.content.manage with the rest of this router; the token stays on
-// the server. 501 when unconfigured, so the UI can fall back to manual entry
-// rather than showing an error that looks like the paste was wrong.
-
-lmsAdminRouter.get("/vimeo/resolve", async (req, res) => {
-  const input = String(req.query.url ?? req.query.q ?? "").trim();
-  if (!input) return res.status(400).json({ error: "url is required" });
-  if (!vimeoConfigured()) {
-    return res.status(501).json({ error: "Vimeo lookup isn't configured on the server" });
-  }
-  try {
-    res.json(await lookupVimeo(input));
-  } catch (err) {
-    // Deliberately 400, not 500: every failure here is something the admin can
-    // act on — wrong link, wrong account, expired token — and a 500 would just
-    // read as "the CRM is broken".
-    res.status(400).json({ error: err instanceof Error ? err.message : "Vimeo lookup failed" });
-  }
-});
 
 const RESOURCE_KINDS = ["video", "recording", "document", "note", "link"] as const;
 const COURSEWORK_TYPES = ["lab", "assignment", "assessment"] as const;
