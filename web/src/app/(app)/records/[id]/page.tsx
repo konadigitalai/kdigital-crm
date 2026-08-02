@@ -449,6 +449,28 @@ export default async function RecordPage({
                 valueClass="text-[13px] font-semibold text-ink"
               />
             </DetailRow>
+
+            {/* Where the form was submitted from. Read-only: it is a fact
+                about the visit, not something anyone should be able to edit
+                after the fact. Shown only when the lead came from a web form.
+
+                rel="noreferrer" matters here — the value is supplied by a
+                browser to a public endpoint, so it is not ours. The intake
+                route already fences the scheme to http(s); this stops the
+                target page reading our URL out of document.referrer. */}
+            {attrs.landingPageUrl && (
+              <DetailRow label="Submitted from">
+                <a
+                  href={attrs.landingPageUrl}
+                  target="_blank"
+                  rel="noreferrer noopener"
+                  title={attrs.landingPageUrl}
+                  className="block truncate text-[13px] font-semibold text-brand-violet hover:underline"
+                >
+                  {prettyUrl(attrs.landingPageUrl)}
+                </a>
+              </DetailRow>
+            )}
             <DetailRow label="Lead status">
               <InlineLeadField
                 leadNumber={lead.number}
@@ -644,6 +666,19 @@ function DetailRow({ label, children }: { label: string; children: React.ReactNo
 // Build a bare-E.164 phone string from the split (countryCode, number) that
 // the record page exposes. Returns null when either half is missing so the
 // SendMessageButton renders disabled with an explanatory tooltip.
+// A landing-page URL is long and mostly boilerplate. Show the part that
+// identifies the page — host + path — and let the title attribute and the
+// link itself carry the query string, which is where the UTMs live.
+function prettyUrl(raw: string): string {
+  try {
+    const u = new URL(raw);
+    const path = u.pathname === "/" ? "" : u.pathname.replace(/\/$/, "");
+    return u.host.replace(/^www\./, "") + path + (u.search ? " ?…" : "");
+  } catch {
+    return raw;
+  }
+}
+
 function composeE164(cc: string | null, phone: string | null): string | null {
   const c = (cc ?? "").trim();
   const p = (phone ?? "").replace(/\D/g, "");

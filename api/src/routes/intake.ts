@@ -85,6 +85,39 @@ async function resolveDefaultTenantId(): Promise<string | null> {
 
 // ─── Small helpers ───────────────────────────────────────────────────────
 
+// Parse a browser-supplied page URL. Returns the URL only if it is an
+// absolute http(s) address within a sane length; anything else becomes null.
+//
+// Three things are being defended against, in order of how likely they are:
+//
+//   A relative path ("/programs/x"), which is what you get if someone wires
+//   the snippet to location.pathname instead of location.href. Useless for
+//   attribution because it loses the host.
+//
+//   An enormous string. URLs are capped at 2048 to match the DB CHECK; the
+//   column is not a place to smuggle a payload.
+//
+//   A javascript: or data: URL. The CRM renders this value as a clickable
+//   link on the lead record, so storing one would hand an XSS to whoever
+//   opens that lead. new URL() accepts those schemes happily — the protocol
+//   allowlist is what actually stops it, not the parse.
+function normaliseUrl(raw: unknown): string | null {
+  const s = String(raw ?? "").trim();
+  if (!s || s.length > 2048) return null;
+  try {
+    const u = new URL(s);
+    if (u.protocol !== "http:" && u.protocol !== "https:") return null;
+    // Drop the fragment. It never reaches a server on a normal navigation,
+    // it is not part of attribution, and it is where sites most often stash
+    // things worth not persisting. The supplied snippet already strips it —
+    // doing it here too means the guarantee holds whatever posts to us.
+    u.hash = "";
+    return u.toString();
+  } catch {
+    return null;   // not an absolute URL
+  }
+}
+
 function initialsOf(name: string): string {
   const parts = name.trim().split(/\s+/);
   if (parts.length >= 2) return (parts[0]![0]! + parts[1]![0]!).toUpperCase();
@@ -130,6 +163,16 @@ intakeRouter.post("/", async (req, res) => {
   const source      = String(b.source      ?? "web").trim() || "web";
   const sourceLabel = String(b.sourceLabel ?? "Website form").trim() || "Website form";
   const notes = String(b.notes ?? "").trim() || null;
+
+  // The page the form was submitted from, e.g.
+  //   https://kdigital.ai/programs/data-engineering?utm_source=linkedin
+  //
+  // This is browser-supplied on a public endpoint and the CRM renders it as a
+  // clickable link, so it is parsed rather than trusted: anything that is not
+  // an absolute http(s) URL is dropped silently. Dropped rather than
+  // rejected, because a marketing form must never fail to capture a real lead
+  // over a malformed analytics field.
+  const landingPageUrl = normaliseUrl(b.landingPageUrl ?? b.pageUrl);
 
   if (!name || (!email && !phone)) {
     // Public forms should surface a hint, but don't leak schema details.
@@ -200,12 +243,14 @@ intakeRouter.post("/", async (req, res) => {
       await db.execute(sql`
         INSERT INTO lead (
           work_item_id, tenant_id, source, source_label, score, rating, stage, stage_label,
-          heat, advisor_id, avatar, initials, description, nba_label, nba_icon
+          heat, advisor_id, avatar, initials, description, nba_label, nba_icon,
+          landing_page_url
         )
         VALUES (
           ${workItemId}, current_tenant(), ${source}, ${sourceLabel}, 50, 'new lead',
           'new', 'New inbound', 'warm', ${advisorId}, ${pickAvatar(name)}, ${initialsOf(name)},
-          ${notes}, 'Reach out today', 'send'
+          ${notes}, 'Reach out today', 'send',
+          ${landingPageUrl}
         )
       `);
 

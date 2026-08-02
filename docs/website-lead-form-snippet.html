@@ -1,6 +1,6 @@
 <!--
-  Digital Edify — website lead-intake form
-  ==========================================
+  KDigital — website lead-intake form
+  ===================================
 
   Drop-in replacement for the Freshworks overlay.
 
@@ -23,6 +23,12 @@
        CORS_ORIGIN (comma-separated with your existing CRM origin), then
        Manual Deploy so the change takes effect.
     4. Restart the API after adding INTAKE_API_KEY so the process picks it up.
+
+  The form also reports which page it was submitted from (landingPageUrl).
+  Nothing to configure — it is read from window.location at submit time and
+  shows up on the lead record as "Submitted from". The server drops anything
+  that is not an absolute http(s) URL, so a malformed value can never stop a
+  real lead being captured.
 -->
 <div id="freshworks_form_overlay" class="freshworks_form_overlay">
   <div class="freshworks_form_overlay_content">
@@ -196,6 +202,31 @@
       company: String(data.get("company") || ""), // honeypot echo
       source: SOURCE,
       sourceLabel: SOURCE_LABEL,
+
+      // The page this form was submitted from.
+      //
+      // location.href, NOT pathname — the full URL keeps the query string,
+      // so ?utm_source=linkedin&utm_campaign=aug-cohort arrives with the
+      // lead and no separate UTM plumbing is needed. It also keeps the host,
+      // which matters the day a second domain or a landing-page builder
+      // starts posting to the same endpoint.
+      //
+      // Captured at SUBMIT time rather than page load: on a single-page site
+      // the visitor may have navigated between the two, and the page they
+      // actually converted on is the interesting one.
+      //
+      // The hash is stripped. It never reaches the server on a normal
+      // navigation, it is not part of attribution, and it is where sites
+      // most often stash things you would rather not persist.
+      landingPageUrl: (function () {
+        try {
+          var u = new URL(window.location.href);
+          u.hash = "";
+          return u.toString();
+        } catch (_) {
+          return window.location.href;   // very old browser; send it as-is
+        }
+      })(),
     };
 
     if (!payload.name || !payload.email || !payload.phone) {

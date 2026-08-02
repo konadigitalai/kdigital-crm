@@ -273,6 +273,9 @@ export interface Lead {
   workingStatus?: WorkingStatus | null;
   yearOfPassout?: number | null;
   currentCompany?: string | null;
+  /** The page the intake form was submitted from, query string included, so
+   *  UTM parameters ride along. Null for leads not created from a web form. */
+  landingPageUrl?: string | null;
   currency?: string | null;
   sourceCampaignId?: string | null;
   feePaid?: string | null;
@@ -1596,6 +1599,7 @@ export interface RecordResponse {
       workingStatus?: WorkingStatus | null;
       yearOfPassout?: number | null;
       currentCompany?: string | null;
+      landingPageUrl?: string | null;
       signals?: { text: string; weight: string; kind: "pos" | "neg" | "neu" }[];
       nbaCard?: { confidence: number; headline: string; why: string } | null;
       agentsOnLead?: { name: string; status: string; glyph: AvatarGrad; icon: "spark" | "star" | "clock"; badge: { label: string; kind: "done" | "run" } }[];
