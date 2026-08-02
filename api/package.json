@@ -17,6 +17,7 @@
     "db:seed-catalogue": "tsx src/db/seed-catalogue.ts",
     "db:verify-catalogue": "tsx src/db/verify-catalogue.ts",
     "db:preflight": "tsx src/db/preflight-prod.ts",
+    "db:purge-legacy": "tsx src/db/purge-legacy-catalogue.ts",
     "db:reset": "tsx src/db/reset.ts",
     "db:backup-catalog": "tsx src/db/backup-catalog.ts",
     "db:cleanup-fake-users": "tsx src/db/cleanup-fake-users.ts",
