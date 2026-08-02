@@ -125,6 +125,17 @@ export async function sendMessage(
     for (const mUrl of (opts.mediaUrls ?? []).slice(0, 10)) form.append("MediaUrl", mUrl);
   }
 
+  // Ask Twilio to POST delivery updates back to us. Without this, statuses
+  // only arrive if a Messaging Service or WhatsApp-sender-level callback is
+  // configured in the Console — SMS has no such setting at all, so messages
+  // would sit at "sent" forever. Same URL as inbound: the webhook handler
+  // branches on MessageStatus vs Body (see lib/twilio/webhook.ts).
+  //
+  // Guarded: Twilio rejects the whole send with error 21609 if StatusCallback
+  // isn't a reachable https URL, so a placeholder or http://localhost env
+  // value must not take working sends down with it.
+  if (/^https:\/\//i.test(cfg.webhookUrl)) form.set("StatusCallback", cfg.webhookUrl);
+
   const basic = Buffer.from(`${cfg.sid}:${cfg.token}`, "utf8").toString("base64");
   const ctrl  = new AbortController();
   const timeout = setTimeout(() => ctrl.abort(), 5_000);
