@@ -15,7 +15,10 @@ catalogRouter.get("/", async (req, res, next) => {
         SELECT p.id, p.name, p.price, p.family, p.short_code AS "shortCode"
         FROM program p
         WHERE p.enabled = true
-        ORDER BY s.name NULLS LAST, p.name
+        -- Grouped by family, which is what post-0094 left in place of the
+        -- stack this used to order by. Registry programmes carry one; a
+        -- locally-created programme may not, so those sort last.
+        ORDER BY p.family NULLS LAST, p.name
       `);
       const courses = await db.execute(sql`
         SELECT co.id, co.name, co.description
