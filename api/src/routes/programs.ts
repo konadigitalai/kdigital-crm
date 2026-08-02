@@ -21,7 +21,7 @@ function normaliseCourseIds(input: unknown): string[] | null {
   return clean;
 }
 
-// SQL fragment that shapes a full program row with stack + courses aggregate.
+// SQL fragment that shapes a full program row with its courses aggregate.
 //
 // Every program_course subquery below filters component_type = 'course'. Since
 // post-0087 that table also holds programme→programme references: a composite
@@ -37,8 +37,6 @@ const PROGRAM_SELECT = sql`
     p.duration_value AS "durationValue",
     p.duration_unit  AS "durationUnit",
     p.enabled,
-    p.stack_id       AS "stackId",
-    s.name           AS "stackName",
     p.registry_id      AS "registryId",
     p.short_code       AS "shortCode",
     p.full_name        AS "fullName",
@@ -80,7 +78,6 @@ const PROGRAM_SELECT = sql`
       '[]'::json
     ) AS "referencedProgrammes"
   FROM program p
-  LEFT JOIN stack s ON s.id = p.stack_id
 `;
 
 // ─── List programs ────────────────────────────────────────────────────────
@@ -90,7 +87,7 @@ programsRouter.get("/", async (req, res, next) => {
     const rows = await withTenant(req.tenantId!, async (db) => {
       const r = await db.execute(sql`
         ${PROGRAM_SELECT}
-        ORDER BY p.enabled DESC, s.name NULLS LAST, p.name
+        ORDER BY p.enabled DESC, p.family NULLS LAST, p.name
       `);
       return r.rows;
     });
@@ -106,7 +103,6 @@ programsRouter.post("/", async (req, res, next) => {
   try {
     const b = req.body ?? {};
     const name = String(b.name ?? "").trim();
-    const stackId = String(b.stackId ?? "").trim();
     const description = b.description ? String(b.description).trim() : null;
     const price = b.price != null && b.price !== "" ? String(b.price) : null;
 
@@ -135,9 +131,6 @@ programsRouter.post("/", async (req, res, next) => {
     }
 
     if (!name)    return res.status(400).json({ error: "name is required" });
-    if (!stackId || !/^[0-9a-fA-F-]{36}$/.test(stackId)) {
-      return res.status(400).json({ error: "stackId is required" });
-    }
 
     const created = await withTenant(req.tenantId!, async (db) => {
       const dup = await db.execute(sql`
@@ -148,15 +141,9 @@ programsRouter.post("/", async (req, res, next) => {
         (err as { code?: string }).code = "DUP";
         throw err;
       }
-      const stack = await db.execute(sql`SELECT id FROM stack WHERE id = ${stackId} LIMIT 1`);
-      if (!stack.rows[0]) {
-        const err = new Error("stack not found");
-        (err as { code?: string }).code = "NO_STACK";
-        throw err;
-      }
       const ins = await db.execute(sql`
-        INSERT INTO program (tenant_id, stack_id, name, description, price, duration_value, duration_unit)
-        VALUES (current_tenant(), ${stackId}, ${name}, ${description}, ${price}, ${durationValue}, ${durationUnit})
+        INSERT INTO program (tenant_id, name, description, price, duration_value, duration_unit)
+        VALUES (current_tenant(), ${name}, ${description}, ${price}, ${durationValue}, ${durationUnit})
         RETURNING id
       `);
       const id = (ins.rows[0] as { id: string }).id;
@@ -188,7 +175,6 @@ programsRouter.post("/", async (req, res, next) => {
   } catch (err) {
     const code = (err as { code?: string }).code;
     if (code === "DUP")       return res.status(409).json({ error: "A program with that name already exists" });
-    if (code === "NO_STACK")  return res.status(400).json({ error: "stack not found" });
     if (code === "NO_COURSE") return res.status(400).json({ error: "one or more courseIds not found" });
     return next(err);
   }
@@ -203,13 +189,6 @@ programsRouter.patch("/:id", async (req, res, next) => {
     const b = req.body ?? {};
 
     const name = b.name != null ? String(b.name).trim() : null;
-    const stackId = b.stackId !== undefined
-      ? (b.stackId ? String(b.stackId).trim() : null)
-      : undefined;
-    if (stackId !== undefined && stackId !== null && !/^[0-9a-fA-F-]{36}$/.test(stackId)) {
-      return res.status(400).json({ error: "invalid stackId" });
-    }
-    if (stackId === null) return res.status(400).json({ error: "stackId cannot be null" });
     const description = b.description !== undefined
       ? (b.description ? String(b.description).trim() : null)
       : undefined;
@@ -253,18 +232,9 @@ programsRouter.patch("/:id", async (req, res, next) => {
     if (name !== null && !name) return res.status(400).json({ error: "name cannot be empty" });
 
     const updated = await withTenant(req.tenantId!, async (db) => {
-      if (stackId !== undefined && stackId !== null) {
-        const stack = await db.execute(sql`SELECT id FROM stack WHERE id = ${stackId} LIMIT 1`);
-        if (!stack.rows[0]) {
-          const err = new Error("stack not found");
-          (err as { code?: string }).code = "NO_STACK";
-          throw err;
-        }
-      }
 
       const sets: ReturnType<typeof sql>[] = [];
       if (name !== null)                sets.push(sql`name = ${name}`);
-      if (stackId !== undefined)        sets.push(sql`stack_id = ${stackId}`);
       if (description !== undefined)    sets.push(sql`description = ${description}`);
       if (enabled !== undefined)        sets.push(sql`enabled = ${enabled}`);
       if (price !== undefined)          sets.push(sql`price = ${price}`);
@@ -348,7 +318,6 @@ programsRouter.patch("/:id", async (req, res, next) => {
     return res.json({ program: updated });
   } catch (err) {
     const code = (err as { code?: string }).code;
-    if (code === "NO_STACK")  return res.status(400).json({ error: "stack not found" });
     if (code === "NO_COURSE") return res.status(400).json({ error: "one or more courseIds not found" });
     return next(err);
   }
