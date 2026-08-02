@@ -2,52 +2,60 @@
   KDigital — website lead-intake form
   ===================================
 
-  Drop-in replacement for the Freshworks overlay.
+  Two fields: name and phone. Everything else is captured in the background.
 
-  Reuses the outer ids/classes you already have (freshworks_form_overlay,
-  freshworks_form_overlay_content, freshworks_form_overlay_close_button)
-  so any site-level CSS you wrote for the wrapper keeps working. Every new
-  style is scoped under `.de-intake` so it can't leak into the rest of the
-  page.
+  Drop-in replacement for the Freshworks overlay. Reuses the outer
+  ids/classes you already have (freshworks_form_overlay,
+  freshworks_form_overlay_content, freshworks_form_overlay_close_button) so
+  any site-level CSS you wrote for the wrapper keeps working. Every new style
+  is scoped under `.kd-intake` so it can't leak into the rest of the page.
 
   Before you deploy:
     1. Replace API_BASE below with your API's public URL, e.g.
-         https://digitaledify-crm-api.onrender.com
+         https://kdigital-crm-api.onrender.com
        (do NOT put the trailing "/leads/intake" — just the origin).
     2. Replace INTAKE_KEY with the value you set for INTAKE_API_KEY on the
        API host (Render env vars). Yes, this is embedded in the page — the
-       api-key check is a bot-brake, not a secret. It's paired with a
+       api-key check is a bot-brake, not a secret. It is paired with a
        per-IP rate limit + honeypot on the server. Rotate any time by
        changing the env var and republishing the site.
-    3. On Render → API service → Environment, add your website's origin to
+    3. On Render -> API service -> Environment, add your website's origin to
        CORS_ORIGIN (comma-separated with your existing CRM origin), then
        Manual Deploy so the change takes effect.
     4. Restart the API after adding INTAKE_API_KEY so the process picks it up.
 
-  The form also reports which page it was submitted from (landingPageUrl).
-  Nothing to configure — it is read from window.location at submit time and
-  shows up on the lead record as "Submitted from". The server drops anything
-  that is not an absolute http(s) URL, so a malformed value can never stop a
-  real lead being captured.
+  CAPTURED IN THE BACKGROUND — nothing to configure:
+
+    landingPageUrl   The page this form was submitted from, query string
+                     included, so ?utm_source=... rides along with the lead.
+                     Shows on the lead record as "Submitted from".
+
+    phoneCountryCode Sent so the CRM can store a real E.164 number. This
+                     matters more than it looks: without a country code the
+                     server can only guess, and a number it cannot resolve
+                     gets NO contact point at all — meaning WhatsApp and SMS
+                     can never reach that lead, and their replies will not
+                     match back to them. A visitor who types their own
+                     +country code overrides it.
 -->
 <div id="freshworks_form_overlay" class="freshworks_form_overlay">
   <div class="freshworks_form_overlay_content">
     <div class="freshworks_form_overlay_header">
-      <h4 class="h4title">Get Skilled </h4>
+      <h4 class="h4title">Get Skilled</h4>
       <button
         onclick="document.getElementById('freshworks_form_overlay').style.display='none';"
         class="freshworks_form_overlay_close_button"
         type="button"
         aria-label="Close">
-        ×
+        &times;
       </button>
     </div>
 
-    <form class="de-intake" novalidate>
-      <label class="de-field">
-        <span class="de-label">Full name</span>
+    <form class="kd-intake" novalidate>
+      <label class="kd-field">
+        <span class="kd-label">Full name</span>
         <input
-          class="de-input"
+          class="kd-input"
           type="text"
           name="name"
           required
@@ -55,65 +63,50 @@
           placeholder="Your full name" />
       </label>
 
-      <label class="de-field">
-        <span class="de-label">Email</span>
+      <label class="kd-field">
+        <span class="kd-label">Phone</span>
         <input
-          class="de-input"
-          type="email"
-          name="email"
-          required
-          autocomplete="email"
-          placeholder="you@example.com" />
-      </label>
-
-      <label class="de-field">
-        <span class="de-label">Phone</span>
-        <input
-          class="de-input"
+          class="kd-input"
           type="tel"
           name="phone"
           required
           autocomplete="tel"
           inputmode="tel"
-          pattern="[0-9+ ()-]{7,20}"
-          placeholder="+91 98765 43210" />
+          placeholder="98765 43210" />
       </label>
 
-      <!-- Honeypot — invisible to humans, catches bots that fill every field. -->
-      <label class="de-honeypot" aria-hidden="true">
+      <!-- Honeypot: invisible to humans, catches bots that fill every field.
+           Keep it. It is most of what stops this endpoint being scraped. -->
+      <label class="kd-honeypot" aria-hidden="true">
         Company (leave blank)
         <input type="text" name="company" tabindex="-1" autocomplete="off" />
       </label>
 
-      <button class="de-submit" type="submit">Get started</button>
+      <button class="kd-submit" type="submit">Get started</button>
 
-      <div class="de-status" role="status" aria-live="polite"></div>
+      <div class="kd-status" role="status" aria-live="polite"></div>
     </form>
   </div>
 </div>
 
 <style>
-  /* Everything below is scoped under `.de-intake` so we don't clash with
-     the outer overlay styles you already have. */
-  .de-intake {
+  /* Scoped under `.kd-intake` so it cannot clash with the outer overlay
+     styles you already have. */
+  .kd-intake {
     display: flex;
     flex-direction: column;
     gap: 14px;
     padding: 4px 0 0;
     font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   }
-  .de-field {
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-  }
-  .de-label {
+  .kd-field { display: flex; flex-direction: column; gap: 6px; }
+  .kd-label {
     font-size: 12px;
     font-weight: 600;
     color: #4a4a55;
     letter-spacing: .02em;
   }
-  .de-input {
+  .kd-input {
     width: 100%;
     box-sizing: border-box;
     padding: 10px 12px;
@@ -125,16 +118,13 @@
     outline: none;
     transition: border-color .12s, box-shadow .12s;
   }
-  .de-input:focus {
+  .kd-input:focus {
     border-color: #4b6cf7;
     box-shadow: 0 0 0 3px rgba(75, 108, 247, .18);
   }
-  .de-input:disabled { background: #f5f5f8; cursor: not-allowed; }
-  .de-input:invalid:not(:placeholder-shown) {
-    border-color: #d93025;
-  }
+  .kd-input:disabled { background: #f5f5f8; cursor: not-allowed; }
 
-  .de-submit {
+  .kd-submit {
     margin-top: 4px;
     padding: 12px 16px;
     font-size: 14.5px;
@@ -146,19 +136,15 @@
     cursor: pointer;
     transition: opacity .12s, transform .05s;
   }
-  .de-submit:hover  { opacity: .95; }
-  .de-submit:active { transform: translateY(1px); }
-  .de-submit:disabled { opacity: .55; cursor: not-allowed; }
+  .kd-submit:hover  { opacity: .95; }
+  .kd-submit:active { transform: translateY(1px); }
+  .kd-submit:disabled { opacity: .55; cursor: not-allowed; }
 
-  .de-status {
-    min-height: 20px;
-    font-size: 13px;
-    line-height: 1.35;
-  }
-  .de-status.is-ok    { color: #1e874b; }
-  .de-status.is-error { color: #d93025; }
+  .kd-status { min-height: 20px; font-size: 13px; line-height: 1.35; }
+  .kd-status.is-ok    { color: #1e874b; }
+  .kd-status.is-error { color: #d93025; }
 
-  .de-honeypot {
+  .kd-honeypot {
     position: absolute;
     left: -10000px;
     width: 1px;
@@ -169,18 +155,19 @@
 
 <script>
 (function () {
-  // ── Configure these two BEFORE deploying. ────────────────────────────────
-  var API_BASE   = "https://YOUR-API-HOST.example.com"; // e.g. https://digitaledify-crm-api.onrender.com
-  var INTAKE_KEY = "REPLACE_WITH_INTAKE_API_KEY";
+  // ── Configure these BEFORE deploying. ───────────────────────────────────
+  var API_BASE     = "https://YOUR-API-HOST.example.com"; // e.g. https://kdigital-crm-api.onrender.com
+  var INTAKE_KEY   = "REPLACE_WITH_INTAKE_API_KEY";
   var SOURCE       = "web";
   var SOURCE_LABEL = "Website form";
-  // ─────────────────────────────────────────────────────────────────────────
+  var COUNTRY_CODE = "91";   // default dialling code, digits only, no "+"
+  // ────────────────────────────────────────────────────────────────────────
 
   var root = document.getElementById("freshworks_form_overlay");
   if (!root) return;
-  var form   = root.querySelector(".de-intake");
-  var status = root.querySelector(".de-status");
-  var submit = root.querySelector(".de-submit");
+  var form   = root.querySelector(".kd-intake");
+  var status = root.querySelector(".kd-status");
+  var submit = root.querySelector(".kd-submit");
   if (!form || !status || !submit) return;
 
   function setStatus(msg, kind) {
@@ -190,49 +177,59 @@
     if (kind === "error") status.classList.add("is-error");
   }
 
+  // The page this form was submitted from.
+  //
+  // location.href, NOT pathname — the full URL keeps the host and the query
+  // string, so ?utm_source=linkedin&utm_campaign=aug-cohort arrives with the
+  // lead and no separate UTM plumbing is needed.
+  //
+  // Read at SUBMIT time, not on page load: on a single-page site the visitor
+  // may have navigated between the two, and the page they actually converted
+  // on is the interesting one.
+  //
+  // The hash is stripped. It never reaches a server on a normal navigation,
+  // it is not part of attribution, and it is where sites most often stash
+  // things you would rather not persist.
+  function currentPageUrl() {
+    try {
+      var u = new URL(window.location.href);
+      u.hash = "";
+      return u.toString();
+    } catch (_) {
+      return window.location.href;   // very old browser; send it as-is
+    }
+  }
+
   form.addEventListener("submit", function (e) {
     e.preventDefault();
     setStatus("");
 
-    var data = new FormData(form);
-    var payload = {
-      name:  String(data.get("name")  || "").trim(),
-      email: String(data.get("email") || "").trim(),
-      phone: String(data.get("phone") || "").trim(),
-      company: String(data.get("company") || ""), // honeypot echo
-      source: SOURCE,
-      sourceLabel: SOURCE_LABEL,
+    var data  = new FormData(form);
+    var name  = String(data.get("name")  || "").trim();
+    var phone = String(data.get("phone") || "").trim();
 
-      // The page this form was submitted from.
-      //
-      // location.href, NOT pathname — the full URL keeps the query string,
-      // so ?utm_source=linkedin&utm_campaign=aug-cohort arrives with the
-      // lead and no separate UTM plumbing is needed. It also keeps the host,
-      // which matters the day a second domain or a landing-page builder
-      // starts posting to the same endpoint.
-      //
-      // Captured at SUBMIT time rather than page load: on a single-page site
-      // the visitor may have navigated between the two, and the page they
-      // actually converted on is the interesting one.
-      //
-      // The hash is stripped. It never reaches the server on a normal
-      // navigation, it is not part of attribution, and it is where sites
-      // most often stash things you would rather not persist.
-      landingPageUrl: (function () {
-        try {
-          var u = new URL(window.location.href);
-          u.hash = "";
-          return u.toString();
-        } catch (_) {
-          return window.location.href;   // very old browser; send it as-is
-        }
-      })(),
-    };
+    if (!name)  { setStatus("Please enter your name.", "error"); return; }
+    if (!phone) { setStatus("Please enter your phone number.", "error"); return; }
 
-    if (!payload.name || !payload.email || !payload.phone) {
-      setStatus("Please fill in name, email, and phone.", "error");
+    // Loose on purpose. The server normalises properly, and a strict
+    // client-side pattern rejects valid international numbers that people
+    // type in shapes you did not anticipate. This only catches obvious slips.
+    if (phone.replace(/\D/g, "").length < 7) {
+      setStatus("That phone number looks too short.", "error");
       return;
     }
+
+    var payload = {
+      name: name,
+      phone: phone,
+      // Skipped when the visitor typed their own +country code, so an
+      // international number is not mangled into +91…
+      phoneCountryCode: phone.charAt(0) === "+" ? "" : COUNTRY_CODE,
+      company: String(data.get("company") || ""),  // honeypot echo
+      source: SOURCE,
+      sourceLabel: SOURCE_LABEL,
+      landingPageUrl: currentPageUrl(),
+    };
 
     submit.disabled = true;
     submit.textContent = "Submitting…";
@@ -248,10 +245,10 @@
       .then(function (r) { return r.json().then(function (j) { return { r: r, j: j }; }); })
       .then(function (out) {
         if (out.r.ok && out.j && out.j.ok) {
-          setStatus("Thanks! One of our advisors will reach out shortly.", "ok");
+          setStatus("Thanks! One of our advisors will call you shortly.", "ok");
           form.reset();
-          // Auto-hide the overlay after a couple of seconds. Comment this
-          // out if you'd rather leave it open with the confirmation.
+          // Auto-hide after a couple of seconds. Comment out to leave the
+          // overlay open with the confirmation showing.
           setTimeout(function () { root.style.display = "none"; }, 2500);
         } else {
           var err = (out.j && out.j.error) || "Something went wrong. Please try again.";
