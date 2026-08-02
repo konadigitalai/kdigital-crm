@@ -261,11 +261,10 @@ export interface Lead {
   phoneCountryCode?: string | null;
   description?: string | null;
   programId?: string | null;
-  /** Derived server-side from the program (program.stack_id is NOT NULL), never
-   *  stored on the lead. Null when no program is assigned — rendered "TBD".
-   *  Read-only everywhere: reassign the program and the stack follows. */
-  stack?: string | null;
-  stackId?: string | null;
+  /** The programme's registry family, derived server-side. Never stored on
+   *  the lead, so reassigning the programme moves it for free. Null when no
+   *  programme is assigned. */
+  family?: string | null;
   deliveryMode?: string | null;     // online | classroom | hybrid
   leadStatus?: string | null;       // see LEAD_STATUS_KEYS server-side
   timeZone?: string | null;          // IANA tz
@@ -711,17 +710,11 @@ export interface SavedViewInput {
   columns: string[] | null;
 }
 
-// Catalog v2 — Stack → Program → Course (many-to-many). Every program belongs
-// to one stack; programs link to reusable courses via the program_course
-// junction. Courses are just name + description now.
-
-export interface Stack {
-  id: string;
-  name: string;
-  description: string | null;
-  enabled: boolean;
-  programCount: number;
-}
+// Catalog — Program → Course (many-to-many). Programs link to reusable
+// courses via the program_course junction, which since post-0087 also holds
+// programme-to-programme references for composite pathways. The `stack` level
+// above program was dropped in post-0094; program.family (registry-owned) is
+// the grouping that replaced it.
 
 export type DurationUnit = "weeks" | "months";
 
@@ -759,8 +752,6 @@ export interface Program {
   durationValue: number | null;
   durationUnit: DurationUnit | null;
   enabled: boolean;
-  stackId: string;
-  stackName: string | null;
   leadCount: number;
   courseCount: number;
   batchCount: number;
@@ -784,7 +775,6 @@ export interface Program {
 
 export interface ProgramInput {
   name: string;
-  stackId: string;
   description?: string | null;
   price?: string | null;
   durationValue?: number | null;
@@ -878,7 +868,7 @@ export interface BatchSession {
 }
 
 // One enriched batch row for the Batches operational board (list/kanban/chart/
-// calendar). Carries course/stack/trainer context + learner counts + rollups so
+// calendar). Carries course/family/trainer context + learner counts + rollups so
 // the board can display, filter, group and search without a second round-trip.
 // coveragePct/attendancePct/slaBreachCount/behindSchedule are computed from the
 // batch_session + attendance subsystem (null/0/false until sessions exist).
@@ -903,8 +893,8 @@ export interface BatchBoardRow {
   daysOfWeek: WeekDay[] | null;
   startTime: string | null;
   endTime: string | null;
-  stackId: string | null;
-  stackName: string | null;
+  /** Registry family of the batch's primary programme — the coarse axis. */
+  family: string | null;
   programName: string | null;
   activeCount: number;
   enrolmentCount: number;
@@ -966,7 +956,7 @@ export interface BatchDetailData {
   code: string | null;
   name: string;
   courseName: string | null;
-  stackName: string | null;
+  family: string | null;
   programName: string | null;
   status: BatchStatus;
   staffed: boolean;
@@ -1033,8 +1023,8 @@ export interface LearnerSummary {
   } | null;
   /** Program of the primary enrolment (prefer active, else newest). */
   programName: string | null;
-  /** Stack the primary program belongs to. */
-  stackName: string | null;
+  /** The programme's registry family — the coarse grouping axis. */
+  family: string | null;
   /** Raw lifecycle status of the primary enrolment. */
   enrolmentStatus: EnrolmentStatus | null;
   /** Derived board status: "In batch" | "Assigned" | "Enrolled". */
@@ -1216,7 +1206,7 @@ export interface Enrollment {
   phone: string | null;
   city: string | null;
   programName: string | null;
-  stackName: string | null;
+  family: string | null;
   /** Assigned course-module names — the "+ML +GenAI" chips. */
   courseModules: string[];
   /** Primary batch code, or null → the UI shows "+ Assign". */
@@ -1300,7 +1290,7 @@ export interface BatchInput {
 }
 
 export interface CatalogResponse {
-  programs: { id: string; name: string; price: string | null; stackId: string | null; stackName: string | null }[];
+  programs: { id: string; name: string; price: string | null; family: string | null; shortCode: string | null }[];
   courses: { id: string; name: string; description: string | null }[];
   advisors: { id: string; name: string; email: string; role: string }[];
   employees: { id: string; name: string; email: string; role: string }[];

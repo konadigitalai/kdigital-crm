@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import { Icon } from "@/components/ui/Icon";
 import { cn } from "@/lib/cn";
 import { createProgram, updateProgram } from "@/lib/api";
-import type { Course, DurationUnit, Program, ProgramInput, Stack } from "@/lib/types";
+import type { Course, DurationUnit, Program, ProgramInput } from "@/lib/types";
 import { FilterBar } from "@/components/filter/FilterBar";
 import { useFilter } from "@/components/filter/useFilter";
 import type { FilterField } from "@/components/filter/types";
@@ -13,15 +13,13 @@ import { DialogShell, Pill, RegistryId, distinct } from "@/components/admin/form
 import { deliveryModeLabel, normaliseDeliveryMode } from "@/lib/deliveryMode";
 
 function buildFields(rows: Program[]): FilterField[] {
-  const stacks = distinct(rows, (r) => r.stackName);
   const families = distinct(rows, (r) => r.family);
   return [
     { key: "name",           label: "Name",       type: "text",   get: (p: Program) => p.name },
     { key: "registryId",     label: "Registry ID",type: "text",   get: (p: Program) => p.registryId },
     { key: "shortCode",      label: "Code",       type: "text",   get: (p: Program) => p.shortCode },
-    { key: "stack",          label: "Stack",      type: "enum",   options: stacks.map((s) => ({ value: s, label: s })), get: (p: Program) => p.stackName },
-    // Family is the registry's own grouping and is far more useful than stack
-    // for the nine KDigital pathways, which all sit in one stack.
+    // Family is the registry's own grouping, and since post-0094 dropped the
+    // stack level it is the only coarse axis a programme has.
     { key: "family",         label: "Family",     type: "enum",   options: families.map((f) => ({ value: f, label: f })), get: (p: Program) => p.family },
     { key: "price",          label: "Price",      type: "number", get: (p: Program) => p.price ? Number(p.price) : null },
     { key: "duration",       label: "Duration",   type: "number", get: (p: Program) => p.durationValue },
@@ -40,9 +38,9 @@ type Mode =
   | { kind: "editing"; program: Program };
 
 export function ProgramsTable({
-  initial, stacks, courses,
+  initial, courses,
 }: {
-  initial: Program[]; stacks: Stack[]; courses: Course[];
+  initial: Program[]; courses: Course[];
 }) {
   const router = useRouter();
   const [programs, setPrograms] = useState<Program[]>(initial);
@@ -54,7 +52,6 @@ export function ProgramsTable({
   const fields = useMemo(() => buildFields(programs), [programs]);
   const [filtered, filterState, setFilterState] = useFilter(programs, fields);
 
-  const activeStacks = stacks.filter((s) => s.enabled);
   const activeCourses = courses.filter((c) => c.enabled);
 
   function reload() { router.refresh(); }
@@ -144,10 +141,8 @@ export function ProgramsTable({
           {registryCount > 0 && <> · {registryCount} from the KDigital registry</>}
         </div>
         <button
-          onClick={() => activeStacks.length > 0 && setMode({ kind: "creating" })}
-          disabled={activeStacks.length === 0}
-          title={activeStacks.length === 0 ? "Create a stack first" : ""}
-          className="btn-grad disabled:opacity-50"
+          onClick={() => setMode({ kind: "creating" })}
+          className="btn-grad"
         >
           <Icon name="plus" size={14} strokeWidth={2.2} /> New program
         </button>
@@ -205,7 +200,7 @@ export function ProgramsTable({
               </div>
 
               <div className="min-w-0 text-[13px] text-ink2">
-                <div className="truncate">{p.family ?? p.stackName ?? <span className="text-mute">—</span>}</div>
+                <div className="truncate">{p.family ?? <span className="text-mute">—</span>}</div>
                 {p.deliveryModes && p.deliveryModes.length > 0 && (
                   <div className="mt-0.5 truncate text-[11px] text-mute">
                     {p.deliveryModes
@@ -276,7 +271,6 @@ export function ProgramsTable({
         <ProgramFormDialog
           title="New program"
           submitLabel="Create"
-          stacks={activeStacks}
           courses={activeCourses}
           onClose={() => setMode({ kind: "idle" })}
           onSubmit={(input) => onCreate(input)}
@@ -287,7 +281,6 @@ export function ProgramsTable({
         <ProgramFormDialog
           title="Edit program"
           submitLabel="Save"
-          stacks={activeStacks}
           courses={activeCourses}
           initial={mode.program}
           onClose={() => setMode({ kind: "idle" })}
@@ -463,16 +456,15 @@ function Row({ hdr = false, dimmed = false, children }: { hdr?: boolean; dimmed?
 }
 
 function ProgramFormDialog({
-  title, submitLabel, stacks, courses, initial, onClose, onSubmit, busy,
+  title, submitLabel, courses, initial, onClose, onSubmit, busy,
 }: {
   title: string; submitLabel: string;
-  stacks: Stack[]; courses: Course[];
+  courses: Course[];
   initial?: Program;
   onClose: () => void;
   onSubmit: (input: ProgramInput) => void;
   busy: boolean;
 }) {
-  const [stackId, setStackId] = useState(initial?.stackId ?? stacks[0]?.id ?? "");
   const [name, setName] = useState(initial?.name ?? "");
   const [description, setDescription] = useState(initial?.description ?? "");
   const [price, setPrice] = useState(initial?.price ?? "");
@@ -503,17 +495,16 @@ function ProgramFormDialog({
   return (
     <DialogShell
       title={title}
-      subtitle="A program has a stack, a price, a duration, and one or more courses."
+      subtitle="A programme has a price, a duration, and one or more courses. Registry pathways also carry a family and a permanent ID."
       onClose={onClose}
     >
       <form
         onSubmit={(e) => {
           e.preventDefault();
-          if (!name.trim() || !stackId) return;
+          if (!name.trim()) return;
           const dv = durationValue.trim() ? Number(durationValue.trim()) : null;
           onSubmit({
             name: name.trim(),
-            stackId,
             description: description.trim() || null,
             price: price.trim() || null,
             durationValue: dv,
@@ -523,17 +514,9 @@ function ProgramFormDialog({
         }}
         className="space-y-4"
       >
-        <div className="grid grid-cols-2 gap-4">
-          <Field label="Stack" required>
-            <select value={stackId} onChange={(e) => setStackId(e.target.value)} className={inputCls}>
-              {stacks.length === 0 && <option value="">— No active stacks —</option>}
-              {stacks.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
-            </select>
-          </Field>
-          <Field label="Name" required>
-            <input className={inputCls} value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Full AI Stack" autoFocus />
-          </Field>
-        </div>
+        <Field label="Name" required>
+          <input className={inputCls} value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Applied AI Engineer" autoFocus />
+        </Field>
 
         <div className="grid grid-cols-2 gap-4">
           <Field label="Price (₹)">

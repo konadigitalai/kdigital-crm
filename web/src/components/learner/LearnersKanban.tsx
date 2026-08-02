@@ -1,7 +1,7 @@
 "use client";
 
 // Learners > Kanban. Cards grouped by the chosen axis (status default, program,
-// stack, advisor). Read-only columns — a learner's batch/course state is
+// family, advisor). Read-only columns — a learner's batch/course state is
 // mutated on the record page, not by a drag gesture here, so the board surfaces
 // the grouping without letting you change it. Mirrors EnrollmentsKanban.
 
@@ -10,19 +10,19 @@ import { cn } from "@/lib/cn";
 import { avatarGradClass, gradFor, initialsOf, shortName } from "@/lib/ui";
 import type { LearnerSummary } from "@/lib/types";
 
-export type LearnerGroupBy = "status" | "program" | "stack" | "advisor";
+export type LearnerGroupBy = "status" | "program" | "family" | "advisor";
 
 export const LEARNER_GROUP_BY_OPTIONS: { value: LearnerGroupBy; label: string }[] = [
   { value: "status",  label: "Status" },
   { value: "program", label: "Program" },
-  { value: "stack",   label: "Stack" },
+  { value: "family",   label: "Family" },
   { value: "advisor", label: "Advisor" },
 ];
 
 export function learnerGroupKey(l: LearnerSummary, by: LearnerGroupBy): string {
   if (by === "status")  return l.status || "—";
   if (by === "program") return l.programName || "—";
-  if (by === "stack")   return l.stackName   || "TBD";
+  if (by === "family")   return l.family   || "TBD";
   if (by === "advisor") return l.advisorName || "Unassigned";
   return "—";
 }

@@ -8,7 +8,6 @@
 // Writes CSV files beside the working directory:
 //   programs-<timestamp>.csv
 //   courses-<timestamp>.csv
-//   stacks-<timestamp>.csv        (only when NEW shape)
 //   program_course-<timestamp>.csv (only when NEW shape — junction with names)
 //
 // FK values are resolved to human-readable names, not UUIDs.
@@ -56,18 +55,19 @@ async function main() {
   const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
 
   // Detect schema shape.
-  const hasStack        = await tableExists("stack");
   const hasProgramCourse = await tableExists("program_course");
   const hasProgTrack    = await columnExists("program", "track");
-  const hasProgStack    = await columnExists("program", "stack_id");
   const hasCourseProg   = await columnExists("course", "program_id");
   const hasCourseCode   = await columnExists("course", "code");
 
-  const shape = hasStack && hasProgramCourse && hasProgStack ? "new" : "old";
+  // post-0094 dropped the stack level, so its presence is no longer part of
+  // the signal — program_course is what distinguishes the current shape from
+  // the pre-post-0054 one.
+  const shape = hasProgramCourse ? "new" : "old";
   console.log(`  schema shape detected: ${shape}`);
-  console.log(`    program.track: ${hasProgTrack}, program.stack_id: ${hasProgStack}`);
+  console.log(`    program.track: ${hasProgTrack}`);
   console.log(`    course.program_id: ${hasCourseProg}, course.code: ${hasCourseCode}`);
-  console.log(`    stack table: ${hasStack}, program_course: ${hasProgramCourse}`);
+  console.log(`    program_course: ${hasProgramCourse}`);
   console.log("");
 
   if (shape === "old") {
@@ -121,48 +121,31 @@ async function main() {
     writeFileSync(courseFile, [csvRow(courseHeader), ...courseRows.map(csvRow)].join("\r\n"), "utf8");
     console.log(`  ✓ ${courseFile} — ${courseR.rows.length} courses`);
   } else {
-    // ── New shape: stack + program_course junction ────────────────────────
-    const stackR = await pool.query<{
-      id: string; name: string; description: string | null; enabled: boolean; program_count: string;
-    }>(
-      `SELECT s.id, s.name, s.description, s.enabled,
-              (SELECT COUNT(*)::text FROM program p WHERE p.stack_id = s.id) AS program_count
-         FROM stack s
-        ORDER BY s.enabled DESC, s.name`,
-    );
-    const stackHeader = ["ID", "Name", "Description", "Active", "Program count"];
-    const stackRows = stackR.rows.map((s) => [
-      s.id, s.name, s.description, s.enabled ? "Yes" : "No", s.program_count,
-    ]);
-    const stackFile = `stacks-${stamp}.csv`;
-    writeFileSync(stackFile, [csvRow(stackHeader), ...stackRows.map(csvRow)].join("\r\n"), "utf8");
-    console.log(`  ✓ ${stackFile} — ${stackR.rows.length} stacks`);
-
+    // ── Current shape: program_course junction, no stack level ──────────
     const progR = await pool.query<{
       id: string; name: string; description: string | null; price: string | null;
       duration_value: number | null; duration_unit: string | null;
-      enabled: boolean; stack_id: string | null; stack_name: string | null;
+      enabled: boolean; family: string | null; registry_id: string | null;
       course_count: string;
     }>(
       `SELECT p.id, p.name, p.description, p.price,
               p.duration_value, p.duration_unit,
-              p.enabled, p.stack_id,
-              s.name AS stack_name,
-              (SELECT COUNT(*)::text FROM program_course pc WHERE pc.program_id = p.id) AS course_count
+              p.enabled, p.family, p.registry_id,
+              (SELECT COUNT(*)::text FROM program_course pc
+                WHERE pc.program_id = p.id AND pc.component_type = 'course') AS course_count
          FROM program p
-         LEFT JOIN stack s ON s.id = p.stack_id
-        ORDER BY p.enabled DESC, s.name NULLS LAST, p.name`,
+        ORDER BY p.enabled DESC, p.family NULLS LAST, p.name`,
     );
     const progHeader = [
       "ID", "Name", "Description", "Price (₹)",
       "Duration", "Unit",
-      "Active", "Stack", "Stack ID (raw)", "Course count",
+      "Active", "Family", "Registry ID", "Course count",
     ];
     const progRows = progR.rows.map((p) => [
       p.id, p.name, p.description, p.price,
       p.duration_value, p.duration_unit,
       p.enabled ? "Yes" : "No",
-      p.stack_name ?? "(no stack)", p.stack_id, p.course_count,
+      p.family ?? "(none)", p.registry_id ?? "(local)", p.course_count,
     ]);
     const progFile = `programs-${stamp}.csv`;
     writeFileSync(progFile, [csvRow(progHeader), ...progRows.map(csvRow)].join("\r\n"), "utf8");

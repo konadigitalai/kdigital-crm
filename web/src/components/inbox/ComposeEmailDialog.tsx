@@ -160,7 +160,7 @@ export function ComposeEmailDialog({
                 className={cn(inputCls, "font-semibold")}
                 value={subject}
                 onChange={(e) => setSubject(e.target.value)}
-                placeholder="Your Full-Stack AI programme — next steps"
+                placeholder="Your Full-Family AI programme — next steps"
               />
             </div>
 

@@ -83,9 +83,9 @@ const COLUMNS: ColumnDef[] = [
     csv: (l) => [l.programName ?? "", ...l.courseModules].filter(Boolean).join(" | "),
   },
   {
-    key: "stack", label: "Stack", width: "120px",
-    render: (l) => <span className="truncate text-[12px] text-mute">{l.stackName ?? "TBD"}</span>,
-    csv: (l) => l.stackName ?? "",
+    key: "family", label: "Family", width: "120px",
+    render: (l) => <span className="truncate text-[12px] text-mute">{l.family ?? "TBD"}</span>,
+    csv: (l) => l.family ?? "",
   },
   {
     key: "status", label: "Status", width: "100px",

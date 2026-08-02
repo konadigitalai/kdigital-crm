@@ -89,11 +89,11 @@ const COLUMNS: ColumnDef[] = [
     csv: (b) => b.name,
   },
   {
-    key: "stack", label: "Stack", width: "130px",
-    render: (b) => b.stackName
-      ? <span className="mono-cap rounded-full bg-warm2 px-2 py-0.5 text-[9.5px] font-semibold tracking-[.04em] text-ink2">{b.stackName}</span>
+    key: "family", label: "Family", width: "130px",
+    render: (b) => b.family
+      ? <span className="mono-cap rounded-full bg-warm2 px-2 py-0.5 text-[9.5px] font-semibold tracking-[.04em] text-ink2">{b.family}</span>
       : <span className="text-[12px] text-mute">—</span>,
-    csv: (b) => b.stackName ?? "",
+    csv: (b) => b.family ?? "",
   },
   {
     key: "status", label: "Status", width: "100px",
@@ -161,7 +161,7 @@ export const BATCH_LIST_COLUMNS: ReadonlyArray<{ key: string; label: string }> =
   COLUMNS.map((c) => ({ key: c.key, label: c.label }));
 
 export const BATCH_LIST_DEFAULT_COLUMNS: readonly string[] = [
-  "batch", "stack", "status", "trainer", "slotTime", "days", "startDate", "learners", "coverage", "attendance",
+  "batch", "family", "status", "trainer", "slotTime", "days", "startDate", "learners", "coverage", "attendance",
 ];
 
 const COL_BY_KEY = new Map(COLUMNS.map((c) => [c.key, c] as const));

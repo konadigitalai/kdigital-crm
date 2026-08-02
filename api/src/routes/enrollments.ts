@@ -74,7 +74,7 @@ function statusLabel(status: string, activeBatches: number, totalBatches: number
 // GET / — every enrollment for parties whose current role is 'enrolled' or
 // 'learner'. One row per enrolment, newest first. Carries everything the
 // Enrollments board needs to display, filter, group and search: party contact,
-// program + stack, course-module chips, batch code, advisor, and the fee ledger
+// program, course-module chips, batch code, advisor, and the fee ledger
 // with its computed payment-health.
 enrollmentsRouter.get("/", async (req, res, next) => {
   try {
@@ -104,7 +104,7 @@ enrollmentsRouter.get("/", async (req, res, next) => {
           p.phone             AS "phone",
           p.city              AS "city",
           pg.name             AS "programName",
-          stk.name            AS "stackName",
+          pg.family           AS "family",
           au.id               AS "advisorId",   -- app_user.id (l.advisor_id stores party.id)
           au.name             AS "advisorName",
           e.registered_date   AS "registeredDate",
@@ -133,7 +133,6 @@ enrollmentsRouter.get("/", async (req, res, next) => {
         FROM enrolment e
         JOIN party p         ON p.id  = e.party_id
         LEFT JOIN program pg ON pg.id = e.program_id
-        LEFT JOIN stack   stk ON stk.id = pg.stack_id
         LEFT JOIN lead l     ON l.work_item_id = e.deal_id
         LEFT JOIN app_user au ON au.party_id = l.advisor_id
         WHERE EXISTS (
@@ -151,7 +150,7 @@ enrollmentsRouter.get("/", async (req, res, next) => {
         feeQuoted: string | null; feePaid: string | null; dueDate: string | null;
         paymentStatus: string | null; paymentVerifiedAt: string | null; createdAt: string;
         partyId: string; name: string; email: string | null; phone: string | null; city: string | null;
-        programName: string | null; stackName: string | null;
+        programName: string | null; family: string | null;
         advisorId: string | null; advisorName: string | null; registeredDate: string | null;
         courseModules: string[] | null; batchCode: string | null; role: string | null;
         activeBatches: number; totalBatches: number;

@@ -10,7 +10,7 @@ async function main() {
     `SELECT table_name, column_name, data_type, is_nullable
        FROM information_schema.columns
       WHERE table_schema = 'public'
-        AND table_name IN ('stack','program','course','program_course','cohort','enrolment','party')
+        AND table_name IN ('program','course','program_course','cohort','enrolment','party')
       ORDER BY table_name, ordinal_position`,
   );
 
@@ -21,7 +21,7 @@ async function main() {
     byTable.set(r.table_name, arr);
   }
 
-  for (const t of ["stack","program","course","program_course","cohort","enrolment"]) {
+  for (const t of ["program","course","program_course","cohort","enrolment"]) {
     const cols = byTable.get(t);
     if (!cols) console.log(`${t.padEnd(16)} — TABLE DOES NOT EXIST`);
     else {

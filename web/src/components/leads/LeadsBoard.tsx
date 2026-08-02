@@ -118,7 +118,7 @@ const STAGE_OPTIONS = [
 ];
 
 function buildFields(leads: Lead[]): FilterField[] {
-  const stacks    = unique(leads.map((l) => l.stack).filter((x): x is string => typeof x === "string" && x !== ""));
+  const families    = unique(leads.map((l) => l.family).filter((x): x is string => typeof x === "string" && x !== ""));
   const programs  = unique(leads.map((l) => l.program).filter((x): x is string => typeof x === "string" && x !== ""));
   const cities    = unique(leads.map((l) => l.city).filter((x): x is string => typeof x === "string" && x !== ""));
   const advisors  = unique(leads.map((l) => l.advisorName).filter((x): x is string => typeof x === "string" && x !== ""));
@@ -131,10 +131,10 @@ function buildFields(leads: Lead[]): FilterField[] {
     { key: "phone",            label: "Phone",            type: "text",   get: (l: Lead) => l.phone },
     { key: "city",             label: "City",             type: "enum",   options: cities.map((c) => ({ value: c, label: c })), get: (l: Lead) => l.city },
     // Assignment / classification
-    // Stack is read-only and derived from the program, but it's still a
+    // Family is read-only and derived from the program, but it's still a
     // perfectly good thing to filter and group by — "show me everything in the
-    // Full AI Stack" is a coarser cut than picking its programs one by one.
-    { key: "stack",            label: "Stack",            type: "enum",   options: stacks.map((s) => ({ value: s, label: s })),    get: (l: Lead) => l.stack },
+    // Full AI Family" is a coarser cut than picking its programs one by one.
+    { key: "family",            label: "Family",            type: "enum",   options: families.map((s) => ({ value: s, label: s })),    get: (l: Lead) => l.family },
     { key: "program",          label: "Program",          type: "enum",   options: programs.map((p) => ({ value: p, label: p })), get: (l: Lead) => l.program },
     { key: "advisor",          label: "Advisor",          type: "enum",   options: advisors.map((a) => ({ value: a, label: a })), get: (l: Lead) => l.advisorName },
     { key: "source",           label: "Source",           type: "enum",   options: sources.map((s) => ({ value: s, label: s })),  get: (l: Lead) => l.sourceLabel ?? l.source },

@@ -1,7 +1,7 @@
 // Batches operational board — enriched cohort rows + KPI summary for the
 // top-level /batches board (List / Kanban / Chart / Calendar). Mirrors the
 // enriched-GET pattern in routes/enrollments.ts: one withTenant() query with
-// correlated rollups + a primary-stack LATERAL, then a JS .map() for derived
+// correlated rollups + a primary-programme LATERAL, then a JS .map() for derived
 // percentages/labels. Session/attendance rollups (coverage %, attendance %,
 // recording-SLA) land in Phase 2; Phase 1 returns them as null/0.
 //
@@ -44,17 +44,21 @@ function addDaysISO(dateISO: string, days: number): string {
 const maxISO = (a: string, b: string) => (a > b ? a : b);
 const minISO = (a: string, b: string) => (a < b ? a : b);
 
-// Primary stack for a batch: a batch → one course, but a course reaches many
-// programs (each under a stack) via program_course. Pick the stack of the
-// program the batch's own active learners are enrolled in; else the lowest
-// program_course.rank; else any. Returns one row (or none for un-mapped courses).
-const PRIMARY_STACK_LATERAL = sql`
+// Primary programme for a batch: a batch teaches one course, but a course is
+// reachable from many programmes via program_course. Pick the programme the
+// batch's own active learners are actually enrolled in; else the lowest
+// program_course.rank; else any. Returns one row (none for un-mapped courses).
+//
+// Was PRIMARY_STACK_LATERAL until post-0094 dropped the stack level. The
+// coarse grouping the board offered now comes from the programme's registry
+// family instead, which is the same idea sourced from the registry.
+const PRIMARY_PROGRAM_LATERAL = sql`
   LEFT JOIN LATERAL (
-    SELECT stk.id AS stack_id, stk.name AS stack_name, pg.name AS program_name
+    SELECT pg.family AS program_family, pg.name AS program_name
     FROM program_course pc
     JOIN program pg  ON pg.id  = pc.program_id
-    JOIN stack   stk ON stk.id = pg.stack_id
     WHERE pc.course_id = c.course_id
+      AND pc.component_type = 'course' 
     ORDER BY
       (EXISTS (
         SELECT 1 FROM batch_assignment ba
@@ -63,7 +67,7 @@ const PRIMARY_STACK_LATERAL = sql`
       )) DESC,
       pc.rank ASC, pg.name ASC
     LIMIT 1
-  ) stk ON true
+  ) prg ON true
 `;
 
 interface BoardRaw {
@@ -87,8 +91,7 @@ interface BoardRaw {
   daysOfWeek: string[] | null;
   startTime: string | null;
   endTime: string | null;
-  stackId: string | null;
-  stackName: string | null;
+  programFamily: string | null;
   programName: string | null;
   activeCount: number;
   enrolmentCount: number;
@@ -127,9 +130,8 @@ batchBoardRouter.get("/board", requirePermission("admin.batches.manage"), async 
           c.days_of_week AS "daysOfWeek",
           to_char(c.start_time, 'HH24:MI') AS "startTime",
           to_char(c.end_time,   'HH24:MI') AS "endTime",
-          stk.stack_id   AS "stackId",
-          stk.stack_name AS "stackName",
-          stk.program_name AS "programName",
+          prg.program_family AS "programFamily",
+          prg.program_name   AS "programName",
           (SELECT COUNT(*)::int FROM batch_assignment ba
              WHERE ba.cohort_id = c.id AND ba.status = 'active')  AS "activeCount",
           (SELECT COUNT(*)::int FROM batch_assignment ba
@@ -170,7 +172,7 @@ batchBoardRouter.get("/board", requirePermission("admin.batches.manage"), async 
         LEFT JOIN course co ON co.id = c.course_id
         LEFT JOIN party  tp ON tp.id = c.trainer_id
         LEFT JOIN party  cp ON cp.id = c.co_trainer_id
-        ${PRIMARY_STACK_LATERAL}
+        ${PRIMARY_PROGRAM_LATERAL}
         -- Live batches only. This is an operational board — archived batches
         -- would be noise on every rollup and row. They stay reachable and
         -- re-enableable via the admin cohorts screen (routes/cohorts.ts),
@@ -311,7 +313,7 @@ batchBoardRouter.get("/:id/detail", requirePermission("admin.batches.manage"), a
         SELECT
           c.id, c.code, c.name,
           co.name AS "courseName",
-          stk.stack_name AS "stackName", stk.program_name AS "programName",
+          prg.program_family AS "programFamily", prg.program_name AS "programName",
           c.status, c.slot, c.time_label AS "timeLabel", c.schedule,
           c.start_date AS "startDate", c.end_date AS "endDate", c.seats,
           c.trainer_id AS "trainerId", tp.name AS "trainerName",
@@ -346,7 +348,7 @@ batchBoardRouter.get("/:id/detail", requirePermission("admin.batches.manage"), a
         LEFT JOIN course co ON co.id = c.course_id
         LEFT JOIN party  tp ON tp.id = c.trainer_id
         LEFT JOIN party  cp ON cp.id = c.co_trainer_id
-        ${PRIMARY_STACK_LATERAL}
+        ${PRIMARY_PROGRAM_LATERAL}
         WHERE c.id = ${id}
         LIMIT 1
       `);
@@ -388,7 +390,7 @@ batchBoardRouter.get("/:id/detail", requirePermission("admin.batches.manage"), a
     res.json({
       detail: {
         id: raw.id, code: raw.code, name: raw.name,
-        courseName: raw.courseName, stackName: raw.stackName, programName: raw.programName,
+        courseName: raw.courseName, programFamily: raw.programFamily, programName: raw.programName,
         status: raw.status, staffed,
         trainerId: raw.trainerId, trainerName: raw.trainerName,
         coTrainerId: raw.coTrainerId, coTrainerName: raw.coTrainerName,

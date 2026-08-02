@@ -29,12 +29,12 @@ const DRAG_MIME = "application/x-decrm-lead";
 // The "Group by" axis selector is applied to Kanban + Chart only. Rating is
 // the default and the only axis where drag-drop is allowed (since dragging
 // across columns writes lead.rating). Other axes are read-only buckets.
-export type GroupBy = "rating" | "status" | "stack" | "program" | "advisor" | "source";
+export type GroupBy = "rating" | "status" | "family" | "program" | "advisor" | "source";
 
 export const GROUP_BY_OPTIONS: { value: GroupBy; label: string }[] = [
   { value: "rating",  label: "Rating" },
   { value: "status",  label: "Status" },
-  { value: "stack",   label: "Stack" },
+  { value: "family",   label: "Family" },
   { value: "program", label: "Program" },
   { value: "advisor", label: "Advisor" },
   { value: "source",  label: "Source" },
@@ -47,7 +47,7 @@ const LEAD_STATUS_LABEL: Record<string, string> = Object.fromEntries(
 export function groupKey(l: Lead, by: GroupBy): string {
   if (by === "rating")  return l.rating;
   if (by === "status")  return l.leadStatus || "—";
-  if (by === "stack")   return l.stack   || "TBD";
+  if (by === "family")   return l.family   || "TBD";
   if (by === "program") return l.program || "—";
   if (by === "advisor") return l.advisorName || "—";
   if (by === "source")  return l.sourceLabel || l.source || "—";
@@ -110,7 +110,7 @@ const RATING_OPTIONS = LEAD_RATINGS.map((r) => ({ value: r, label: ratingStyles[
 function unique<T>(xs: T[]): T[] { return [...new Set(xs.filter(Boolean))]; }
 
 function buildFields(allLeads: Lead[]): FilterField[] {
-  const stacks   = unique(allLeads.map((l) => l.stack).filter((x): x is string => !!x));
+  const families   = unique(allLeads.map((l) => l.family).filter((x): x is string => !!x));
   const programs = unique(allLeads.map((l) => l.program).filter((x): x is string => !!x));
   const cities   = unique(allLeads.map((l) => l.city).filter((x): x is string => !!x));
   const advisors = unique(allLeads.map((l) => l.advisorName).filter((x): x is string => !!x));
@@ -118,7 +118,7 @@ function buildFields(allLeads: Lead[]): FilterField[] {
   return [
     { key: "name",       label: "Name",        type: "text",   get: (l: Lead) => l.name },
     { key: "number",     label: "Lead #",      type: "text",   get: (l: Lead) => l.number },
-    { key: "stack",      label: "Stack",       type: "enum",   options: stacks.map((s) => ({ value: s, label: s })),   get: (l: Lead) => l.stack },
+    { key: "family",      label: "Family",       type: "enum",   options: families.map((s) => ({ value: s, label: s })),   get: (l: Lead) => l.family },
     { key: "program",    label: "Program",     type: "enum",   options: programs.map((p) => ({ value: p, label: p })), get: (l: Lead) => l.program },
     { key: "city",       label: "City",        type: "enum",   options: cities.map((c) => ({ value: c, label: c })),   get: (l: Lead) => l.city },
     { key: "advisor",    label: "Advisor",     type: "enum",   options: advisors.map((a) => ({ value: a, label: a })), get: (l: Lead) => l.advisorName },

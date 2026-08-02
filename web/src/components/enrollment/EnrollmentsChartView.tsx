@@ -6,7 +6,7 @@
 //       total, not per-instalment payment dates, so this attributes each
 //       enrolment's collected fee to the week it was registered.
 //   2 — Payment-health donut: counts by health band.
-//   3 — Enrollments by stack (bar).
+//   3 — Enrollments by family (bar).
 //   4 — Time-to-batch: omitted with a note — the row shape doesn't carry the
 //       batch-assignment timestamp needed to measure it.
 
@@ -49,7 +49,7 @@ const HEALTH_META: Record<PaymentHealth, { label: string; hex: string }> = {
   critical:     { label: "Critical",      hex: "#C7197A" },
 };
 const HEALTH_ORDER: PaymentHealth[] = ["paid_in_full", "on_track", "due_soon", "overdue", "critical"];
-const STACK_PALETTE = ["#6B1FB8", "#C7197A", "#1F3FCF", "#2E9E6A", "#E08A1E", "#A89DAC"];
+const FAMILY_PALETTE = ["#6B1FB8", "#C7197A", "#1F3FCF", "#2E9E6A", "#E08A1E", "#A89DAC"];
 
 function Card({ title, subtitle, className, children }: { title: string; subtitle: string; className?: string; children: React.ReactNode }) {
   return (
@@ -102,13 +102,13 @@ export function EnrollmentsChartView({ rows, range }: { rows: Enrollment[]; rang
     })).filter((d) => d.count > 0);
   }, [scoped]);
 
-  const byStack = useMemo(() => {
+  const byFamily = useMemo(() => {
     const m = new Map<string, number>();
     for (const e of scoped) {
-      const k = e.stackName || "TBD";
+      const k = e.family || "TBD";
       m.set(k, (m.get(k) ?? 0) + 1);
     }
-    return [...m.entries()].sort((a, b) => b[1] - a[1]).map(([label, count], i) => ({ label, count, hex: STACK_PALETTE[i % STACK_PALETTE.length] }));
+    return [...m.entries()].sort((a, b) => b[1] - a[1]).map(([label, count], i) => ({ label, count, hex: FAMILY_PALETTE[i % FAMILY_PALETTE.length] }));
   }, [scoped]);
 
   if (scoped.length === 0) {
@@ -121,7 +121,7 @@ export function EnrollmentsChartView({ rows, range }: { rows: Enrollment[]; rang
 
   const maxWeek = Math.max(1, ...weekly);
   const healthTotal = byHealth.reduce((s, d) => s + d.count, 0);
-  const maxStack = Math.max(1, ...byStack.map((d) => d.count));
+  const maxFamily = Math.max(1, ...byFamily.map((d) => d.count));
 
   // Donut geometry.
   const R = 54, C = 2 * Math.PI * R;
@@ -185,11 +185,11 @@ export function EnrollmentsChartView({ rows, range }: { rows: Enrollment[]; rang
         </div>
       </Card>
 
-      {/* 3 — Enrollments by stack */}
-      <Card title="Enrollments by stack" subtitle="HEADCOUNT · BY STACK">
+      {/* 3 — Enrollments by family */}
+      <Card title="Enrollments by family" subtitle="HEADCOUNT · BY FAMILY">
         <div className="flex flex-col gap-2">
-          {byStack.map((d) => {
-            const pct = (d.count / maxStack) * 100;
+          {byFamily.map((d) => {
+            const pct = (d.count / maxFamily) * 100;
             const inside = pct >= 12;
             return (
               <div key={d.label} className="flex items-center gap-2.5">

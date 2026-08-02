@@ -33,12 +33,6 @@ import { pool } from "./client.js";
 const args = process.argv.slice(2);
 const APPLY = args.includes("--apply");
 
-const stackArg = args.find((a) => a.startsWith("--stack="));
-// The registry has no notion of a stack — `programme_family` is its top-level
-// grouping and it is stored on the programme itself. So all nine pathways go
-// into one bucket rather than nine near-empty ones. Override with --stack=.
-const STACK_NAME = stackArg ? stackArg.slice("--stack=".length) : "KDigital Catalogue";
-
 const tenantArg = args.find((a) => a.startsWith("--tenant="));
 
 // Pre-registry course names that mean the same thing as a registry course.
@@ -103,21 +97,6 @@ async function main() {
     console.log(`tenant   : ${tenantName} (${tenantId})`);
     console.log(`registry : catalogue version ${REGISTRY_CATALOGUE_VERSION}`);
     console.log(`mode     : ${APPLY ? "APPLY (writing)" : "DRY RUN (rolled back)"}\n`);
-
-    // ─── Stack ────────────────────────────────────────────────────────────
-    const stackRow = await client.query<{ id: string }>(
-      `INSERT INTO stack (tenant_id, name, description)
-       VALUES ($1, $2, $3)
-       ON CONFLICT DO NOTHING
-       RETURNING id`,
-      [tenantId, STACK_NAME, `KDigital career pathways — catalogue ${REGISTRY_CATALOGUE_VERSION}.`],
-    );
-    const stackId = stackRow.rows[0]?.id ?? (await client.query<{ id: string }>(
-      `SELECT id FROM stack WHERE tenant_id = $1 AND lower(name) = lower($2)`,
-      [tenantId, STACK_NAME],
-    )).rows[0]?.id;
-    if (!stackId) throw new Error(`could not create or find stack '${STACK_NAME}'`);
-    console.log(`stack    : ${STACK_NAME} (${stackId})\n`);
 
     // ─── Courses ──────────────────────────────────────────────────────────
     // Adoption pass first: an existing course whose name matches the registry
@@ -244,16 +223,15 @@ async function main() {
       );
       if (adopted.rows[0]) notes.push(`adopted existing programme "${p.name}" as ${p.registryId}`);
 
-      // stack_id and price are set on INSERT only. A re-run must not drag a
-      // programme back into the seeder's stack, nor clear a price an advisor
-      // has since entered — the registry has no opinion on either.
+      // price is set on INSERT only. A re-run must not clear a price an
+      // advisor has since entered — the registry has no opinion on pricing.
       const r = await client.query<{ id: string; op: string; price: string | null }>(
         `INSERT INTO program (
-           tenant_id, stack_id, registry_id, short_code, catalogue_sequence,
+           tenant_id, registry_id, short_code, catalogue_sequence,
            name, full_name, search_alias, programme_type, family, description,
            credential_type, delivery_modes, catalogue_version, catalogue_status,
            effective_from, effective_to, source_registry
-         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
+         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
          ON CONFLICT (tenant_id, registry_id) WHERE registry_id IS NOT NULL
          DO UPDATE SET
            short_code         = EXCLUDED.short_code,
@@ -273,7 +251,7 @@ async function main() {
            source_registry    = EXCLUDED.source_registry
          RETURNING id, (xmax = 0)::text AS op, price`,
         [
-          tenantId, stackId, p.registryId, p.shortCode, p.sequence,
+          tenantId, p.registryId, p.shortCode, p.sequence,
           p.name, p.fullName, p.searchAlias, p.programmeType, p.family, p.description,
           p.credentialType, p.deliveryModes, p.catalogueVersion, p.catalogueStatus,
           p.effectiveFrom, p.effectiveTo, `KDigital registry ${p.catalogueVersion}`,

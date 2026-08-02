@@ -1,6 +1,6 @@
 "use client";
 
-// Batches > Kanban. Cards grouped by the chosen axis (status default, stack,
+// Batches > Kanban. Cards grouped by the chosen axis (status default, family,
 // slot, trainer). Read-only columns — a batch's fields are edited in the admin
 // CRUD (Admin · Batches), not by a drag gesture here, so the board surfaces the
 // grouping without letting you change it. Mirrors LearnersKanban.
@@ -11,11 +11,11 @@ import { avatarGradClass, gradFor, initialsOf, shortName } from "@/lib/ui";
 import type { BatchBoardRow } from "@/lib/types";
 import { BATCH_STATUS_CLS as STATUS_CLS } from "@/lib/batchStatus";
 
-export type BatchGroupBy = "status" | "stack" | "slot" | "trainer";
+export type BatchGroupBy = "status" | "family" | "slot" | "trainer";
 
 export const BATCH_GROUP_BY_OPTIONS: { value: BatchGroupBy; label: string }[] = [
   { value: "status",  label: "Status" },
-  { value: "stack",   label: "Stack" },
+  { value: "family",   label: "Family" },
   { value: "slot",    label: "Slot" },
   { value: "trainer", label: "Trainer" },
 ];
@@ -27,7 +27,7 @@ function slotTitle(slot: string | null): string | null {
 
 export function batchGroupKey(b: BatchBoardRow, by: BatchGroupBy): string {
   if (by === "status")  return b.status;
-  if (by === "stack")   return b.stackName || "No stack";
+  if (by === "family")   return b.family || "No family";
   if (by === "slot")    return slotTitle(b.slot) || "No slot";
   if (by === "trainer") return b.trainerName || "Not assigned";
   return "—";
@@ -126,7 +126,7 @@ export function BatchesKanban({ rows, groupBy }: { rows: BatchBoardRow[]; groupB
                   </div>
 
                   <div className="flex flex-wrap items-center gap-1.5">
-                    <span className="text-[12px] font-medium text-ink2">{b.stackName ?? b.programName ?? "—"}</span>
+                    <span className="text-[12px] font-medium text-ink2">{b.family ?? b.programName ?? "—"}</span>
                     {b.slot && (
                       <span className="mono-cap rounded-full bg-warm2 px-1.5 py-0.5 text-[9px] font-semibold tracking-[.04em] text-ink2">{slotTitle(b.slot)}</span>
                     )}

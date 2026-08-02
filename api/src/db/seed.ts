@@ -27,7 +27,6 @@ import {
   program,
   programCourse,
   savedView,
-  stack,
   tenant,
   supportCase,
   workItem,
@@ -271,29 +270,14 @@ async function main() {
   void crmAdmin;
   void advisorPriya;
 
-  // ── Stacks + programs (with price + duration) + courses + junction + batches
-  console.log("→ catalog (stacks + programs + courses + batches)…");
+  // ── Programs (with price + duration) + courses + junction + batches
+  console.log("→ catalog (programs + courses + batches)…");
 
-  // Stacks are the top-level bucket. Every program belongs to exactly one stack.
-  const STACK_CATALOG: { name: string; description: string }[] = [
-    { name: "AI Stack",    description: "Programs built around generative AI and agentic systems." },
-    { name: "Data Stack",  description: "Data engineering, analytics, and BI programs." },
-    { name: "Cloud Stack", description: "Cloud, DevOps, and platform engineering." },
-    { name: "Business Stack", description: "SaaS admin, CRM, and business systems." },
-  ];
-  const stackIds: Record<string, string> = {};
-  for (const s of STACK_CATALOG) {
-    const [row] = await db.insert(stack).values({
-      tenantId, name: s.name, description: s.description,
-    }).returning();
-    stackIds[s.name] = row!.id;
-  }
-
-  // Each program: stack + price + duration + a course list. Courses are shared
+  // Each program: family + price + duration + a course list. Courses are shared
   // across programs (many-to-many) — e.g. "Python" appears in AI & Data Science
   // and in Full Stack + AI as one row, linked twice via program_course.
   interface ProgramSpec {
-    stack: string;
+    family: string;
     price: number;
     durationValue: number;
     durationUnit: "weeks" | "months";
@@ -302,37 +286,37 @@ async function main() {
   }
   const PROGRAM_CATALOG: Record<string, ProgramSpec> = {
     "AI Engineer · GenAI": {
-      stack: "AI Stack", price: 149000, durationValue: 6, durationUnit: "months",
+      family: "Applied AI", price: 149000, durationValue: 6, durationUnit: "months",
       description: "Ship production-grade GenAI systems end-to-end.",
       courses: ["GenAI Foundations", "Agentic Systems", "Capstone"],
     },
     "AI & Data Science": {
-      stack: "Data Stack", price: 119000, durationValue: 8, durationUnit: "months",
+      family: "Data Engineering", price: 119000, durationValue: 8, durationUnit: "months",
       description: "Analytics + ML fundamentals with a live capstone.",
       courses: ["Python", "SQL", "Power BI", "Data Science", "AI"],
     },
     "Full Stack + AI": {
-      stack: "AI Stack", price: 149000, durationValue: 6, durationUnit: "months",
+      family: "Applied AI", price: 149000, durationValue: 6, durationUnit: "months",
       description: "Modern web fundamentals with AI-first tooling.",
       courses: ["JavaScript", "React", "Node.js", "Databases", "AI Tooling"],
     },
     "Salesforce · Agentforce": {
-      stack: "Business Stack", price: 99000, durationValue: 4, durationUnit: "months",
+      family: "Business and Product", price: 99000, durationValue: 4, durationUnit: "months",
       description: "Salesforce admin/dev with Agentforce automation.",
       courses: ["Salesforce Admin", "Apex", "Agentforce"],
     },
     "Power BI + AI": {
-      stack: "Data Stack", price: 59000, durationValue: 3, durationUnit: "months",
+      family: "Data Engineering", price: 59000, durationValue: 3, durationUnit: "months",
       description: "Business intelligence with AI-driven insights.",
       courses: ["Power BI Foundations", "DAX", "AI Insights"],
     },
     "DevOps + AI": {
-      stack: "Cloud Stack", price: 99000, durationValue: 5, durationUnit: "months",
+      family: "DevOps and AI Operations", price: 99000, durationValue: 5, durationUnit: "months",
       description: "Cloud-native delivery with AI-assisted operations.",
       courses: ["Linux & Shell", "Docker & K8s", "CI/CD", "AIOps"],
     },
     "Cyber Security + AI": {
-      stack: "Cloud Stack", price: 109000, durationValue: 6, durationUnit: "months",
+      family: "DevOps and AI Operations", price: 109000, durationValue: 6, durationUnit: "months",
       description: "Defensive security with AI-augmented SOC workflows.",
       courses: ["Network Security", "Threat Intel", "AI for SecOps"],
     },
@@ -359,14 +343,12 @@ async function main() {
 
   // Step 2: create programs, then wire the junction.
   const programIds: Record<string, string> = {};
-  const defaultStackId = stackIds["AI Stack"]!;
   for (const pname of programNames) {
     const meta = PROGRAM_CATALOG[pname];
-    const stackId = meta ? stackIds[meta.stack]! : defaultStackId;
     const [p] = await db.insert(program).values({
       tenantId,
-      stackId,
       name: pname,
+      family: meta?.family ?? null,
       description: meta?.description ?? null,
       price: (meta?.price ?? 99000).toString(),
       durationValue: meta?.durationValue ?? null,

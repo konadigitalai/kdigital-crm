@@ -21,7 +21,6 @@ import type {
   SlackDelivery, SlackRule, SlackRuleInput,
   SlackSharePreview, SlackShareTarget, SlackShareTargetInput, SlackShareTargetsResponse,
   TwConversationCounts, TwInboxFilter, TwMessageDirection, CallOutcome,
-  Stack,
   SummaryResponse,
 } from "./types";
 
@@ -270,28 +269,6 @@ export async function updateProgram(id: string, patch: Partial<ProgramInput>): P
   const { program } = await send<{ program: Program }>("PATCH", `/programs/${id}`, patch);
   return program;
 }
-
-// ── Stacks ────────────────────────────────────────────────────────────────
-
-export async function getStacks(): Promise<Stack[]> {
-  const { stacks } = await get<{ stacks: Stack[] }>("/stacks");
-  return stacks;
-}
-
-export async function createStack(input: { name: string; description?: string | null }): Promise<Stack> {
-  const { stack } = await post<{ stack: Stack }>("/stacks", input);
-  return stack;
-}
-
-export async function updateStack(
-  id: string,
-  patch: { name?: string; description?: string | null; enabled?: boolean },
-): Promise<Stack> {
-  const { stack } = await send<{ stack: Stack }>("PATCH", `/stacks/${id}`, patch);
-  return stack;
-}
-
-// ── Advisors (Manage Advisors admin page) ────────────────────────────────
 
 export async function getAdvisors(): Promise<Advisor[]> {
   const { advisors } = await get<{ advisors: Advisor[] }>("/advisors");

@@ -340,34 +340,21 @@ export const partyDuplicateCandidate = pgTable(
 
 // ─── Catalog (referenced by deal + enrolment) ─────────────────────────────
 //
-// Three-level catalog: Stack → Program → Course (many-to-many).
-//   stack           top-level bucket (e.g. "AI Stack") — every program lives here
+// Two-level catalog: Program → Course (many-to-many).
 //   program         has price + duration + description; picks 1..N courses
 //   course          reusable building block (name + description only)
-//   program_course  junction; unique on (program_id, course_id)
-// See post-0054-catalog-stacks.sql for the schema-reset migration.
-
-export const stack = pgTable(
-  "stack",
-  {
-    id: uuid("id").primaryKey().defaultRandom(),
-    tenantId: uuid("tenant_id").notNull().references(() => tenant.id),
-    name: text("name").notNull(),
-    description: text("description"),
-    enabled: boolean("enabled").notNull().default(true),
-    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
-  },
-  (t) => ({
-    // Case-insensitive name uniqueness per tenant — SQL-side index in
-    // post-0054 uses lower(name); we can't express that in Drizzle inline.
-  }),
-);
+//   program_course  junction; also holds programme→programme references for
+//                   composite pathways since post-0087
+//
+// There was a `stack` level above program until post-0094. It was dropped
+// because the approved registry already carries `program.family` — Data
+// Engineering, ServiceNow, Business Analysis — which is the grouping the
+// business actually uses and which comes from the registry rather than
+// being maintained by hand in a second place.
 
 export const program = pgTable("program", {
   id: uuid("id").primaryKey().defaultRandom(),
   tenantId: uuid("tenant_id").notNull().references(() => tenant.id),
-  stackId: uuid("stack_id").notNull().references(() => stack.id),
   // Short code the learner portal prints — "PRG-11". Filled by a DB default
   // off seq_program (post-0086), so no insert path has to remember it.
   code: text("code"),
@@ -404,7 +391,6 @@ export const program = pgTable("program", {
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 }, (t) => ({
-  stackIdx: index("program_stack_idx").on(t.tenantId, t.stackId),
   registryIdUniq: uniqueIndex("program_registry_id_uniq").on(t.tenantId, t.registryId),
   durationValueCheck: check("program_duration_value_check",
     sql`${t.durationValue} IS NULL OR ${t.durationValue} > 0`),
@@ -2539,7 +2525,6 @@ export const application = pgTable(
 
 // Type exports — convenient for routes/seed
 export type Tenant = typeof tenant.$inferSelect;
-export type Stack = typeof stack.$inferSelect;
 export type Program = typeof program.$inferSelect;
 export type Course = typeof course.$inferSelect;
 export type ProgramCourse = typeof programCourse.$inferSelect;

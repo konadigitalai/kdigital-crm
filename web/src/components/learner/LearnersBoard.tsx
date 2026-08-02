@@ -69,7 +69,7 @@ function unique(xs: (string | null | undefined)[]): string[] {
 
 function buildFields(rows: LearnerSummary[]): FilterField[] {
   const programs = unique(rows.map((r) => r.programName));
-  const stacks   = unique(rows.map((r) => r.stackName));
+  const families   = unique(rows.map((r) => r.family));
   const advisors = unique(rows.map((r) => r.advisorName));
   const cities   = unique(rows.map((r) => r.city));
   const batches  = unique(rows.map((r) => r.batchCode));
@@ -79,7 +79,7 @@ function buildFields(rows: LearnerSummary[]): FilterField[] {
     { key: "phone",           label: "Phone",           type: "text",   get: (l: LearnerSummary) => l.phone },
     { key: "city",            label: "City",            type: "enum",   options: cities.map((c) => ({ value: c, label: c })),     get: (l: LearnerSummary) => l.city },
     { key: "program",         label: "Program",         type: "enum",   options: programs.map((p) => ({ value: p, label: p })),   get: (l: LearnerSummary) => l.programName },
-    { key: "stack",           label: "Stack",           type: "enum",   options: stacks.map((s) => ({ value: s, label: s })),     get: (l: LearnerSummary) => l.stackName },
+    { key: "family",           label: "Family",           type: "enum",   options: families.map((s) => ({ value: s, label: s })),     get: (l: LearnerSummary) => l.family },
     { key: "status",          label: "Status",          type: "enum",   options: STATUS_OPTIONS,          get: (l: LearnerSummary) => l.status },
     { key: "advisor",         label: "Advisor",         type: "enum",   options: advisors.map((a) => ({ value: a, label: a })),   get: (l: LearnerSummary) => l.advisorName },
     { key: "placementStatus", label: "Placement",       type: "enum",   options: PLACEMENT_OPTIONS,       get: (l: LearnerSummary) => l.placementStatus },
@@ -638,7 +638,7 @@ export function LearnersSearchBox({ rows }: { rows: LearnerSummary[] }) {
     if (!q) return [] as LearnerSummary[];
     const scored: Array<{ l: LearnerSummary; score: number }> = [];
     for (const l of rows) {
-      const hay = [l.name, l.phone, l.email, l.city, l.programName, l.stackName, l.advisorName, l.batchCode, ...l.courseModules].filter(Boolean).join(" ").toLowerCase();
+      const hay = [l.name, l.phone, l.email, l.city, l.programName, l.family, l.advisorName, l.batchCode, ...l.courseModules].filter(Boolean).join(" ").toLowerCase();
       if (!hay.includes(q)) continue;
       const nameLc = (l.name ?? "").toLowerCase();
       const score = nameLc.startsWith(q) ? 3 : nameLc.includes(q) ? 2 : 1;

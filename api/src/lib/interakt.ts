@@ -19,7 +19,7 @@ export interface LeadForSync {
   phoneCountryCode: string | null;
   city: string | null;
   program: string | null;
-  stack: string | null;
+  family: string | null;
   value: string | null;
   stage: string | null;
   stageLabel: string | null;
@@ -68,7 +68,7 @@ export function buildInteraktPayload(
     email: lead.email ?? undefined,
     city: lead.city ?? undefined,
     program: lead.program ?? undefined,
-    stack: lead.stack ?? undefined,
+    family: lead.family ?? undefined,
     source: lead.sourceLabel ?? lead.source ?? undefined,
     stage: lead.stageLabel ?? lead.stage ?? undefined,
     rating: lead.rating ?? undefined,
@@ -134,7 +134,7 @@ export const LEAD_SYNC_COLUMNS = `
   p.phone_country_code AS "phoneCountryCode",
   p.city             AS city,
   l.program          AS program,
-  stk.name           AS stack,
+  prg.family         AS family,
   l.value            AS value,
   l.stage            AS stage,
   l.stage_label      AS "stageLabel",

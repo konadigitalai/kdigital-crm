@@ -517,14 +517,11 @@ leadsRouter.get("/", async (req, res, next) => {
           p.city             AS city,             -- Phase 3: was l.city (denorm dropped)
           l.program          AS program,
           l.program_id       AS "programId",
-          -- Stack is DERIVED from the program, never stored on the lead.
-          -- program.stack_id is NOT NULL, so a lead with a program always has a
-          -- stack, and a lead without one has no stack ("TBD" in the UI). Keeping
-          -- it a join rather than a column means it can't drift out of sync the
-          -- way the denormalised l.program text can — reassign the program and
-          -- the stack follows for free.
-          stk.name           AS stack,
-          prg.stack_id       AS "stackId",
+          -- The programme's registry family — Data Engineering, ServiceNow,
+          -- Business Analysis. Derived from the programme, never stored on the
+          -- lead, so reassigning the programme moves it for free. Replaces the
+          -- stack join that post-0094 dropped.
+          prg.family         AS family,
           l.value            AS value,
           l.description      AS description,
           l.stage            AS stage,
@@ -561,7 +558,6 @@ leadsRouter.get("/", async (req, res, next) => {
         JOIN party p      ON p.id  = wi.party_id
         LEFT JOIN app_user au ON au.party_id = l.advisor_id
         LEFT JOIN program prg ON prg.id = l.program_id
-        LEFT JOIN stack   stk ON stk.id = prg.stack_id
         WHERE EXISTS (
           SELECT 1 FROM party_role pr
           WHERE pr.party_id = p.id AND pr.role = 'lead' AND pr.valid_to IS NULL
@@ -586,7 +582,6 @@ const LEAD_SYNC_FROM = sql`
   JOIN party p      ON p.id  = wi.party_id
   LEFT JOIN app_user au ON au.party_id = l.advisor_id
   LEFT JOIN program prg ON prg.id = l.program_id
-  LEFT JOIN stack   stk ON stk.id = prg.stack_id
 `;
 
 async function logInteraktActivity(

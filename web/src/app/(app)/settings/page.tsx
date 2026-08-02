@@ -57,11 +57,8 @@ const ALL_CARDS: SettingsCard[] = [
     requires: "workers.read" },
 
   // Operations — academic structure
-  { section: "Operations", href: "/admin/stacks",   icon: "chart", title: "Stacks",
-    blurb: "Top-level buckets programs belong to.",
-    requires: "admin.programs.manage" },
   { section: "Operations", href: "/admin/programs", icon: "doc", title: "Programs",
-    blurb: "Programs, with stack, price, duration, and linked courses.",
+    blurb: "Programmes, with family, price, duration, and linked courses.",
     requires: "admin.programs.manage" },
   { section: "Operations", href: "/admin/courses",  icon: "graduation-cap", title: "Courses",
     blurb: "Reusable course modules linked to programs.",

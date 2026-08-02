@@ -1,7 +1,7 @@
 "use client";
 
 // Enrollments > Kanban. Cards grouped by the chosen axis (status default,
-// advisor, stack, program). Read-only columns — a status change on an enrolment
+// advisor, family, program). Read-only columns — a status change on an enrolment
 // has side effects (batch/fee state) that don't belong in a drag gesture, so the
 // board surfaces the grouping without letting you mutate it here.
 
@@ -11,19 +11,19 @@ import { avatarGradClass, gradFor, initialsOf, shortName } from "@/lib/ui";
 import type { Enrollment } from "@/lib/types";
 import { PaymentHealthBadge } from "./PaymentHealthBadge";
 
-export type EnrollGroupBy = "status" | "advisor" | "stack" | "program";
+export type EnrollGroupBy = "status" | "advisor" | "family" | "program";
 
 export const ENROLL_GROUP_BY_OPTIONS: { value: EnrollGroupBy; label: string }[] = [
   { value: "status",  label: "Status" },
   { value: "advisor", label: "Advisor" },
-  { value: "stack",   label: "Stack" },
+  { value: "family",   label: "Family" },
   { value: "program", label: "Program" },
 ];
 
 export function enrollGroupKey(e: Enrollment, by: EnrollGroupBy): string {
   if (by === "status")  return e.statusLabel || "—";
   if (by === "advisor") return e.advisorName || "Unassigned";
-  if (by === "stack")   return e.stackName   || "TBD";
+  if (by === "family")   return e.family   || "TBD";
   if (by === "program") return e.programName || "—";
   return "—";
 }

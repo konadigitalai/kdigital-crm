@@ -34,10 +34,6 @@ pipelineRouter.get("/", async (req, res, next) => {
           p.city             AS city,             -- Phase 3: was l.city (denorm dropped)
           l.program          AS program,
           l.program_id       AS "programId",
-          -- Derived from the program (program.stack_id is NOT NULL), never
-          -- stored on the lead — see the note in routes/leads.ts.
-          stk.name           AS stack,
-          prg.stack_id       AS "stackId",
           l.value            AS value,
           l.description      AS description,
           l.stage            AS stage,
@@ -69,7 +65,6 @@ pipelineRouter.get("/", async (req, res, next) => {
         JOIN party p      ON p.id  = wi.party_id
         LEFT JOIN app_user au ON au.party_id = l.advisor_id
         LEFT JOIN program prg ON prg.id = l.program_id
-        LEFT JOIN stack   stk ON stk.id = prg.stack_id
         WHERE EXISTS (
           SELECT 1 FROM party_role pr
           WHERE pr.party_id = p.id AND pr.role = 'lead' AND pr.valid_to IS NULL

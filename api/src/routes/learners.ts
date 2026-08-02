@@ -18,7 +18,7 @@ function learnerStatus(activeCourses: number, activeBatches: number): string {
 
 // GET /learners — enriched learner rows for the Learners board (list/kanban/
 // chart/calendar). One row per learner (party currently 'learner'), newest
-// first. Carries contact, program + stack, course-module chips, primary batch
+// first. Carries contact, program, course-module chips, primary batch
 // code, best-effort advisor (via the party's originating lead), the sparse
 // learner_profile satellite, and the engagement counts the board groups on.
 learnersRouter.get("/", async (req, res, next) => {
@@ -38,7 +38,9 @@ learnersRouter.get("/", async (req, res, next) => {
           pe.status      AS "enrolmentStatus",
           pg.id          AS "programId",
           pg.name        AS "programName",
-          stk.name       AS "stackName",
+          -- The programme's registry family (Data Engineering, ServiceNow…).
+          -- The coarse grouping axis the board used to get from stack.
+          pg.family      AS "family",
           au.id          AS "advisorId",     -- app_user.id (l.advisor_id stores party.id)
           au.name        AS "advisorName",
           -- learner_profile satellite (sparse — nulls fine).
@@ -87,7 +89,6 @@ learnersRouter.get("/", async (req, res, next) => {
           LIMIT 1
         ) pe ON true
         LEFT JOIN program pg  ON pg.id  = pe.program_id
-        LEFT JOIN stack   stk ON stk.id = pg.stack_id
         LEFT JOIN LATERAL (
           SELECT l.advisor_id
           FROM lead l
@@ -109,7 +110,7 @@ learnersRouter.get("/", async (req, res, next) => {
         partyId: string; name: string; email: string | null; phone: string | null;
         city: string | null; attributes: { initials?: string } | null; learnerSince: string;
         enrolmentId: string | null; enrolmentStatus: string | null;
-        programId: string | null; programName: string | null; stackName: string | null;
+        programId: string | null; programName: string | null; family: string | null;
         advisorId: string | null; advisorName: string | null;
         skillLevel: string | null; placementStatus: string | null; mentorPartyId: string | null;
         progressPercent: number | null; riskLevel: string | null; riskReason: string | null;

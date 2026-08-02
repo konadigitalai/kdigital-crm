@@ -419,19 +419,13 @@ export default async function RecordPage({
                 valueClass="text-[13px] font-semibold text-ink"
               />
             </DetailRow>
-            {/* Stack is derived from the program (program.stack_id is NOT NULL),
-                so it's shown, not edited — pick the program below and this
-                follows. "TBD" until one is assigned. */}
-            <DetailRow label="Stack">
-              {lead.stack ? (
-                <span className="text-[13px] font-semibold text-ink">{lead.stack}</span>
+            {/* The programme's registry family. Shown, not edited: pick the
+                programme below and this follows. "TBD" until one is assigned. */}
+            <DetailRow label="Family">
+              {lead.family ? (
+                <span className="text-[13px] font-semibold text-ink">{lead.family}</span>
               ) : (
-                <span
-                  className="mono-cap text-[10px] tracking-[.08em] text-hint"
-                  title="No program assigned — pick one below and the stack follows"
-                >
-                  TBD
-                </span>
+                <span className="mono-cap text-[10px] tracking-[.08em] text-hint">TBD</span>
               )}
             </DetailRow>
             <DetailRow label="Program">

@@ -1,15 +1,14 @@
 import { Topbar } from "@/components/shell/Topbar";
 import { Icon } from "@/components/ui/Icon";
-import { getCourses, getPrograms, getStacks } from "@/lib/api";
+import { getCourses, getPrograms } from "@/lib/api";
 import { requirePagePermission } from "@/lib/guards";
 import { ProgramsTable } from "@/components/admin/ProgramsTable";
 import Link from "next/link";
 
 export default async function AdminProgramsPage() {
   await requirePagePermission("admin.programs.manage");
-  const [programs, stacks, courses] = await Promise.all([
+  const [programs, courses] = await Promise.all([
     getPrograms(),
-    getStacks(),
     getCourses(),
   ]);
 
@@ -31,7 +30,7 @@ export default async function AdminProgramsPage() {
           <div>
             <h1 className="font-serif text-[40px] font-normal leading-none tracking-[-.01em]">Programs</h1>
             <p className="mt-2 max-w-[640px] text-[13.5px] text-mute">
-              Every program belongs to a stack, has a price and duration, and picks its courses. Inactive
+              Every programme has a family, a price and a duration, and picks its courses. Inactive
               programs are hidden from new-lead dropdowns but their history (leads, batches, enrolments) stays intact.
             </p>
           </div>
@@ -47,7 +46,7 @@ export default async function AdminProgramsPage() {
           </div>
         </div>
 
-        <ProgramsTable initial={programs} stacks={stacks} courses={courses} />
+        <ProgramsTable initial={programs} courses={courses} />
       </div>
     </>
   );

@@ -76,12 +76,12 @@ function unique(xs: (string | null | undefined)[]): string[] {
 const NOT_ASSIGNED = "Not assigned";
 
 function buildFields(rows: BatchBoardRow[]): FilterField[] {
-  const stacks   = unique(rows.map((r) => r.stackName));
+  const families   = unique(rows.map((r) => r.family));
   const trainers = unique(rows.map((r) => r.trainerName));
   return [
     { key: "code",           label: "Code",          type: "text",   get: (b: BatchBoardRow) => b.code },
     { key: "name",           label: "Batch",         type: "text",   get: (b: BatchBoardRow) => b.name },
-    { key: "stack",          label: "Stack",         type: "enum",   options: stacks.map((s) => ({ value: s, label: s })),   get: (b: BatchBoardRow) => b.stackName },
+    { key: "family",          label: "Family",         type: "enum",   options: families.map((s) => ({ value: s, label: s })),   get: (b: BatchBoardRow) => b.family },
     { key: "status",         label: "Status",        type: "enum",   options: STATUS_OPTIONS,   get: (b: BatchBoardRow) => b.status },
     { key: "trainer",        label: "Trainer",       type: "enum",   options: [...trainers.map((t) => ({ value: t, label: t })), { value: NOT_ASSIGNED, label: NOT_ASSIGNED }], get: (b: BatchBoardRow) => b.trainerName ?? NOT_ASSIGNED },
     { key: "slot",           label: "Slot",          type: "enum",   options: SLOT_OPTIONS,     get: (b: BatchBoardRow) => b.slot },
@@ -295,7 +295,7 @@ export function BatchesBoard({
           )}
           {(view === "list" || view === "kanban") && (
             <>
-              <QuickFilterPill label="Stack" options={unique(rows.map((r) => r.stackName)).map((s) => ({ value: s, label: s }))} state={filterState} fieldKey="stack" onChange={changeFilter} anyLabel="All" />
+              <QuickFilterPill label="Family" options={unique(rows.map((r) => r.family)).map((s) => ({ value: s, label: s }))} state={filterState} fieldKey="family" onChange={changeFilter} anyLabel="All" />
               <QuickFilterPill label="Slot" options={SLOT_OPTIONS} state={filterState} fieldKey="slot" onChange={changeFilter} anyLabel="All" />
               <QuickFilterPill label="Trainer" options={[...unique(rows.map((r) => r.trainerName)).map((t) => ({ value: t, label: t })), { value: NOT_ASSIGNED, label: NOT_ASSIGNED }]} state={filterState} fieldKey="trainer" onChange={changeFilter} anyLabel="All" />
             </>
@@ -669,7 +669,7 @@ export function BatchesSearchBox({ rows }: { rows: BatchBoardRow[] }) {
     if (!q) return [] as BatchBoardRow[];
     const scored: Array<{ b: BatchBoardRow; score: number }> = [];
     for (const b of rows) {
-      const hay = [b.code, b.name, b.stackName, b.trainerName].filter(Boolean).join(" ").toLowerCase();
+      const hay = [b.code, b.name, b.family, b.trainerName].filter(Boolean).join(" ").toLowerCase();
       if (!hay.includes(q)) continue;
       const nameLc = (b.name ?? "").toLowerCase();
       const codeLc = (b.code ?? "").toLowerCase();
@@ -711,7 +711,7 @@ export function BatchesSearchBox({ rows }: { rows: BatchBoardRow[] }) {
           onChange={(e) => { setQuery(e.target.value); setOpen(true); }}
           onFocus={() => query.trim() && setOpen(true)}
           onKeyDown={onKeyDown}
-          placeholder="Search batches by code, name, stack, trainer…"
+          placeholder="Search batches by code, name, family, trainer…"
           className="min-w-0 flex-1 bg-transparent text-[13.5px] text-ink placeholder:text-hint outline-none"
         />
         {query && (
@@ -741,7 +741,7 @@ export function BatchesSearchBox({ rows }: { rows: BatchBoardRow[] }) {
                     <span className="truncate text-[13px] font-semibold text-ink">{b.name}</span>
                   </div>
                   <div className="mt-0.5 truncate text-[11.5px] text-mute">
-                    {[b.code, b.stackName, b.trainerName, slotTitle(b.slot) !== "—" ? slotTitle(b.slot) : null].filter(Boolean).join(" · ") || "—"}
+                    {[b.code, b.family, b.trainerName, slotTitle(b.slot) !== "—" ? slotTitle(b.slot) : null].filter(Boolean).join(" · ") || "—"}
                   </div>
                 </div>
               </button>

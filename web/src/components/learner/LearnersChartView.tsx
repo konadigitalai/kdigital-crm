@@ -1,7 +1,7 @@
 "use client";
 
 // Learners > Chart. Pure SVG/CSS, mirroring EnrollmentsChartView's card chrome.
-//   1 — Learners by stack (bar).
+//   1 — Learners by family (bar).
 //   2 — Status breakdown (donut): In batch / Assigned / Enrolled.
 //   3 — Placement breakdown (bar) from learner_profile.placement_status —
 //       degrades to a clear note when every learner's placement is null.
@@ -31,7 +31,7 @@ const STATUS_META: Record<string, { label: string; hex: string }> = {
   "Enrolled": { label: "Enrolled", hex: "#A89DAC" },
 };
 const STATUS_ORDER = ["In batch", "Assigned", "Enrolled"];
-const STACK_PALETTE = ["#6B1FB8", "#C7197A", "#1F3FCF", "#2E9E6A", "#E08A1E", "#A89DAC"];
+const FAMILY_PALETTE = ["#6B1FB8", "#C7197A", "#1F3FCF", "#2E9E6A", "#E08A1E", "#A89DAC"];
 
 const PLACEMENT_META: Record<string, { label: string; hex: string }> = {
   placed:      { label: "Placed",       hex: "#2E9E6A" },
@@ -67,13 +67,13 @@ export function LearnersChartView({ rows, range }: { rows: LearnerSummary[]; ran
     });
   }, [rows, range]);
 
-  const byStack = useMemo(() => {
+  const byFamily = useMemo(() => {
     const m = new Map<string, number>();
     for (const l of scoped) {
-      const k = l.stackName || "TBD";
+      const k = l.family || "TBD";
       m.set(k, (m.get(k) ?? 0) + 1);
     }
-    return [...m.entries()].sort((a, b) => b[1] - a[1]).map(([label, count], i) => ({ label, count, hex: STACK_PALETTE[i % STACK_PALETTE.length] }));
+    return [...m.entries()].sort((a, b) => b[1] - a[1]).map(([label, count], i) => ({ label, count, hex: FAMILY_PALETTE[i % FAMILY_PALETTE.length] }));
   }, [scoped]);
 
   const byStatus = useMemo(() => {
@@ -111,7 +111,7 @@ export function LearnersChartView({ rows, range }: { rows: LearnerSummary[]; ran
     );
   }
 
-  const maxStack = Math.max(1, ...byStack.map((d) => d.count));
+  const maxFamily = Math.max(1, ...byFamily.map((d) => d.count));
   const statusTotal = byStatus.reduce((s, d) => s + d.count, 0);
   const maxBatch = Math.max(1, ...batchBuckets.map((d) => d.count));
   const placementTotal = byPlacement.reduce((s, d) => s + d.count, 0);
@@ -122,11 +122,11 @@ export function LearnersChartView({ rows, range }: { rows: LearnerSummary[]; ran
 
   return (
     <div className="grid grid-cols-1 gap-5 lg:grid-cols-2">
-      {/* 1 — Learners by stack */}
-      <Card title="Learners by stack" subtitle="HEADCOUNT · BY STACK">
+      {/* 1 — Learners by family */}
+      <Card title="Learners by family" subtitle="HEADCOUNT · BY FAMILY">
         <div className="flex flex-col gap-2">
-          {byStack.map((d) => {
-            const pct = (d.count / maxStack) * 100;
+          {byFamily.map((d) => {
+            const pct = (d.count / maxFamily) * 100;
             const inside = pct >= 12;
             return (
               <div key={d.label} className="flex items-center gap-2.5">
