@@ -460,15 +460,10 @@ export default async function RecordPage({
                 target page reading our URL out of document.referrer. */}
             {attrs.landingPageUrl && (
               <DetailRow label="Submitted from">
-                <a
-                  href={attrs.landingPageUrl}
-                  target="_blank"
-                  rel="noreferrer noopener"
-                  title={attrs.landingPageUrl}
-                  className="block truncate text-[13px] font-semibold text-brand-violet hover:underline"
-                >
+                <span className="block truncate text-[13px] font-semibold text-ink"
+                      title={attrs.landingPageUrl}>
                   {prettyUrl(attrs.landingPageUrl)}
-                </a>
+                </span>
               </DetailRow>
             )}
             <DetailRow label="Lead status">

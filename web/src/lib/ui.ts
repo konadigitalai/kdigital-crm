@@ -174,13 +174,53 @@ export function fmtFollowup(
   return { label: istShortFmt.format(d), urgent: false, muted: false };
 }
 
-// Group a 10-digit local number as "98850 12446" so the eye can chunk it.
+// Render a phone number the same way regardless of how it was stored.
 //
-// The country code is NOT blindly prepended: legacy rows store the phone in
-// E.164 ("+919885012446") with the cc *also* set, so a naive `${cc} ${phone}`
-// renders "+91 +919885012446". Anything already carrying a leading "+" is
-// treated as self-describing — we split the cc off, group the rest, and use
-// the embedded cc rather than the column's.
+// The CRM has three shapes in the wild, all meaning the same number:
+//
+//   phone "+919876543210", cc "91"    E.164 in the phone column (imports,
+//                                     anything that went through
+//                                     composeFullE164)
+//   phone "9876543210",    cc "91"    bare local + separate cc (web intake)
+//   phone "9876543210",    cc null    bare local, no cc (older manual rows)
+//
+// The previous version compared the cc column against "+91" while the column
+// actually stores "91", so the second shape never matched and rendered as
+// "91 9876543210" — no plus, no grouping — next to a correctly formatted
+// "+91 98765 43210" on the row above. Same number, two appearances.
+//
+// Now everything is reduced to (ccDigits, localDigits) first and formatted
+// from that, so storage shape cannot leak into the display.
+
+// National-number grouping per dialling code. Only conventions worth the
+// bytes: a wrong grouping reads worse than none, so anything not listed is
+// shown as unbroken digits rather than guessed at.
+const PHONE_GROUPS: Record<string, number[]> = {
+  "91":  [5, 5],        // India        98765 43210
+  "1":   [3, 3, 4],     // US / Canada  415 555 2671
+  "44":  [4, 6],        // UK           7911 123456
+  "61":  [3, 3, 3],     // Australia    412 345 678
+  "65":  [4, 4],        // Singapore    9123 4567
+  "971": [2, 3, 4],     // UAE          50 123 4567
+  "974": [4, 4],        // Qatar        3312 3456
+  "966": [2, 3, 4],     // Saudi        50 123 4567
+  "33":  [1, 2, 2, 2, 2], // France     6 12 34 56 78
+};
+
+// Dialling codes we can recognise inside an E.164 string. Longest first so
+// "+971..." is not read as "+97" then "1...".
+const KNOWN_CC = Object.keys(PHONE_GROUPS).sort((a, b) => b.length - a.length);
+
+function group(localDigits: string, ccDigits: string): string {
+  const parts = PHONE_GROUPS[ccDigits];
+  if (!parts) return localDigits;
+  if (parts.reduce((a, b) => a + b, 0) !== localDigits.length) return localDigits;
+  const out: string[] = [];
+  let at = 0;
+  for (const n of parts) { out.push(localDigits.slice(at, at + n)); at += n; }
+  return out.join(" ");
+}
+
 export function prettyPhone(
   countryCode: string | null | undefined,
   phone: string | null | undefined,
@@ -188,30 +228,38 @@ export function prettyPhone(
   const raw = (phone ?? "").trim();
   if (!raw) return "";
 
-  let cc = (countryCode ?? "").trim();
-  let local = raw;
+  const colCc = (countryCode ?? "").replace(/\D/g, "");
+  let ccDigits = colCc;
+  let localDigits: string;
 
   if (raw.startsWith("+")) {
-    // "+91 98850 12446" / "+919885012446" → cc "+91", local "9885012446".
-    // 1–4 digit cc, but never eat into a trailing 10-digit local number.
-    const digits = raw.slice(1).replace(/\D/g, "");
-    const ccLen = Math.max(0, Math.min(4, digits.length - 10));
-    cc = ccLen > 0 ? `+${digits.slice(0, ccLen)}` : "";
-    local = digits.slice(ccLen);
+    // Self-describing: the number carries its own code, so the column is
+    // ignored. It is frequently stale or duplicated on these rows.
+    const all = raw.slice(1).replace(/\D/g, "");
+    const match = KNOWN_CC.find((c) => all.startsWith(c) && all.length > c.length);
+    if (match) {
+      ccDigits = match;
+      localDigits = all.slice(match.length);
+    } else {
+      // Unknown code: assume everything past a 10-digit tail is the code,
+      // which is what the old implementation did and is right often enough.
+      const ccLen = Math.max(0, Math.min(4, all.length - 10));
+      ccDigits = all.slice(0, ccLen);
+      localDigits = all.slice(ccLen);
+    }
+  } else {
+    localDigits = raw.replace(/\D/g, "");
+    // A bare number with no cc column: if it looks like an Indian mobile,
+    // treat it as one. That is what composeFullE164 does server-side, so the
+    // display agrees with what would actually be dialled.
+    if (!ccDigits && localDigits.length === 10 && /^[6-9]/.test(localDigits)) {
+      ccDigits = "91";
+    }
   }
 
-  // 5-5 grouping is an *Indian* mobile convention, so it's only applied to
-  // Indian numbers. Splitting a US number that way ("+1 41555 52671") is worse
-  // than not splitting it at all, and we don't carry per-country rules for a
-  // CRM whose leads are ~all domestic — anything else is shown verbatim.
-  const localDigits = local.replace(/\D/g, "");
-  const isIndian = cc === "" || cc === "+91";
-  const grouped =
-    isIndian && localDigits.length === 10
-      ? `${localDigits.slice(0, 5)} ${localDigits.slice(5)}`
-      : local.trim();
-
-  return cc ? `${cc} ${grouped}` : grouped;
+  if (!localDigits) return "";
+  const grouped = group(localDigits, ccDigits);
+  return ccDigits ? `+${ccDigits} ${grouped}` : grouped;
 }
 
 // "Priya Sharma" → "Priya S." — the advisor column is narrow and the first

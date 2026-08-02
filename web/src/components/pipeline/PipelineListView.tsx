@@ -1524,18 +1524,7 @@ function CellIdle({
       ? <span className="truncate" title={lead.family}>{lead.family}</span>
       : <span className="mono-cap text-[10px] tracking-[.08em] text-hint" title="No programme assigned">TBD</span>;
     case "landingPageUrl": return lead.landingPageUrl
-      ? (
-        <a
-          href={lead.landingPageUrl}
-          target="_blank"
-          rel="noreferrer noopener"
-          title={lead.landingPageUrl}
-          onClick={(e) => e.stopPropagation()}
-          className="truncate text-brand-violet hover:underline"
-        >
-          {prettyUrl(lead.landingPageUrl)}
-        </a>
-      )
+      ? <span className="truncate" title={lead.landingPageUrl}>{prettyUrl(lead.landingPageUrl)}</span>
       : <span className="text-hint">—</span>;
     case "program":        return <span className="truncate" title={lead.program ?? undefined}>{lead.program || "—"}</span>;
     case "advisor":        return <AdvisorChip name={lead.advisorName} />;

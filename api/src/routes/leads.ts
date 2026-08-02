@@ -190,7 +190,9 @@ leadsRouter.post("/", async (req, res, next) => {
     if (!name) errors.push("name is required");
     const email   = b.email   ? String(b.email).trim()   : null;
     const phone   = b.phone   ? String(b.phone).trim()   : null;
-    const phoneCountryCode = b.phoneCountryCode ? String(b.phoneCountryCode).trim() : null;
+    // Canonical "+91" regardless of what the caller sent — see post-0096.
+    const ccDigits = String(b.phoneCountryCode ?? "").replace(/\D/g, "");
+    const phoneCountryCode = ccDigits ? `+${ccDigits}` : null;
     const city    = b.city    ? String(b.city).trim()    : null;
     const programName = b.program ? String(b.program).trim() : null;
     const programId   = b.programId ? String(b.programId).trim() : null;

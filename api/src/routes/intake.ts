@@ -159,7 +159,12 @@ intakeRouter.post("/", async (req, res) => {
   const phone = String(b.phone ?? "").trim() || null;
   // Optional — public forms send this alongside the local number so the CRM
   // can dial the lead without guessing the region.
-  const phoneCountryCode = String(b.phoneCountryCode ?? "").trim() || null;
+  // Normalised to the CRM's canonical "+91", not stored as the caller sent
+  // it. The website form sends "91" and the New Lead dialog sends "+91";
+  // accepting both and correcting on write is what keeps the column single-
+  // shaped without rejecting a producer over a plus sign (post-0096).
+  const rawCc = String(b.phoneCountryCode ?? "").replace(/\D/g, "");
+  const phoneCountryCode = rawCc ? `+${rawCc}` : null;
   const source      = String(b.source      ?? "web").trim() || "web";
   const sourceLabel = String(b.sourceLabel ?? "Website form").trim() || "Website form";
   const notes = String(b.notes ?? "").trim() || null;
