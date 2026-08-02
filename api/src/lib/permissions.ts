@@ -25,6 +25,31 @@ export const PERMISSIONS = [
   "admin.courses.manage",
   "admin.batches.manage",
 
+  // ─── Workforce ─────────────────────────────────────────────────────────
+  // The staff directory. Read is separate from manage because the trainer
+  // and recruiter pickers all over the app need to READ workers, while
+  // editing someone's reporting line or exit date is an HR action.
+  "workers.read",
+  "workers.manage",
+
+  // ─── B2B ───────────────────────────────────────────────────────────────
+  // Organisations that buy training and hire graduates, the people inside
+  // them, and the opportunity pipeline against them. Deliberately separate
+  // from leads.*: a B2C advisor working a lead list has no reason to see
+  // corporate deal values.
+  "accounts.read",
+  "accounts.write",
+  "opportunities.read",
+  "opportunities.write",
+
+  // ─── Staffing ──────────────────────────────────────────────────────────
+  // Requisitions, candidate profiles and applications. `staffing.decide` is
+  // split out because moving someone to 'rejected' or 'hired' is a decision
+  // about a person's livelihood, not an edit.
+  "staffing.read",
+  "staffing.write",
+  "staffing.decide",
+
   "agents.read",
   "agents.run",
 
@@ -183,6 +208,43 @@ export const MODULE_CATALOG: ModuleAccess[] = [
     ],
   },
   {
+    key: "workers",
+    label: "Workforce directory",
+    description: "Staff records — designation, department, reporting line, shift, skills, and the trainer/deployment flags the scheduler filters on. No salary or personal documents are stored.",
+    levels: [
+      { key: "read",   label: "Read",   permission: "workers.read" },
+      { key: "manage", label: "Manage", permission: "workers.manage" },
+    ],
+  },
+  {
+    key: "accounts",
+    label: "Accounts & contacts (B2B)",
+    description: "Client and hiring-partner organisations, and the people inside them.",
+    levels: [
+      { key: "read",  label: "Read",  permission: "accounts.read" },
+      { key: "write", label: "Write", permission: "accounts.write" },
+    ],
+  },
+  {
+    key: "opportunities",
+    label: "Opportunities (B2B pipeline)",
+    description: "Corporate deals against an account — stage, amount, close date. Separate from the B2C lead pipeline.",
+    levels: [
+      { key: "read",  label: "Read",  permission: "opportunities.read" },
+      { key: "write", label: "Write", permission: "opportunities.write" },
+    ],
+  },
+  {
+    key: "staffing",
+    label: "Staffing",
+    description: "Requisitions, candidate profiles and applications. 'Decide' is separate because hiring and rejecting are decisions about a person, not edits.",
+    levels: [
+      { key: "read",   label: "Read",           permission: "staffing.read" },
+      { key: "write",  label: "Write",          permission: "staffing.write" },
+      { key: "decide", label: "Hire / reject",  permission: "staffing.decide" },
+    ],
+  },
+  {
     key: "users",
     label: "User management",
     description: "Create users, reset passwords, assign groups + clients.",
@@ -268,6 +330,9 @@ const ADVISOR_PERMS: Permission[] = [
   "reports.read",
   "messaging.read", "messaging.send",
   "media.read", "media.upload",
+  // Reads the directory so the trainer/owner pickers resolve names. Not
+  // manage — an advisor does not edit someone's employment record.
+  "workers.read",
 ];
 
 const SUPPORT_PERMS: Permission[] = [
@@ -277,12 +342,42 @@ const SUPPORT_PERMS: Permission[] = [
   "leaves.read.self",
   "messaging.read", "messaging.send",
   "media.read", "media.upload",
+  "workers.read",
 ];
 
 const TRAINER_PERMS: Permission[] = [
   "learners.read",
   "events.manage.self",
   "leaves.read.self",
+  "workers.read",
+];
+
+// Corporate sales. Deliberately has no leads.* — this person works accounts
+// and opportunities, not the B2C lead list.
+const CORPORATE_SALES_PERMS: Permission[] = [
+  "accounts.read", "accounts.write",
+  "opportunities.read", "opportunities.write",
+  "workers.read",
+  "agents.read",
+  "reports.read",
+  "events.manage.self",
+  "leaves.read.self",
+  "messaging.read", "messaging.send",
+  "media.read", "media.upload",
+];
+
+// Recruiter. Reads learners (to see who is coming through) and accounts (to
+// see who is hiring), owns the staffing pipeline end to end.
+const RECRUITER_PERMS: Permission[] = [
+  "staffing.read", "staffing.write", "staffing.decide",
+  "accounts.read",
+  "learners.read",
+  "workers.read",
+  "events.manage.self",
+  "leaves.read.self",
+  "messaging.read", "messaging.send",
+  "media.read", "media.upload",
+  "reports.read",
 ];
 
 // LMS admin gets NO CRM permissions on purpose. navItems.ts gates every
@@ -328,6 +423,18 @@ export const PRESETS: PermissionPreset[] = [
     name: "Trainer",
     description: "See the batches you teach on your calendar; read learners.",
     permissions: TRAINER_PERMS,
+  },
+  {
+    key: "corporate_sales",
+    name: "Corporate sales",
+    description: "B2B accounts + opportunity pipeline. No B2C lead access.",
+    permissions: CORPORATE_SALES_PERMS,
+  },
+  {
+    key: "recruiter",
+    name: "Recruiter",
+    description: "Requisitions, candidates and applications end to end.",
+    permissions: RECRUITER_PERMS,
   },
   {
     key: "reports_only",
@@ -388,18 +495,28 @@ export const SYSTEM_GROUPS: Array<{ name: string; description: string; permissio
     permissions: TRAINER_PERMS,
   },
   {
+    name: "Corporate sales",
+    description: "B2B accounts + opportunity pipeline. No B2C lead access.",
+    permissions: CORPORATE_SALES_PERMS,
+  },
+  {
+    name: "Recruiter",
+    description: "Requisitions, candidates and applications end to end.",
+    permissions: RECRUITER_PERMS,
+  },
+  {
     name: "Reports only",
-    description: PRESETS[3]!.description,
+    description: "Read across modules; no edits anywhere.",
     permissions: REPORTS_ONLY_PERMS,
   },
   {
     name: "LMS admin",
-    description: PRESETS[4]!.description,
+    description: "Build batch content and grade. No CRM access.",
     permissions: LMS_ADMIN_PERMS,
   },
   {
     name: "LMS learner",
-    description: PRESETS[5]!.description,
+    description: "Student portal only — their own batches and submissions.",
     permissions: LMS_LEARNER_PERMS,
   },
 ];

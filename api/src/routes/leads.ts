@@ -48,6 +48,9 @@ function humanFieldLabel(field: string): string {
     city: "City",
     timeZone: "Time zone",
     deliveryMode: "Delivery mode",
+    workingStatus: "Working status",
+    yearOfPassout: "Year of passout",
+    currentCompany: "Current company",
     leadStatus: "Lead status",
     value: "Price quoted",
     description: "Description",
@@ -232,6 +235,24 @@ leadsRouter.post("/", async (req, res, next) => {
     const deliveryMode = (["online","classroom","hybrid"].includes(rawMode) ? rawMode : null) as
       "online" | "classroom" | "hybrid" | null;
 
+    // Qualification (post-0088). The three questions an advisor asks on the
+    // first call. Same "validate against the enum, silently drop anything
+    // else" contract as deliveryMode above — intake posts here from a public
+    // web form and must never 400 on a junk optional field.
+    const rawWorking = typeof b.workingStatus === "string" ? b.workingStatus.trim().toLowerCase() : "";
+    const workingStatus = (["student","working","not_working"].includes(rawWorking) ? rawWorking : null) as
+      "student" | "working" | "not_working" | null;
+
+    // The CHECK fences this to 1950–2100; anything outside is a typo, not a
+    // year, so it is dropped rather than sent to the database to be rejected.
+    const passoutNum = b.yearOfPassout != null && b.yearOfPassout !== ""
+      ? Number(b.yearOfPassout) : null;
+    const yearOfPassout = passoutNum != null && Number.isInteger(passoutNum)
+      && passoutNum >= 1950 && passoutNum <= 2100 ? passoutNum : null;
+
+    const currentCompany = typeof b.currentCompany === "string" && b.currentCompany.trim()
+      ? b.currentCompany.trim() : null;
+
     if (errors.length) {
       res.status(400).json({ error: errors.join("; ") });
       return;
@@ -335,7 +356,8 @@ leadsRouter.post("/", async (req, res, next) => {
           advisor_id, avatar, initials,
           nba_icon, nba_label, nba_ghost,
           nba_confidence, nba_headline, nba_why,
-          next_followup_at, visiting_date, delivery_mode
+          next_followup_at, visiting_date, delivery_mode,
+          working_status, year_of_passout, current_company
         ) VALUES (
           ${wiId}, current_tenant(),
           ${source}, ${sourceLabel}, ${score}, ${HEAT_LABEL[heat]}, ${HEAT_DESC[heat]}, ${heat}, ${rating},
@@ -344,7 +366,8 @@ leadsRouter.post("/", async (req, res, next) => {
           ${resolvedAdvisorId}, ${pickAvatar(name)}, ${initialsOf(name)},
           ${nbaIcon}, ${nbaLabel}, false,
           ${nba.confidence}, ${nba.headline}, ${nba.why},
-          ${nextFollowupAt}, ${visitingDate}, ${deliveryMode}
+          ${nextFollowupAt}, ${visitingDate}, ${deliveryMode},
+          ${workingStatus}, ${yearOfPassout}, ${currentCompany}
         )
         -- Phase 3: lead.city dropped; city lives on party only.
       `);
@@ -520,6 +543,11 @@ leadsRouter.get("/", async (req, res, next) => {
           l.delivery_mode    AS "deliveryMode",
           l.lead_status      AS "leadStatus",
           l.time_zone        AS "timeZone",
+          l.working_status   AS "workingStatus",
+          l.year_of_passout  AS "yearOfPassout",
+          l.current_company  AS "currentCompany",
+          l.currency         AS currency,
+          l.source_campaign_id AS "sourceCampaignId",
           l.fee_paid         AS "feePaid",
           l.fee_due          AS "feeDue",
           l.due_date         AS "dueDate",
@@ -706,6 +734,11 @@ leadsRouter.patch("/:idOrNumber", async (req, res, next) => {
                      l.time_zone AS "timeZone",
                      l.delivery_mode AS "deliveryMode",
                      l.lead_status  AS "leadStatus",
+                     l.working_status AS "workingStatus",
+                     l.year_of_passout AS "yearOfPassout",
+                     l.current_company AS "currentCompany",
+                     l.currency AS currency,
+                     l.source_campaign_id AS "sourceCampaignId",
                      l.payment_proof_url AS "paymentProofUrl",
                      l.score, l.heat, l.stage, l.stage_label AS "stageLabel",
                      l.nba_label AS "nbaLabel", l.nba_icon AS "nbaIcon",
@@ -729,6 +762,11 @@ leadsRouter.patch("/:idOrNumber", async (req, res, next) => {
                      l.time_zone AS "timeZone",
                      l.delivery_mode AS "deliveryMode",
                      l.lead_status  AS "leadStatus",
+                     l.working_status AS "workingStatus",
+                     l.year_of_passout AS "yearOfPassout",
+                     l.current_company AS "currentCompany",
+                     l.currency AS currency,
+                     l.source_campaign_id AS "sourceCampaignId",
                      l.payment_proof_url AS "paymentProofUrl",
                      l.score, l.heat, l.stage, l.stage_label AS "stageLabel",
                      l.nba_label AS "nbaLabel", l.nba_icon AS "nbaIcon",
@@ -843,6 +881,28 @@ leadsRouter.patch("/:idOrNumber", async (req, res, next) => {
         if (s === "__invalid__") return { kind: "bad-lead-status" as const };
         leadSets.push(sql`lead_status = ${s}`);
       }
+      // ─── Qualification (post-0088) ──────────────────────────────────────
+      // Unlike the create path, an explicit PATCH of a bad value is a client
+      // bug and gets a 400 — silently dropping it here would look like a save
+      // that worked.
+      if (b.workingStatus !== undefined) {
+        const w = b.workingStatus == null || b.workingStatus === ""
+          ? null : String(b.workingStatus).trim().toLowerCase();
+        if (w !== null && !["student", "working", "not_working"].includes(w)) {
+          return { kind: "bad-working-status" as const };
+        }
+        leadSets.push(sql`working_status = ${w}`);
+      }
+      if (b.yearOfPassout !== undefined) {
+        const y = b.yearOfPassout == null || b.yearOfPassout === "" ? null : Number(b.yearOfPassout);
+        if (y !== null && (!Number.isInteger(y) || y < 1950 || y > 2100)) {
+          return { kind: "bad-year-of-passout" as const };
+        }
+        leadSets.push(sql`year_of_passout = ${y}`);
+      }
+      if (b.currentCompany !== undefined) {
+        leadSets.push(sql`current_company = ${b.currentCompany ? String(b.currentCompany).trim() : null}`);
+      }
       if (b.source !== undefined) leadSets.push(sql`source = ${b.source ? String(b.source).trim() : null}`);
       if (b.sourceLabel !== undefined) leadSets.push(sql`source_label = ${b.sourceLabel ? String(b.sourceLabel).trim() : null}`);
       if (b.score !== undefined) {
@@ -941,6 +1001,8 @@ leadsRouter.patch("/:idOrNumber", async (req, res, next) => {
         ["timeZone", "timeZone"],
         ["deliveryMode", "deliveryMode"],
         ["leadStatus", "leadStatus"],
+        ["workingStatus", "workingStatus"],
+        ["currentCompany", "currentCompany"],
       ];
       for (const [in_, prev] of textFields) {
         if (b[in_] === undefined) continue;
@@ -957,6 +1019,7 @@ leadsRouter.patch("/:idOrNumber", async (req, res, next) => {
       // Numeric / money
       const numFields: Array<[string, string]> = [
         ["score", "score"], ["feePaid", "feePaid"], ["feeDue", "feeDue"],
+        ["yearOfPassout", "yearOfPassout"],
       ];
       for (const [in_, prev] of numFields) {
         if (b[in_] === undefined) continue;
@@ -1135,6 +1198,8 @@ leadsRouter.patch("/:idOrNumber", async (req, res, next) => {
     if (updated === null) return res.status(404).json({ error: "Lead not found" });
     if (updated.kind === "bad-score") return res.status(400).json({ error: "score must be 0..100" });
     if (updated.kind === "bad-delivery-mode") return res.status(400).json({ error: "deliveryMode must be online | classroom | hybrid" });
+    if (updated.kind === "bad-working-status") return res.status(400).json({ error: "workingStatus must be student | working | not_working" });
+    if (updated.kind === "bad-year-of-passout") return res.status(400).json({ error: "yearOfPassout must be a year between 1950 and 2100" });
     if (updated.kind === "bad-lead-status")   return res.status(400).json({ error: `leadStatus must be one of: ${LEAD_STATUS_KEYS.join(", ")}` });
     if (updated.kind === "bad-value") return res.status(400).json({ error: "Price quoted must be a number (e.g. 149000) — no letters or symbols." });
     res.json({ ok: true, lead: updated.lead });

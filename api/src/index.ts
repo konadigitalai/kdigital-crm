@@ -15,6 +15,10 @@ import { recordsRouter } from "./routes/records.js";
 import { meRouter } from "./routes/me.js";
 import { summaryRouter } from "./routes/summary.js";
 import { catalogRouter } from "./routes/catalog.js";
+import { workersRouter } from "./routes/workers.js";
+import { accountsRouter, contactsRouter } from "./routes/accounts.js";
+import { opportunitiesRouter } from "./routes/opportunities.js";
+import { requisitionsRouter, candidatesRouter, applicationsRouter } from "./routes/staffing.js";
 import { programsRouter } from "./routes/programs.js";
 import { stacksRouter } from "./routes/stacks.js";
 import { cohortsRouter } from "./routes/cohorts.js";
@@ -223,6 +227,35 @@ app.use("/programs", writeOnly("admin.programs.manage"), programsRouter);
 app.use("/stacks",   writeOnly("admin.programs.manage"), stacksRouter);
 app.use("/cohorts",  writeOnly("admin.batches.manage"),  cohortsRouter);
 app.use("/courses",  writeOnly("admin.courses.manage"),  coursesRouter);
+// ─── Workforce ───────────────────────────────────────────────────────────
+// Read and manage are split: every trainer/owner picker in the app needs to
+// READ the directory, while editing someone's reporting line or exit date is
+// an HR action.
+app.use("/workers", readWrite("workers.read", "workers.manage"), workersRouter);
+
+// ─── B2B ─────────────────────────────────────────────────────────────────
+app.use("/accounts",      readWrite("accounts.read",      "accounts.write"),      accountsRouter);
+app.use("/contacts",      readWrite("accounts.read",      "accounts.write"),      contactsRouter);
+app.use("/opportunities", readWrite("opportunities.read", "opportunities.write"), opportunitiesRouter);
+
+// ─── Staffing ────────────────────────────────────────────────────────────
+// Applications carry a third gate. Moving one to hired / rejected / withdrawn
+// is a decision about someone's livelihood, so it needs staffing.decide —
+// a coordinator can shortlist and schedule without being able to end it.
+const DECIDING_STAGES = new Set(["hired", "rejected", "withdrawn"]);
+const staffingApplicationGuard: express.RequestHandler = (req, res, next) => {
+  if (req.method === "GET") return requirePermission("staffing.read")(req, res, next);
+  const stage = (req.body as { stage?: unknown } | undefined)?.stage;
+  if (typeof stage === "string" && DECIDING_STAGES.has(stage)) {
+    return requirePermission("staffing.decide")(req, res, next);
+  }
+  return requirePermission("staffing.write")(req, res, next);
+};
+
+app.use("/requisitions", readWrite("staffing.read", "staffing.write"), requisitionsRouter);
+app.use("/candidates",   readWrite("staffing.read", "staffing.write"), candidatesRouter);
+app.use("/applications", staffingApplicationGuard,                     applicationsRouter);
+
 app.use("/users",    requirePermission("users.manage"),  usersRouter);
 // Manage Advisors — CRUD around app_user rows with role admin|advisor.
 // Reuses users.manage since it's the same governance surface.

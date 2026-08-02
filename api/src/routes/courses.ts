@@ -17,7 +17,16 @@ coursesRouter.get("/", async (req, res, next) => {
           co.name,
           co.description,
           co.enabled,
-          (SELECT COUNT(*)::int FROM program_course pc WHERE pc.course_id = co.id)                                       AS "programCount",
+          co.registry_id  AS "registryId",
+          co.short_code   AS "shortCode",
+          co.family,
+          co.credential_type AS "credentialType",
+          co.curriculum_version_pattern AS "curriculumVersionPattern",
+          co.reusable_across_programmes AS "reusableAcrossProgrammes",
+          co.independently_deliverable  AS "independentlyDeliverable",
+          co.catalogue_version AS "catalogueVersion",
+          co.catalogue_status  AS "catalogueStatus",
+          (SELECT COUNT(*)::int FROM program_course pc WHERE pc.course_id = co.id AND pc.component_type = 'course')      AS "programCount",
           (SELECT COUNT(*)::int FROM cohort c          WHERE c.course_id = co.id)                                         AS "batchCount",
           (SELECT COUNT(*)::int FROM cohort c          WHERE c.course_id = co.id AND c.status = 'running')                AS "runningBatchCount",
           (SELECT COUNT(*)::int FROM batch_assignment ba
@@ -102,7 +111,7 @@ coursesRouter.patch("/:id", async (req, res, next) => {
         UPDATE course SET ${setClause}
         WHERE id = ${id}
         RETURNING id, name, description, enabled,
-          (SELECT COUNT(*)::int FROM program_course pc WHERE pc.course_id = course.id)                                    AS "programCount",
+          (SELECT COUNT(*)::int FROM program_course pc WHERE pc.course_id = course.id AND pc.component_type = 'course')   AS "programCount",
           (SELECT COUNT(*)::int FROM cohort c          WHERE c.course_id = course.id)                                     AS "batchCount",
           (SELECT COUNT(*)::int FROM cohort c          WHERE c.course_id = course.id AND c.status = 'running')            AS "runningBatchCount",
           (SELECT COUNT(*)::int FROM batch_assignment ba

@@ -69,6 +69,13 @@ const COHORT_SELECT = sql`
     c.co_trainer_id AS "coTrainerId",
     cu.name         AS "coTrainerName",
     c.days_of_week  AS "daysOfWeek",
+    c.delivery_mode AS "deliveryMode",
+    c.timezone,
+    c.location,
+    c.curriculum_version AS "curriculumVersion",
+    -- The stable course ID this run teaches a dated version of (CAT-015).
+    -- Surfaced next to curriculum_version so the pair is legible together.
+    co.curriculum_version_pattern AS "curriculumVersionPattern",
     to_char(c.start_time, 'HH24:MI') AS "startTime",
     to_char(c.end_time,   'HH24:MI') AS "endTime",
     (SELECT COUNT(*)::int FROM batch_assignment ba WHERE ba.cohort_id = c.id)                            AS "enrolmentCount",
@@ -145,6 +152,17 @@ cohortsRouter.post("/", async (req, res, next) => {
       return res.status(400).json({ error: "startTime and endTime required when daysOfWeek is set" });
     }
 
+    // ── post-0088 / post-0087: where this run happens, and which syllabus ──
+    let deliveryMode: string | null = b.deliveryMode == null || b.deliveryMode === ""
+      ? null : String(b.deliveryMode).trim().toLowerCase();
+    if (deliveryMode === "offline") deliveryMode = "classroom";   // pre-post-0060 spelling
+    if (deliveryMode !== null && !["online", "classroom", "hybrid"].includes(deliveryMode)) {
+      return res.status(400).json({ error: "deliveryMode must be online | classroom | hybrid" });
+    }
+    const timezone = b.timezone ? String(b.timezone).trim() : "Asia/Kolkata";
+    const location = b.location ? String(b.location).trim() : null;
+    const curriculumVersion = b.curriculumVersion ? String(b.curriculumVersion).trim() : null;
+
     // Mirror schedule + time_label from structured fields if caller didn't send them.
     const timeLabel = b.timeLabel !== undefined
       ? (b.timeLabel ? String(b.timeLabel).trim() : null)
@@ -161,11 +179,13 @@ cohortsRouter.post("/", async (req, res, next) => {
         INSERT INTO cohort
           (tenant_id, course_id, name, code, slot, time_label, schedule,
            start_date, end_date, seats, status, enabled,
-           trainer_id, co_trainer_id, days_of_week, start_time, end_time)
+           trainer_id, co_trainer_id, days_of_week, start_time, end_time,
+           delivery_mode, timezone, location, curriculum_version)
         VALUES
           (current_tenant(), ${courseId}, ${name}, ${code}, ${slot}, ${timeLabel}, ${schedule},
            ${startDate}, ${endDate}, ${seats}, ${status}, true,
-           ${trainerPartyId}, ${coTrainerPartyId}, ${daysSqlValue(daysOfWeek)}, ${startTime}, ${endTime})
+           ${trainerPartyId}, ${coTrainerPartyId}, ${daysSqlValue(daysOfWeek)}, ${startTime}, ${endTime},
+           ${deliveryMode}, ${timezone}, ${location}, ${curriculumVersion})
         RETURNING id
       `);
       const id = (r.rows[0] as { id: string }).id;
@@ -201,6 +221,30 @@ cohortsRouter.patch("/:id", async (req, res, next) => {
       sets.push(sql`status = ${String(b.status)}`);
     }
     if (b.enabled !== undefined)   sets.push(sql`enabled = ${Boolean(b.enabled)}`);
+    // ─── post-0088 / post-0087 ──────────────────────────────────────────
+    // Where and when this run actually happens. join_url being set was the
+    // old proxy for "is it online", and hybrid batches have one too.
+    if (b.deliveryMode !== undefined) {
+      let m = b.deliveryMode == null || b.deliveryMode === ""
+        ? null : String(b.deliveryMode).trim().toLowerCase();
+      if (m === "offline") m = "classroom";   // pre-post-0060 spelling
+      if (m !== null && !["online", "classroom", "hybrid"].includes(m)) {
+        return res.status(400).json({ error: "deliveryMode must be online | classroom | hybrid" });
+      }
+      sets.push(sql`delivery_mode = ${m}`);
+    }
+    if (b.timezone !== undefined) {
+      sets.push(sql`timezone = ${b.timezone ? String(b.timezone).trim() : "Asia/Kolkata"}`);
+    }
+    if (b.location !== undefined) {
+      sets.push(sql`location = ${b.location ? String(b.location).trim() : null}`);
+    }
+    // CAT-015 — the dated syllabus this run teaches. Free text against the
+    // course's pattern rather than a generated value: a batch can legitimately
+    // run an older version than the current one.
+    if (b.curriculumVersion !== undefined) {
+      sets.push(sql`curriculum_version = ${b.curriculumVersion ? String(b.curriculumVersion).trim() : null}`);
+    }
 
     // ── Phase H: structured trainer + cadence ───────────────────────────────
     let trainerProvided = false;

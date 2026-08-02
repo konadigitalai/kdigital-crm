@@ -90,6 +90,14 @@ enrollmentsRouter.get("/", async (req, res, next) => {
           e.payment_status    AS "paymentStatus",
           e.payment_verified_at AS "paymentVerifiedAt",
           e.created_at        AS "createdAt",
+          e.delivery_mode     AS "deliveryMode",
+          e.timezone          AS "timezone",
+          e.currency          AS "currency",
+          e.start_date        AS "startDate",
+          e.expected_completion_date AS "expectedCompletionDate",
+          e.admission_checklist_status AS "admissionChecklistStatus",
+          e.identity_proof_status      AS "identityProofStatus",
+          e.staffing_interest AS "staffingInterest",
           p.id                AS "partyId",
           p.name              AS "name",
           p.email             AS "email",
@@ -319,6 +327,19 @@ enrollmentsRouter.get("/:idOrNumber", async (req, res, next) => {
           feeNotes: (enr.fee_notes as string | null) ?? null,
           paymentVerifiedAt: (enr.paymentVerifiedAt as string | null) ?? null,
           verifiedByName: (party.verifiedByName as string | null) ?? null,
+          // post-0088 — the engagement's own mode, dates and admission gates.
+          // Previously all of these were inherited from whichever batch the
+          // learner happened to sit in, which breaks as soon as they sit in
+          // several: the normal case for a nine-course pathway.
+          deliveryMode: (enr.delivery_mode as string | null) ?? null,
+          timezone: (enr.timezone as string | null) ?? "Asia/Kolkata",
+          currency: (enr.currency as string | null) ?? "INR",
+          startDate: (enr.start_date as string | null) ?? null,
+          expectedCompletionDate: (enr.expected_completion_date as string | null) ?? null,
+          admissionChecklistStatus: (enr.admission_checklist_status as string | null) ?? "pending",
+          identityProofStatus: (enr.identity_proof_status as string | null) ?? "not_submitted",
+          staffingInterest: Boolean(enr.staffing_interest),
+          advisorId: (enr.advisor_id as string | null) ?? null,
           paymentHealth: paymentHealth(
             (enr.fee_quoted as string | null) ?? null,
             (enr.fee_paid as string | null) ?? null,
@@ -528,6 +549,167 @@ const FEE_FIELD_LABEL: Record<string, string> = {
 
 const MAX_PROOF_ENTRY_BYTES = 6_500_000;
 const MAX_PROOF_TOTAL_BYTES = 26_000_000;
+
+// ─── PATCH /:idOrNumber — the engagement's own attributes (post-0088) ─────
+//
+// Deliberately separate from /fee, which has its own audit vocabulary and its
+// own proof-size limits. This one covers the things an enrolment owns that no
+// batch can answer for it: who advises this learner, which mode and timezone
+// the engagement was sold in, when it runs, and where admission has got to.
+//
+// Money is NOT settable here — fee quoted/paid go through /fee so they keep
+// their ledger trail.
+
+const ENROLMENT_FIELD_LABEL: Record<string, string> = {
+  advisorId: "Advisor",
+  deliveryMode: "Delivery mode",
+  timezone: "Time zone",
+  startDate: "Start date",
+  expectedCompletionDate: "Expected completion",
+  admissionChecklistStatus: "Admission checklist",
+  identityProofStatus: "Identity proof",
+  staffingInterest: "Staffing interest",
+};
+
+const DELIVERY_MODES = ["online", "classroom", "hybrid"];
+const CHECKLIST_STATUSES = ["pending", "partial", "complete"];
+const ID_PROOF_STATUSES = ["not_submitted", "submitted", "verified", "rejected"];
+
+enrollmentsRouter.patch("/:idOrNumber", async (req, res, next) => {
+  try {
+    const idOrNumber = String(req.params.idOrNumber);
+    const b = req.body ?? {};
+    const actorName = req.user?.name?.trim() || "You";
+
+    const sets: ReturnType<typeof sql>[] = [];
+    const changed: Array<{ field: string; to: unknown }> = [];
+
+    if (b.deliveryMode !== undefined) {
+      // Accept the pre-post-0060 spelling on the wire and rewrite it, the
+      // same courtesy /leads extends to importers and older clients.
+      let m = b.deliveryMode == null || b.deliveryMode === ""
+        ? null : String(b.deliveryMode).trim().toLowerCase();
+      if (m === "offline") m = "classroom";
+      if (m !== null && !DELIVERY_MODES.includes(m)) {
+        return res.status(400).json({ error: "deliveryMode must be online | classroom | hybrid" });
+      }
+      sets.push(sql`delivery_mode = ${m}`);
+      changed.push({ field: "deliveryMode", to: m });
+    }
+
+    if (b.admissionChecklistStatus !== undefined) {
+      const v = String(b.admissionChecklistStatus).trim();
+      if (!CHECKLIST_STATUSES.includes(v)) {
+        return res.status(400).json({ error: `admissionChecklistStatus must be one of: ${CHECKLIST_STATUSES.join(", ")}` });
+      }
+      sets.push(sql`admission_checklist_status = ${v}`);
+      changed.push({ field: "admissionChecklistStatus", to: v });
+    }
+
+    if (b.identityProofStatus !== undefined) {
+      const v = String(b.identityProofStatus).trim();
+      if (!ID_PROOF_STATUSES.includes(v)) {
+        return res.status(400).json({ error: `identityProofStatus must be one of: ${ID_PROOF_STATUSES.join(", ")}` });
+      }
+      sets.push(sql`identity_proof_status = ${v}`);
+      changed.push({ field: "identityProofStatus", to: v });
+    }
+
+    const isDateLike = (v: unknown): v is string =>
+      typeof v === "string" && /^\d{4}-\d{2}-\d{2}$/.test(v.trim());
+    for (const [key, col] of [
+      ["startDate", "start_date"],
+      ["expectedCompletionDate", "expected_completion_date"],
+    ] as const) {
+      if (b[key] === undefined) continue;
+      const raw = b[key];
+      if (raw !== null && raw !== "" && !isDateLike(raw)) {
+        return res.status(400).json({ error: `${key} must be a YYYY-MM-DD date` });
+      }
+      const v = raw === null || raw === "" ? null : String(raw).trim();
+      sets.push(sql`${sql.raw(col)} = ${v}`);
+      changed.push({ field: key, to: v });
+    }
+
+    if (b.timezone !== undefined) {
+      const v = b.timezone ? String(b.timezone).trim() : "Asia/Kolkata";
+      sets.push(sql`timezone = ${v}`);
+      changed.push({ field: "timezone", to: v });
+    }
+
+    if (b.staffingInterest !== undefined) {
+      const v = Boolean(b.staffingInterest);
+      sets.push(sql`staffing_interest = ${v}`);
+      changed.push({ field: "staffingInterest", to: v ? "yes" : "no" });
+    }
+
+    if (b.advisorId !== undefined) {
+      // advisorId on the wire is an app_user.id, matching /leads. The column
+      // stores a party id, so it is resolved here rather than trusted.
+      if (b.advisorId === null || b.advisorId === "") {
+        sets.push(sql`advisor_id = NULL`);
+        changed.push({ field: "advisorId", to: null });
+      } else if (!UUID_RE.test(String(b.advisorId))) {
+        return res.status(400).json({ error: "invalid advisorId" });
+      }
+    }
+
+    if (sets.length === 0 && b.advisorId === undefined) {
+      return res.status(400).json({ error: "no fields to update" });
+    }
+
+    const result = await withTenant(req.tenantId!, async (db) => {
+      const enr = await resolveEnrolment(db, idOrNumber);
+      if (!enr) return { kind: "not-found" as const };
+
+      const allSets = [...sets];
+      if (b.advisorId) {
+        const u = await db.execute(sql`
+          SELECT party_id, name FROM app_user WHERE id = ${String(b.advisorId)} AND active = true
+        `);
+        const row = u.rows[0] as { party_id: string | null; name: string } | undefined;
+        if (!row?.party_id) return { kind: "bad-advisor" as const };
+        allSets.push(sql`advisor_id = ${row.party_id}`);
+        changed.push({ field: "advisorId", to: row.name });
+      }
+
+      await db.execute(sql`
+        UPDATE enrolment SET ${sql.join(allSets, sql`, `)} WHERE id = ${enr.id}
+      `);
+
+      if (changed.length > 0) {
+        const actorPartyId = await resolveActorPartyId(db, req.tenantId!, req.userId);
+        const detail = changed
+          .map((c) => `${ENROLMENT_FIELD_LABEL[c.field] ?? c.field}: ${c.to ?? "—"}`)
+          .join(" · ");
+        await db.execute(sql`
+          INSERT INTO activity (tenant_id, party_id, actor_type, actor_party_id, actor_name, verb, detail, tag, payload, ts)
+          VALUES (current_tenant(), ${enr.partyId}, 'user', ${actorPartyId}, ${actorName}, 'Enrollment updated',
+                  ${detail}, 'you', ${JSON.stringify({ when: "Just now", quote: null })}::jsonb, NOW())
+        `);
+      }
+
+      const r = await db.execute(sql`
+        SELECT id, number, status,
+               delivery_mode AS "deliveryMode", timezone, currency,
+               start_date    AS "startDate",
+               expected_completion_date AS "expectedCompletionDate",
+               admission_checklist_status AS "admissionChecklistStatus",
+               identity_proof_status      AS "identityProofStatus",
+               staffing_interest          AS "staffingInterest",
+               advisor_id                 AS "advisorPartyId"
+          FROM enrolment WHERE id = ${enr.id}
+      `);
+      return { kind: "ok" as const, enrolment: r.rows[0] };
+    });
+
+    if (result.kind === "not-found")   return res.status(404).json({ error: "Enrollment not found" });
+    if (result.kind === "bad-advisor") return res.status(400).json({ error: "advisor not found or inactive" });
+    res.json({ ok: true, enrolment: result.enrolment });
+  } catch (err) {
+    next(err);
+  }
+});
 
 enrollmentsRouter.patch("/:idOrNumber/fee", async (req, res, next) => {
   try {

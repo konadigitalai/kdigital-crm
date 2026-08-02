@@ -22,6 +22,12 @@ function normaliseCourseIds(input: unknown): string[] | null {
 }
 
 // SQL fragment that shapes a full program row with stack + courses aggregate.
+//
+// Every program_course subquery below filters component_type = 'course'. Since
+// post-0087 that table also holds programme→programme references: a composite
+// pathway such as Forward Deployed AI Engineer lists seven other programmes
+// among its twelve components. Counting those as courses would have the CRM
+// report 12 courses next to a list of 5.
 const PROGRAM_SELECT = sql`
   SELECT
     p.id,
@@ -33,19 +39,46 @@ const PROGRAM_SELECT = sql`
     p.enabled,
     p.stack_id       AS "stackId",
     s.name           AS "stackName",
+    p.registry_id      AS "registryId",
+    p.short_code       AS "shortCode",
+    p.full_name        AS "fullName",
+    p.programme_type   AS "programmeType",
+    p.family,
+    p.credential_type  AS "credentialType",
+    p.delivery_modes   AS "deliveryModes",
+    p.catalogue_version AS "catalogueVersion",
+    p.catalogue_status  AS "catalogueStatus",
     (SELECT COUNT(*)::int FROM lead l               WHERE l.program_id = p.id)                                        AS "leadCount",
-    (SELECT COUNT(*)::int FROM program_course pc    WHERE pc.program_id = p.id)                                       AS "courseCount",
+    (SELECT COUNT(*)::int FROM program_course pc    WHERE pc.program_id = p.id AND pc.component_type = 'course')       AS "courseCount",
+    (SELECT COUNT(*)::int FROM program_course pc    WHERE pc.program_id = p.id AND pc.component_type = 'programme')    AS "referencedProgrammeCount",
     (SELECT COUNT(*)::int FROM cohort c
        JOIN program_course pc ON pc.course_id = c.course_id
-       WHERE pc.program_id = p.id)                                                                                    AS "batchCount",
+       WHERE pc.program_id = p.id AND pc.component_type = 'course')                                                    AS "batchCount",
     (SELECT COUNT(*)::int FROM enrolment e          WHERE e.program_id = p.id)                                        AS "enrolmentCount",
     COALESCE(
-      (SELECT json_agg(json_build_object('id', co.id, 'name', co.name, 'rank', pc.rank) ORDER BY pc.rank, co.name)
+      (SELECT json_agg(json_build_object(
+                 'id', co.id, 'name', co.name, 'rank', pc.rank,
+                 'registryId', co.registry_id,
+                 'role', pc.component_role,
+                 'specialisationGroup', pc.specialisation_group,
+                 'required', pc.required
+               ) ORDER BY pc.rank, co.name)
          FROM program_course pc
          JOIN course co ON co.id = pc.course_id
-         WHERE pc.program_id = p.id),
+         WHERE pc.program_id = p.id AND pc.component_type = 'course'),
       '[]'::json
-    ) AS courses
+    ) AS courses,
+    COALESCE(
+      (SELECT json_agg(json_build_object(
+                 'id', cp.id, 'name', cp.name, 'rank', pc.rank,
+                 'registryId', cp.registry_id,
+                 'role', pc.component_role
+               ) ORDER BY pc.rank, cp.name)
+         FROM program_course pc
+         JOIN program cp ON cp.id = pc.child_program_id
+         WHERE pc.program_id = p.id AND pc.component_type = 'programme'),
+      '[]'::json
+    ) AS "referencedProgrammes"
   FROM program p
   LEFT JOIN stack s ON s.id = p.stack_id
 `;
@@ -140,9 +173,9 @@ programsRouter.post("/", async (req, res, next) => {
           throw err;
         }
         // Bulk insert junction rows with an incrementing rank.
-        const values = courseIds.map((cid, idx) => sql`(current_tenant(), ${id}, ${cid}, ${idx})`);
+        const values = courseIds.map((cid, idx) => sql`(current_tenant(), ${id}, 'course', ${cid}, ${idx})`);
         await db.execute(sql`
-          INSERT INTO program_course (tenant_id, program_id, course_id, rank)
+          INSERT INTO program_course (tenant_id, program_id, component_type, course_id, rank)
           VALUES ${sql.join(values, sql`, `)}
         `);
       }
@@ -265,8 +298,11 @@ programsRouter.patch("/:id", async (req, res, next) => {
           }
         }
 
+        // Courses only. A programme reference has a NULL course_id and is not
+        // this endpoint's to add or remove — it comes from the registry.
         const existing = await db.execute(sql`
-          SELECT course_id FROM program_course WHERE program_id = ${id}
+          SELECT course_id FROM program_course
+          WHERE program_id = ${id} AND component_type = 'course'
         `);
         const existingSet = new Set(existing.rows.map((r) => (r as { course_id: string }).course_id));
         const nextSet = new Set(courseIds);
@@ -277,6 +313,7 @@ programsRouter.patch("/:id", async (req, res, next) => {
           await db.execute(sql`
             DELETE FROM program_course
             WHERE program_id = ${id}
+              AND component_type = 'course'
               AND course_id IN (${sql.join(toDelete.map((c) => sql`${c}`), sql`, `)})
           `);
         }
@@ -287,9 +324,9 @@ programsRouter.patch("/:id", async (req, res, next) => {
           `);
           const start = Number((maxRankRow.rows[0] as { max: number }).max) + 1;
           const values = toInsert.map((cid, i) =>
-            sql`(current_tenant(), ${id}, ${cid}, ${start + i})`);
+            sql`(current_tenant(), ${id}, 'course', ${cid}, ${start + i})`);
           await db.execute(sql`
-            INSERT INTO program_course (tenant_id, program_id, course_id, rank)
+            INSERT INTO program_course (tenant_id, program_id, component_type, course_id, rank)
             VALUES ${sql.join(values, sql`, `)}
           `);
         }

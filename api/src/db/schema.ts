@@ -3,6 +3,7 @@
 // Tenant-scoped throughout. RLS + sequences are added in 0001_post_drizzle.sql (raw SQL).
 
 import { sql } from "drizzle-orm";
+import type { AnyPgColumn } from "drizzle-orm/pg-core";
 import {
   bigint,
   bigserial,
@@ -379,12 +380,38 @@ export const program = pgTable("program", {
   durationUnit: text("duration_unit"),
   enabled: boolean("enabled").notNull().default(true), // soft "active" flag — never delete
   attributes: jsonb("attributes").notNull().default(sql`'{}'::jsonb`),
+  // ─── KDigital catalogue registry (post-0087) ───────────────────────────
+  // registryId is the permanent external key — "K-P003-FSAE". It, not the
+  // uuid and not the name, is what credit and certificates resolve by
+  // (CAT-001/005). shortCode is the registry's mnemonic ("FSAE"), which is a
+  // different identifier from `code` above and owned by the registry.
+  registryId: text("registry_id"),
+  shortCode: text("short_code"),
+  catalogueSequence: integer("catalogue_sequence"),
+  fullName: text("full_name"),
+  searchAlias: text("search_alias"),   // normalised for search only — never displayed
+  programmeType: text("programme_type"), // 'Career Pathway' | 'Composite Career Pathway'
+  family: text("family"),
+  credentialType: text("credential_type"),
+  deliveryModes: text("delivery_modes").array(), // 'Online' | 'Classroom' | 'Hybrid'
+  catalogueVersion: text("catalogue_version"),   // "2026.08"
+  // The registry's publication state, distinct from `enabled` (our
+  // operational on/off). A Published programme can still be disabled locally.
+  catalogueStatus: text("catalogue_status").notNull().default("Published"),
+  effectiveFrom: date("effective_from"),
+  effectiveTo: date("effective_to"),
+  sourceRegistry: text("source_registry"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 }, (t) => ({
   stackIdx: index("program_stack_idx").on(t.tenantId, t.stackId),
+  registryIdUniq: uniqueIndex("program_registry_id_uniq").on(t.tenantId, t.registryId),
   durationValueCheck: check("program_duration_value_check",
     sql`${t.durationValue} IS NULL OR ${t.durationValue} > 0`),
   durationUnitCheck: check("program_duration_unit_check",
     sql`${t.durationUnit} IS NULL OR ${t.durationUnit} IN ('weeks','months')`),
+  catalogueStatusCheck: check("program_catalogue_status_check",
+    sql`${t.catalogueStatus} IN ('Draft','Published','Retired')`),
 }));
 
 // A course is a reusable module (Python, SQL, Power BI, etc). No program FK —
@@ -397,22 +424,76 @@ export const course = pgTable("course", {
   description: text("description"),
   enabled: boolean("enabled").notNull().default(true),
   attributes: jsonb("attributes").notNull().default(sql`'{}'::jsonb`),
-});
+  // ─── KDigital catalogue registry (post-0087) ───────────────────────────
+  registryId: text("registry_id"),      // "K-C008-PYTH" — permanent (CAT-001)
+  shortCode: text("short_code"),        // "PYTH"
+  catalogueSequence: integer("catalogue_sequence"),
+  searchAlias: text("search_alias"),
+  family: text("family"),
+  credentialType: text("credential_type"),
+  // CAT-015 — the stable ID and the dated syllabus are separate. This is the
+  // template ("K-C008-PYTH-VYYYY.N") a cohort's concrete version comes from.
+  curriculumVersionPattern: text("curriculum_version_pattern"),
+  // CAT-002/003 — may completion be credited into another pathway, and may
+  // this be sold standalone?
+  reusableAcrossProgrammes: boolean("reusable_across_programmes").notNull().default(true),
+  independentlyDeliverable: boolean("independently_deliverable").notNull().default(true),
+  catalogueVersion: text("catalogue_version"),
+  catalogueStatus: text("catalogue_status").notNull().default("Published"),
+  effectiveFrom: date("effective_from"),
+  effectiveTo: date("effective_to"),
+  sourceRegistry: text("source_registry"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => ({
+  registryIdUniq: uniqueIndex("course_registry_id_uniq").on(t.tenantId, t.registryId),
+  catalogueStatusCheck: check("course_catalogue_status_check",
+    sql`${t.catalogueStatus} IN ('Draft','Published','Retired')`),
+}));
 
+// A programme component (post-0087). Despite the table name it is no longer
+// only courses: a composite pathway such as Forward Deployed AI Engineer
+// (K-P008-FDE) lists seven other PROGRAMMES among its components (CAT-007),
+// which is why courseId is nullable and childProgramId exists. Exactly one of
+// the two is set, agreeing with componentType — enforced by a SQL CHECK.
 export const programCourse = pgTable(
   "program_course",
   {
     id: uuid("id").primaryKey().defaultRandom(),
     tenantId: uuid("tenant_id").notNull().references(() => tenant.id),
     programId: uuid("program_id").notNull().references(() => program.id, { onDelete: "cascade" }),
-    courseId: uuid("course_id").notNull().references(() => course.id, { onDelete: "cascade" }),
-    rank: integer("rank").notNull().default(0),
+    componentType: text("component_type").notNull().default("course"), // 'course' | 'programme'
+    courseId: uuid("course_id").references(() => course.id, { onDelete: "cascade" }),
+    childProgramId: uuid("child_program_id").references((): AnyPgColumn => program.id, { onDelete: "cascade" }),
+    rank: integer("rank").notNull().default(0),  // registry sequence_number − 1
+    // Registry-owned vocabulary, deliberately not a CHECK: it grows between
+    // catalogue versions. 'Core Course' | 'Foundation Course' |
+    // 'Product Specialisation' | 'Referenced Pathway' | 'FDE-Specific Course'.
+    componentRole: text("component_role"),
+    // CAT-008 — keeps ServiceNow product areas grouped behind the core
+    // platform pathway instead of forking duplicate courses.
+    specialisationGroup: text("specialisation_group"),
+    required: boolean("required").notNull().default(true),
+    creditReuseAllowed: boolean("credit_reuse_allowed").notNull().default(true),
+    catalogueStatus: text("catalogue_status").notNull().default("Active"), // 'Active' | 'Retired'
+    effectiveFrom: date("effective_from"),
+    effectiveTo: date("effective_to"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => ({
     uniq: uniqueIndex("program_course_uniq").on(t.programId, t.courseId),
+    childUniq: uniqueIndex("program_course_child_program_uniq").on(t.programId, t.childProgramId),
     programIdx: index("program_course_program_idx").on(t.tenantId, t.programId),
     courseIdx:  index("program_course_course_idx").on(t.tenantId, t.courseId),
+    childIdx:   index("program_course_child_program_idx").on(t.tenantId, t.childProgramId),
+    componentTargetCheck: check("program_course_component_target_check",
+      sql`(${t.componentType} = 'course'    AND ${t.courseId} IS NOT NULL AND ${t.childProgramId} IS NULL)
+       OR (${t.componentType} = 'programme' AND ${t.childProgramId} IS NOT NULL AND ${t.courseId} IS NULL)`),
+    noSelfReferenceCheck: check("program_course_no_self_reference_check",
+      sql`${t.childProgramId} IS NULL OR ${t.childProgramId} <> ${t.programId}`),
+    catalogueStatusCheck: check("program_course_catalogue_status_check",
+      sql`${t.catalogueStatus} IN ('Active','Retired')`),
   }),
 );
 
@@ -440,9 +521,24 @@ export const cohort = pgTable(
     daysOfWeek:   text("days_of_week").array(),  // 'mon'|'tue'|'wed'|'thu'|'fri'|'sat'|'sun'
     startTime:    time("start_time"),            // 24h, IST
     endTime:      time("end_time"),
+    // ─── post-0087 / post-0088 ────────────────────────────────────────────
+    // CAT-015 — the dated syllabus this run teaches ("K-C008-PYTH-V2026.1").
+    // Two batches of the same course a term apart may differ, and a
+    // certificate has to name which one.
+    curriculumVersion: text("curriculum_version"),
+    // Whether this run is online, in a classroom, or both. join_url being set
+    // was the old proxy, and hybrid batches have one too.
+    // online | classroom | hybrid — the vocabulary post-0060 settled on for
+    // `lead`, corrected here in post-0093. It is also the registry's, in
+    // lower case, so nothing has to be translated.
+    deliveryMode: text("delivery_mode"),
+    timezone: text("timezone").notNull().default("Asia/Kolkata"),
+    location: text("location"),                  // campus/room, when not online
   },
   (t) => ({
     courseIdx: index("cohort_course_idx").on(t.tenantId, t.courseId),
+    deliveryModeCheck: check("cohort_delivery_mode_check",
+      sql`${t.deliveryMode} IS NULL OR ${t.deliveryMode} IN ('online','classroom','hybrid')`),
     trainerIdx:   index("cohort_trainer_idx").on(t.tenantId, t.trainerId),
     coTrainerIdx: index("cohort_co_trainer_idx").on(t.tenantId, t.coTrainerId),
     statusCheck: check("cohort_status_check", sql`${t.status} IN ('upcoming','running','completed','cancelled')`),
@@ -534,9 +630,25 @@ export const lead = pgTable("lead", {
   nbaConfidence: integer("nba_confidence"),
   nbaHeadline: text("nba_headline"),
   nbaWhy: text("nba_why"),
+  // ─── Qualification (post-0088) ──────────────────────────────────────────
+  // The three questions an advisor asks on the first call. They were being
+  // typed into `description` by hand, which made them unsearchable.
+  workingStatus:  text("working_status"),   // student | working | not_working
+  yearOfPassout:  integer("year_of_passout"),
+  currentCompany: text("current_company"),
+  // `value` is a bare numeric. This says which currency it is in — every
+  // existing row is INR, but a non-INR quote is now representable.
+  currency: text("currency").notNull().default("INR"),
+  // The campaign that produced this lead. `source` is a free-text channel
+  // ("Website"); this is the actual row, so spend attributes to revenue.
+  sourceCampaignId: uuid("source_campaign_id").references((): AnyPgColumn => campaign.id, { onDelete: "set null" }),
 }, (t) => ({
   advisorIdx: index("lead_advisor_idx").on(t.tenantId, t.advisorId),
   programIdx: index("lead_program_idx").on(t.tenantId, t.programId),
+  workingStatusCheck: check("lead_working_status_check",
+    sql`${t.workingStatus} IS NULL OR ${t.workingStatus} IN ('student','working','not_working')`),
+  yearOfPassoutCheck: check("lead_year_of_passout_check",
+    sql`${t.yearOfPassout} IS NULL OR (${t.yearOfPassout} BETWEEN 1950 AND 2100)`),
 }));
 
 // Each lead's score factors (what the AI score is built from). Rendered as
@@ -572,6 +684,11 @@ export const agentAssignment = pgTable("agent_assignment", {
   wiIdx: index("agent_assignment_wi_idx").on(t.tenantId, t.workItemId, t.rank),
 }));
 
+// A deal is the B2B opportunity. It sits on the work_item spine, which
+// supplies the number (DEAL-3142), the owner, the state, the priority and the
+// activity timeline — everything below is what work_item cannot know about a
+// sale. Extended in post-0090; before that it was a cohort, a value and a
+// probability, which is not a pipeline.
 export const deal = pgTable("deal", {
   workItemId: uuid("work_item_id")
     .primaryKey()
@@ -580,8 +697,38 @@ export const deal = pgTable("deal", {
   cohortId: uuid("cohort_id").references(() => cohort.id),
   value: numeric("value", { precision: 12, scale: 2 }),
   probability: integer("probability"),
+  // ─── B2B opportunity (post-0090) ────────────────────────────────────────
+  name: text("name"),
+  accountPartyId: uuid("account_party_id").references((): AnyPgColumn => account.partyId, { onDelete: "set null" }),
+  primaryContactPartyId: uuid("primary_contact_party_id").references((): AnyPgColumn => contact.partyId, { onDelete: "set null" }),
+  opportunityType: text("opportunity_type"),
+  // Sales stage, separate from work_item.state. A deal can be in
+  // 'negotiation' while its work_item is simply 'open'.
+  stage: text("stage").notNull().default("qualification"),
+  stageUpdatedAt: timestamp("stage_updated_at", { withTimezone: true }).notNull().defaultNow(),
+  currency: text("currency").notNull().default("INR"),
+  // Weighted value, stored rather than computed so a forecast snapshot keeps
+  // the probability it was taken at.
+  expectedRevenue: numeric("expected_revenue", { precision: 14, scale: 2 }),
+  expectedCloseDate: date("expected_close_date"),
+  actualCloseDate: date("actual_close_date"),
+  nextAction: text("next_action"),
+  description: text("description"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 }, (t) => ({
   probCheck: check("deal_probability_check", sql`${t.probability} BETWEEN 0 AND 100`),
+  stageCheck: check("deal_stage_check",
+    sql`${t.stage} IN ('qualification','discovery','proposal','negotiation','closed_won','closed_lost')`),
+  opportunityTypeCheck: check("deal_opportunity_type_check",
+    sql`${t.opportunityType} IS NULL OR ${t.opportunityType} IN ('corporate_training','hiring','consulting','renewal','upsell')`),
+  // A closed deal has a close date; an open one does not. The invariant every
+  // pipeline report assumed and nothing was enforcing.
+  closeDateCheck: check("deal_close_date_check",
+    sql`(${t.stage} IN ('closed_won','closed_lost')) = (${t.actualCloseDate} IS NOT NULL)`),
+  accountIdx: index("deal_account_idx").on(t.tenantId, t.accountPartyId),
+  stageIdx: index("deal_stage_idx").on(t.tenantId, t.stage),
+  closeIdx: index("deal_close_idx").on(t.tenantId, t.expectedCloseDate),
 }));
 
 export const serviceCase = pgTable("service_case", {
@@ -740,9 +887,32 @@ export const enrolment = pgTable(
     paymentVerifiedAt: timestamp("payment_verified_at", { withTimezone: true }),
     paymentVerifiedBy: uuid("payment_verified_by").references(() => party.id, { onDelete: "set null" }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    // ─── post-0088 ────────────────────────────────────────────────────────
+    // The engagement's own owner, mode and dates. Previously all of these
+    // were inherited from whichever batch the learner happened to sit in,
+    // which breaks the moment they sit in several — the normal case for a
+    // nine-course pathway.
+    advisorId: uuid("advisor_id").references(() => party.id, { onDelete: "set null" }),
+    deliveryMode: text("delivery_mode"),   // online | classroom | hybrid (post-0093)
+    timezone: text("timezone").notNull().default("Asia/Kolkata"),
+    currency: text("currency").notNull().default("INR"),
+    startDate: date("start_date"),
+    expectedCompletionDate: date("expected_completion_date"),
+    // Admission gating. Three signals rather than one because they are
+    // cleared by three different people at three different times.
+    admissionChecklistStatus: text("admission_checklist_status").notNull().default("pending"),
+    identityProofStatus: text("identity_proof_status").notNull().default("not_submitted"),
+    // Asked at enrolment, not at the end. Feeds the candidate pipeline.
+    staffingInterest: boolean("staffing_interest").notNull().default(false),
   },
   (t) => ({
     statusCheck: check("enrolment_status_check", sql`${t.status} IN ('pending','active','on_hold','completed','dropped','deferred')`),
+    deliveryModeCheck: check("enrolment_delivery_mode_check",
+      sql`${t.deliveryMode} IS NULL OR ${t.deliveryMode} IN ('online','classroom','hybrid')`),
+    admissionChecklistCheck: check("enrolment_admission_checklist_check",
+      sql`${t.admissionChecklistStatus} IN ('pending','partial','complete')`),
+    identityProofCheck: check("enrolment_identity_proof_check",
+      sql`${t.identityProofStatus} IN ('not_submitted','submitted','verified','rejected')`),
     paymentStatusCheck: check("enrolment_payment_status_check",
       sql`${t.paymentStatus} IS NULL OR ${t.paymentStatus} IN ('pending','paid','refund','on_hold')`),
     tenantNumberKey: uniqueIndex("enrolment_tenant_number_key").on(t.tenantId, t.number),
@@ -871,9 +1041,33 @@ export const learnerProfile = pgTable(
     attributes: jsonb("attributes").notNull().default(sql`'{}'::jsonb`),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+    // ─── Progress + risk + staffing gate (post-0088) ──────────────────────
+    // The profile knew where a learner ended up but nothing about how they
+    // were doing on the way. Risk is what an advisor acts on weeks before a
+    // drop-out; without it the first signal IS the drop-out.
+    //
+    // progressPercent is a cached roll-up — the truth is resource_progress.
+    // Cached because the learners list renders it per row.
+    progressPercent: integer("progress_percent"),
+    riskLevel: text("risk_level"),     // low | medium | high
+    riskReason: text("risk_reason"),
+    // The staffing gate. Two independent facts, so two columns: a learner can
+    // be qualified without consenting, and consent can be withdrawn later.
+    // `candidate` never restates these — see the candidate_eligible view.
+    staffingEligibilityStatus: text("staffing_eligibility_status").notNull().default("not_assessed"),
+    staffingConsentStatus: text("staffing_consent_status").notNull().default("not_asked"),
+    staffingConsentAt: timestamp("staffing_consent_at", { withTimezone: true }),
   },
   (t) => ({
     tenantIdx: index("learner_profile_tenant_idx").on(t.tenantId),
+    progressCheck: check("learner_profile_progress_check",
+      sql`${t.progressPercent} IS NULL OR ${t.progressPercent} BETWEEN 0 AND 100`),
+    riskLevelCheck: check("learner_profile_risk_level_check",
+      sql`${t.riskLevel} IS NULL OR ${t.riskLevel} IN ('low','medium','high')`),
+    staffingEligibilityCheck: check("learner_profile_staffing_eligibility_check",
+      sql`${t.staffingEligibilityStatus} IN ('not_assessed','qualified','not_qualified')`),
+    staffingConsentCheck: check("learner_profile_staffing_consent_check",
+      sql`${t.staffingConsentStatus} IN ('not_asked','granted','withheld','withdrawn')`),
     mentorIdx: index("learner_profile_mentor_idx").on(t.tenantId, t.mentorPartyId),
     placementIdx: index("learner_profile_placement_idx").on(t.tenantId, t.placementStatus),
     skillLevelCheck: check("learner_profile_skill_level_check",
@@ -2055,6 +2249,294 @@ export const interaktAccount = pgTable(
   }),
 );
 
+// ─── Workforce (post-0089) ────────────────────────────────────────────────
+//
+// A satellite of `party`, keyed by party_id, exactly like learnerProfile. A
+// worker is a person the business already knows — name, email, phone and city
+// stay on party + contactPoint and are never stored twice here.
+//
+// Restricted HR data (salary, documents, performance) is deliberately absent.
+// What is here is what the CRM schedules and staffs against; anything more
+// would make this a payroll table with no access control in front of it.
+export const worker = pgTable(
+  "worker",
+  {
+    partyId: uuid("party_id").primaryKey().references(() => party.id, { onDelete: "cascade" }),
+    tenantId: uuid("tenant_id").notNull().references(() => tenant.id),
+    // WRK-01042 — DB default off seq_worker, so every insert path gets one.
+    employeeNumber: text("employee_number").notNull(),
+    // 'trainer' here is the employment type. Distinct from trainerCapable
+    // below: a delivery manager can be trainer-capable without being one.
+    workerType: text("worker_type").notNull().default("employee"),
+    designation: text("designation"),
+    department: text("department"),
+    employmentType: text("employment_type"),
+    dateOfJoining: date("date_of_joining"),
+    dateOfExit: date("date_of_exit"),
+    // party_id, not worker_id, so a manager whose worker row is gone does not
+    // orphan their reports.
+    reportingToPartyId: uuid("reporting_to_party_id").references(() => party.id, { onDelete: "set null" }),
+    status: text("status").notNull().default("active"),
+    timezone: text("timezone").notNull().default("Asia/Kolkata"),
+    workingHoursPerWeek: numeric("working_hours_per_week", { precision: 5, scale: 2 }),
+    // Free text on purpose — shifts vary per team and an enum would be wrong
+    // within a month.
+    shift: text("shift"),
+    // Read whole, written whole, never joined against a skill master.
+    skills: text("skills").array().notNull().default(sql`'{}'::text[]`),
+    // The two flags the scheduler filters on. Columns rather than derived from
+    // `skills` because "can teach" and "can be deployed" are decisions
+    // somebody makes, not facts about a skill list.
+    trainerCapable: boolean("trainer_capable").notNull().default(false),
+    deploymentAvailable: boolean("deployment_available").notNull().default(false),
+    attributes: jsonb("attributes").notNull().default(sql`'{}'::jsonb`),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    employeeNumberUniq: uniqueIndex("worker_employee_number_uniq").on(t.tenantId, t.employeeNumber),
+    statusIdx: index("worker_tenant_status_idx").on(t.tenantId, t.status),
+    departmentIdx: index("worker_department_idx").on(t.tenantId, t.department),
+    reportingIdx: index("worker_reporting_idx").on(t.tenantId, t.reportingToPartyId),
+    typeCheck: check("worker_type_check",
+      sql`${t.workerType} IN ('employee','contractor','trainer','intern','vendor')`),
+    employmentTypeCheck: check("worker_employment_type_check",
+      sql`${t.employmentType} IS NULL OR ${t.employmentType} IN ('full_time','part_time','contract','intern')`),
+    statusCheck: check("worker_status_check",
+      sql`${t.status} IN ('active','on_leave','notice_period','exited')`),
+    noSelfReportCheck: check("worker_no_self_report_check",
+      sql`${t.reportingToPartyId} IS NULL OR ${t.reportingToPartyId} <> ${t.partyId}`),
+  }),
+);
+
+// ─── B2B (post-0090) ──────────────────────────────────────────────────────
+//
+// Accounts and contacts are party satellites, not new identity tables.
+// `party.kind` already separates person from organisation, and
+// `partyAffiliation` already models person↔organisation with a role and a
+// valid interval — which IS the workbook's contact.account_id plus
+// affiliation_valid_from/to. A separate account identity would fork the
+// dedupe, merge and consent machinery that post-0040…0052 exist to provide.
+
+export const account = pgTable(
+  "account",
+  {
+    partyId: uuid("party_id").primaryKey().references(() => party.id, { onDelete: "cascade" }),
+    tenantId: uuid("tenant_id").notNull().references(() => tenant.id),
+    accountNumber: text("account_number").notNull(),
+    // What we sell them, not a mutually exclusive bucket — plenty of
+    // organisations both buy training and hire the graduates.
+    accountType: text("account_type").notNull().default("prospect"),
+    industry: text("industry"),
+    ownership: text("ownership"),
+    website: text("website"),
+    // Rupees, like every other money column here. The workbook ships minor
+    // units; the importer divides by 100.
+    annualRevenue: numeric("annual_revenue", { precision: 16, scale: 2 }),
+    currency: text("currency").notNull().default("INR"),
+    ownerPartyId: uuid("owner_party_id").references(() => party.id, { onDelete: "set null" }),
+    rating: text("rating"),
+    status: text("status").notNull().default("active"),
+    description: text("description"),
+    attributes: jsonb("attributes").notNull().default(sql`'{}'::jsonb`),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    numberUniq: uniqueIndex("account_number_uniq").on(t.tenantId, t.accountNumber),
+    statusIdx: index("account_tenant_status_idx").on(t.tenantId, t.status),
+    ownerIdx: index("account_owner_idx").on(t.tenantId, t.ownerPartyId),
+    typeIdx: index("account_type_idx").on(t.tenantId, t.accountType),
+    typeCheck: check("account_type_check",
+      sql`${t.accountType} IN ('client','prospect','partner','vendor','hiring_partner')`),
+    ratingCheck: check("account_rating_check",
+      sql`${t.rating} IS NULL OR ${t.rating} IN ('hot','warm','cold')`),
+    statusCheck: check("account_status_check",
+      sql`${t.status} IN ('active','inactive','churned')`),
+  }),
+);
+
+// No accountId column: the employer link is a partyAffiliation row, which
+// already carries isPrimary and the valid interval. Storing it twice would
+// mean one of the two is eventually wrong.
+export const contact = pgTable(
+  "contact",
+  {
+    partyId: uuid("party_id").primaryKey().references(() => party.id, { onDelete: "cascade" }),
+    tenantId: uuid("tenant_id").notNull().references(() => tenant.id),
+    jobTitle: text("job_title"),
+    department: text("department"),
+    // What they do in a buying decision — distinct from jobTitle. A CTO can be
+    // the evaluator on one deal and the sponsor on the next.
+    contactRole: text("contact_role"),
+    preferredContactMethod: text("preferred_contact_method"),
+    preferredLanguage: text("preferred_language"),
+    state: text("state"),
+    country: text("country").notNull().default("India"),
+    description: text("description"),
+    attributes: jsonb("attributes").notNull().default(sql`'{}'::jsonb`),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    tenantIdx: index("contact_tenant_idx").on(t.tenantId),
+    roleIdx: index("contact_role_idx").on(t.tenantId, t.contactRole),
+    preferredMethodCheck: check("contact_preferred_method_check",
+      sql`${t.preferredContactMethod} IS NULL OR ${t.preferredContactMethod} IN ('email','phone','whatsapp','sms','none')`),
+    roleCheck: check("contact_role_check",
+      sql`${t.contactRole} IS NULL OR ${t.contactRole} IN ('decision_maker','evaluator','sponsor','influencer','user','gatekeeper')`),
+  }),
+);
+
+// ─── Staffing (post-0091) ─────────────────────────────────────────────────
+//
+// The gate into this module is NOT restated here. learnerProfile carries
+// staffingEligibilityStatus and staffingConsentStatus because both are facts
+// about the LEARNER — withdraw consent and they must leave staffing however
+// many applications are open. `candidate` holds only the recruiting profile.
+// The `candidate_eligible` view (post-0091) is where the gate is expressed.
+
+export const requisition = pgTable(
+  "requisition",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    tenantId: uuid("tenant_id").notNull().references(() => tenant.id),
+    number: text("number").notNull(),                 // REQ-01042
+    accountPartyId: uuid("account_party_id").notNull().references(() => account.partyId, { onDelete: "cascade" }),
+    jobTitle: text("job_title").notNull(),
+    designation: text("designation"),
+    department: text("department"),
+    jobDescription: text("job_description"),
+    keyResponsibilities: text("key_responsibilities"),
+    openings: integer("openings").notNull().default(1),
+    employmentType: text("employment_type"),
+    workLocation: text("work_location"),
+    workMode: text("work_mode"),
+    // Months, not years — a range in years cannot express "18 months
+    // minimum", which is exactly where a graduate of a six-month pathway sits.
+    minimumExperienceMonths: integer("minimum_experience_months"),
+    maximumExperienceMonths: integer("maximum_experience_months"),
+    requiredQualification: text("required_qualification"),
+    requiredSkills: text("required_skills").array().notNull().default(sql`'{}'::text[]`),
+    preferredSkills: text("preferred_skills").array().notNull().default(sql`'{}'::text[]`),
+    languages: text("languages").array().notNull().default(sql`'{}'::text[]`),
+    salaryMin: numeric("salary_min", { precision: 14, scale: 2 }),
+    salaryMax: numeric("salary_max", { precision: 14, scale: 2 }),
+    currency: text("currency").notNull().default("INR"),
+    budgetApproved: boolean("budget_approved").notNull().default(false),
+    hiringManagerPartyId: uuid("hiring_manager_party_id").references(() => party.id, { onDelete: "set null" }),
+    recruiterPartyId: uuid("recruiter_party_id").references(() => party.id, { onDelete: "set null" }),
+    approvalStatus: text("approval_status").notNull().default("not_required"),
+    approvedByPartyId: uuid("approved_by_party_id").references(() => party.id, { onDelete: "set null" }),
+    approvedAt: timestamp("approved_at", { withTimezone: true }),
+    priority: integer("priority").notNull().default(3),
+    targetCloseDate: date("target_close_date"),
+    status: text("status").notNull().default("draft"),
+    attributes: jsonb("attributes").notNull().default(sql`'{}'::jsonb`),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    numberUniq: uniqueIndex("requisition_number_uniq").on(t.tenantId, t.number),
+    accountIdx: index("requisition_account_idx").on(t.tenantId, t.accountPartyId),
+    statusIdx: index("requisition_status_idx").on(t.tenantId, t.status),
+    recruiterIdx: index("requisition_recruiter_idx").on(t.tenantId, t.recruiterPartyId),
+    openingsCheck: check("requisition_openings_check", sql`${t.openings} > 0`),
+    workModeCheck: check("requisition_work_mode_check",
+      sql`${t.workMode} IS NULL OR ${t.workMode} IN ('onsite','remote','hybrid')`),
+    approvalStatusCheck: check("requisition_approval_status_check",
+      sql`${t.approvalStatus} IN ('not_required','pending','approved','rejected')`),
+    statusCheck: check("requisition_status_check",
+      sql`${t.status} IN ('draft','open','on_hold','filled','cancelled','closed')`),
+    // An approved requisition records who approved it and when — otherwise the
+    // approval trail is decorative.
+    approvedEvidenceCheck: check("requisition_approved_evidence_check",
+      sql`${t.approvalStatus} <> 'approved' OR (${t.approvedByPartyId} IS NOT NULL AND ${t.approvedAt} IS NOT NULL)`),
+  }),
+);
+
+export const candidate = pgTable(
+  "candidate",
+  {
+    partyId: uuid("party_id").primaryKey().references(() => party.id, { onDelete: "cascade" }),
+    tenantId: uuid("tenant_id").notNull().references(() => tenant.id),
+    number: text("number").notNull(),                 // CAN-01042
+    totalExperienceMonths: integer("total_experience_months"),
+    currentEmployer: text("current_employer"),
+    currentDesignation: text("current_designation"),
+    currentCtc: numeric("current_ctc", { precision: 14, scale: 2 }),
+    expectedCtc: numeric("expected_ctc", { precision: 14, scale: 2 }),
+    currency: text("currency").notNull().default("INR"),
+    noticePeriodDays: integer("notice_period_days"),
+    skills: text("skills").array().notNull().default(sql`'{}'::text[]`),
+    highestQualification: text("highest_qualification"),
+    workHistorySummary: text("work_history_summary"),
+    certifications: text("certifications").array().notNull().default(sql`'{}'::text[]`),
+    resumeAttachmentId: uuid("resume_attachment_id").references((): AnyPgColumn => attachment.id, { onDelete: "set null" }),
+    portfolioUrl: text("portfolio_url"),
+    profileStatus: text("profile_status").notNull().default("draft"),
+    attributes: jsonb("attributes").notNull().default(sql`'{}'::jsonb`),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    numberUniq: uniqueIndex("candidate_number_uniq").on(t.tenantId, t.number),
+    statusIdx: index("candidate_status_idx").on(t.tenantId, t.profileStatus),
+    profileStatusCheck: check("candidate_profile_status_check",
+      sql`${t.profileStatus} IN ('draft','ready','active','placed','withdrawn')`),
+  }),
+);
+
+export const application = pgTable(
+  "application",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    tenantId: uuid("tenant_id").notNull().references(() => tenant.id),
+    number: text("number").notNull(),                 // APP-01042
+    candidatePartyId: uuid("candidate_party_id").notNull().references(() => candidate.partyId, { onDelete: "cascade" }),
+    requisitionId: uuid("requisition_id").notNull().references(() => requisition.id, { onDelete: "cascade" }),
+    appliedAt: timestamp("applied_at", { withTimezone: true }).notNull().defaultNow(),
+    stage: text("stage").notNull().default("applied"),
+    stageUpdatedAt: timestamp("stage_updated_at", { withTimezone: true }).notNull().defaultNow(),
+    // The score is the model's; screeningFactors is the evidence behind it.
+    // Both are kept because a rejection a candidate can contest needs to show
+    // its reasoning, not just its number.
+    screeningScore: integer("screening_score"),
+    screeningFactors: jsonb("screening_factors").notNull().default(sql`'{}'::jsonb`),
+    assignedRecruiterPartyId: uuid("assigned_recruiter_party_id").references(() => party.id, { onDelete: "set null" }),
+    interviewStatus: text("interview_status"),
+    offerStatus: text("offer_status"),
+    rejectionReason: text("rejection_reason"),
+    // An automated screen must be signed off by a human before it can reject
+    // someone. 'not_required' is for applications a human staged by hand.
+    humanReviewStatus: text("human_review_status").notNull().default("not_required"),
+    status: text("status").notNull().default("open"),
+    attributes: jsonb("attributes").notNull().default(sql`'{}'::jsonb`),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    // Re-applying is a stage change, not a second row.
+    candidateRequisitionUniq: uniqueIndex("application_candidate_requisition_uniq")
+      .on(t.candidatePartyId, t.requisitionId),
+    numberUniq: uniqueIndex("application_number_uniq").on(t.tenantId, t.number),
+    requisitionIdx: index("application_requisition_idx").on(t.tenantId, t.requisitionId, t.stage),
+    candidateIdx: index("application_candidate_idx").on(t.tenantId, t.candidatePartyId),
+    recruiterIdx: index("application_recruiter_idx").on(t.tenantId, t.assignedRecruiterPartyId),
+    stageCheck: check("application_stage_check",
+      sql`${t.stage} IN ('applied','screening','shortlisted','interviewing','offered','hired','rejected','withdrawn')`),
+    screeningScoreCheck: check("application_screening_score_check",
+      sql`${t.screeningScore} IS NULL OR ${t.screeningScore} BETWEEN 0 AND 100`),
+    humanReviewCheck: check("application_human_review_check",
+      sql`${t.humanReviewStatus} IN ('not_required','pending','approved','rejected')`),
+    statusCheck: check("application_status_check", sql`${t.status} IN ('open','closed')`),
+    // A rejection says why. Empty rejections are how a pipeline stops being
+    // reviewable.
+    rejectionReasonCheck: check("application_rejection_reason_check",
+      sql`${t.stage} <> 'rejected' OR (${t.rejectionReason} IS NOT NULL AND length(btrim(${t.rejectionReason})) > 0)`),
+  }),
+);
+
 // Type exports — convenient for routes/seed
 export type Tenant = typeof tenant.$inferSelect;
 export type Stack = typeof stack.$inferSelect;
@@ -2090,3 +2572,9 @@ export type TwMessage = typeof twMessage.$inferSelect;
 export type MediaFolder = typeof mediaFolder.$inferSelect;
 export type MediaAsset = typeof mediaAsset.$inferSelect;
 export type TwMessageMedia = typeof twMessageMedia.$inferSelect;
+export type Worker = typeof worker.$inferSelect;
+export type Account = typeof account.$inferSelect;
+export type Contact = typeof contact.$inferSelect;
+export type Requisition = typeof requisition.$inferSelect;
+export type Candidate = typeof candidate.$inferSelect;
+export type Application = typeof application.$inferSelect;

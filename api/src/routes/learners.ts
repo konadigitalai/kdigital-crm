@@ -45,6 +45,19 @@ learnersRouter.get("/", async (req, res, next) => {
           lp.skill_level       AS "skillLevel",
           lp.placement_status  AS "placementStatus",
           lp.mentor_party_id   AS "mentorPartyId",
+          -- post-0088: how they are DOING, not just where they ended up.
+          -- Risk is what an advisor acts on weeks before a drop-out; without
+          -- it the first signal is the drop-out.
+          lp.progress_percent  AS "progressPercent",
+          lp.risk_level        AS "riskLevel",
+          lp.risk_reason       AS "riskReason",
+          -- The staffing gate. Both live here, on the learner rather than on
+          -- the candidate record, so that withdrawing consent removes someone
+          -- from staffing however many applications are open.
+          lp.staffing_eligibility_status AS "staffingEligibilityStatus",
+          lp.staffing_consent_status     AS "staffingConsentStatus",
+          lp.staffing_consent_at         AS "staffingConsentAt",
+          (SELECT COUNT(*)::int FROM candidate cd WHERE cd.party_id = p.id) AS "hasCandidateProfile",
           -- Course-module chips: the learner's assigned course names.
           (
             SELECT COALESCE(array_agg(DISTINCT co.name) FILTER (WHERE co.name IS NOT NULL), '{}')
@@ -99,6 +112,9 @@ learnersRouter.get("/", async (req, res, next) => {
         programId: string | null; programName: string | null; stackName: string | null;
         advisorId: string | null; advisorName: string | null;
         skillLevel: string | null; placementStatus: string | null; mentorPartyId: string | null;
+        progressPercent: number | null; riskLevel: string | null; riskReason: string | null;
+        staffingEligibilityStatus: string | null; staffingConsentStatus: string | null;
+        staffingConsentAt: string | null; hasCandidateProfile: number;
         courseModules: string[] | null; batchCode: string | null;
         totalCourses: number; activeCourses: number; totalBatches: number; activeBatches: number;
       };
@@ -195,8 +211,20 @@ learnersRouter.get("/:partyId", async (req, res, next) => {
                COALESCE(e.payment_proofs, '{}'::text[]) AS "paymentProofs",
                e.fee_notes         AS "feeNotes",
                (SELECT valid_from FROM party_role WHERE party_id = p.id AND role = 'learner' AND valid_to IS NULL) AS "learnerSince",
-               (SELECT MIN(valid_from) FROM party_role WHERE party_id = p.id AND role = 'lead') AS "leadSince"
+               (SELECT MIN(valid_from) FROM party_role WHERE party_id = p.id AND role = 'lead') AS "leadSince",
+               -- post-0088: progress, risk, and the staffing gate. Both
+               -- staffing columns live on the learner, not on the candidate
+               -- record, so withdrawing consent removes them from staffing
+               -- however many applications are open.
+               lp.progress_percent AS "progressPercent",
+               lp.risk_level       AS "riskLevel",
+               lp.risk_reason      AS "riskReason",
+               lp.staffing_eligibility_status AS "staffingEligibilityStatus",
+               lp.staffing_consent_status     AS "staffingConsentStatus",
+               lp.staffing_consent_at         AS "staffingConsentAt",
+               (SELECT COUNT(*)::int FROM candidate cd WHERE cd.party_id = p.id) AS "hasCandidateProfile"
         FROM party p
+        LEFT JOIN learner_profile lp ON lp.party_id = p.id
         LEFT JOIN LATERAL (
           SELECT fee_quoted, fee_paid, due_date, payment_status,
                  payment_proof_url, payment_proofs, fee_notes
@@ -682,6 +710,117 @@ const FEE_FIELD_LABEL: Record<string, string> = {
 // runaway upload can't wedge Postgres or fill the JSON body.
 const MAX_PROOF_ENTRY_BYTES = 6_500_000;
 const MAX_PROOF_TOTAL_BYTES = 26_000_000;
+
+// ─── PATCH /:partyId/profile — progress, risk, and the staffing gate ─────
+//
+// The two staffing columns are the reason this endpoint exists rather than
+// the fields being edited on the candidate record. They are facts about the
+// LEARNER: a learner who withdraws consent has to leave staffing however many
+// applications are open, and that only works if there is one place the answer
+// lives. `candidate_eligible` reads these; nothing else may restate them.
+//
+// Setting consent to 'granted' stamps staffing_consent_at server-side —
+// consent with no timestamp is not evidence of anything.
+
+const RISK_LEVELS = ["low", "medium", "high"];
+const ELIGIBILITY = ["not_assessed", "qualified", "not_qualified"];
+const CONSENT     = ["not_asked", "granted", "withheld", "withdrawn"];
+
+learnersRouter.patch("/:partyId/profile", async (req, res, next) => {
+  try {
+    const partyId = String(req.params.partyId);
+    if (!/^[0-9a-fA-F-]{36}$/.test(partyId)) return res.status(400).json({ error: "invalid id" });
+    const b = req.body ?? {};
+    const actorName = req.user?.name?.trim() || "You";
+
+    const sets: ReturnType<typeof sql>[] = [];
+    const changes: string[] = [];
+
+    if (b.progressPercent !== undefined) {
+      const v = b.progressPercent == null || b.progressPercent === "" ? null : Number(b.progressPercent);
+      if (v !== null && (!Number.isInteger(v) || v < 0 || v > 100)) {
+        return res.status(400).json({ error: "progressPercent must be an integer between 0 and 100" });
+      }
+      sets.push(sql`progress_percent = ${v}`);
+      changes.push(`Progress: ${v ?? "—"}%`);
+    }
+
+    if (b.riskLevel !== undefined) {
+      const v = b.riskLevel == null || b.riskLevel === "" ? null : String(b.riskLevel).trim().toLowerCase();
+      if (v !== null && !RISK_LEVELS.includes(v)) {
+        return res.status(400).json({ error: `riskLevel must be one of: ${RISK_LEVELS.join(", ")}` });
+      }
+      sets.push(sql`risk_level = ${v}`);
+      changes.push(`Risk: ${v ?? "cleared"}`);
+    }
+
+    if (b.riskReason !== undefined) {
+      sets.push(sql`risk_reason = ${b.riskReason ? String(b.riskReason).trim() : null}`);
+    }
+
+    if (b.staffingEligibilityStatus !== undefined) {
+      const v = String(b.staffingEligibilityStatus).trim();
+      if (!ELIGIBILITY.includes(v)) {
+        return res.status(400).json({ error: `staffingEligibilityStatus must be one of: ${ELIGIBILITY.join(", ")}` });
+      }
+      sets.push(sql`staffing_eligibility_status = ${v}`);
+      changes.push(`Staffing eligibility: ${v.replace(/_/g, " ")}`);
+    }
+
+    if (b.staffingConsentStatus !== undefined) {
+      const v = String(b.staffingConsentStatus).trim();
+      if (!CONSENT.includes(v)) {
+        return res.status(400).json({ error: `staffingConsentStatus must be one of: ${CONSENT.join(", ")}` });
+      }
+      sets.push(sql`staffing_consent_status = ${v}`);
+      // Granting stamps the moment; anything else clears it, so a withdrawn
+      // consent cannot leave a timestamp behind that reads as still valid.
+      sets.push(v === "granted" ? sql`staffing_consent_at = NOW()` : sql`staffing_consent_at = NULL`);
+      changes.push(`Staffing consent: ${v.replace(/_/g, " ")}`);
+    }
+
+    if (sets.length === 0) return res.status(400).json({ error: "no fields to update" });
+
+    const result = await withTenant(req.tenantId!, async (db) => {
+      // The profile row is created on convert-to-learner. Upsert anyway so a
+      // legacy learner without one does not 404 on their first edit.
+      await db.execute(sql`
+        INSERT INTO learner_profile (tenant_id, party_id)
+        VALUES (current_tenant(), ${partyId})
+        ON CONFLICT (party_id) DO NOTHING
+      `);
+
+      const r = await db.execute(sql`
+        UPDATE learner_profile SET ${sql.join(sets, sql`, `)}
+        WHERE party_id = ${partyId}
+        RETURNING party_id AS "partyId",
+                  progress_percent AS "progressPercent",
+                  risk_level  AS "riskLevel",
+                  risk_reason AS "riskReason",
+                  staffing_eligibility_status AS "staffingEligibilityStatus",
+                  staffing_consent_status     AS "staffingConsentStatus",
+                  staffing_consent_at         AS "staffingConsentAt"
+      `);
+      if (!r.rows[0]) return null;
+
+      if (changes.length > 0) {
+        const actorPartyId = await resolveActorPartyId(db, req.tenantId!, req.userId);
+        await db.execute(sql`
+          INSERT INTO activity (tenant_id, party_id, actor_type, actor_party_id, actor_name, verb, detail, tag, payload, ts)
+          VALUES (current_tenant(), ${partyId}, 'user', ${actorPartyId}, ${actorName}, 'Learner profile updated',
+                  ${changes.join(" · ")}, 'you',
+                  ${JSON.stringify({ when: "Just now", quote: null })}::jsonb, NOW())
+        `);
+      }
+      return r.rows[0];
+    });
+
+    if (!result) return res.status(404).json({ error: "learner not found" });
+    res.json({ ok: true, profile: result });
+  } catch (err) {
+    next(err);
+  }
+});
 
 learnersRouter.patch("/:partyId/fee", async (req, res, next) => {
   try {

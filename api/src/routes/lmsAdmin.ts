@@ -50,7 +50,10 @@ lmsAdminRouter.get("/programmes", async (req, res, next) => {
           WHERE c.enabled = true
         )
         SELECT pr.id, pr.code, pr.name,
-               (SELECT count(*)::int FROM program_course pc WHERE pc.program_id = pr.id) AS "courseCount",
+               -- Courses only: since post-0087 program_course also carries
+               -- programme→programme references for composite pathways.
+               (SELECT count(*)::int FROM program_course pc
+                 WHERE pc.program_id = pr.id AND pc.component_type = 'course') AS "courseCount",
                COALESCE(b.total, 0) AS "batchCount",
                COALESCE(b.empty, 0) AS "emptyCount"
         FROM program pr
