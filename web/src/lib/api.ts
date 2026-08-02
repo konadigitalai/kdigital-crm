@@ -319,6 +319,9 @@ export async function updateLead(idOrNumber: string, patch: Partial<{
   timeZone: string | null;
   deliveryMode: "online" | "classroom" | "hybrid" | null;
   leadStatus: string | null;
+  workingStatus: "student" | "working" | "not_working" | null;
+  yearOfPassout: number | null;
+  currentCompany: string | null;
   value: string | null; source: string; sourceLabel: string;
   stage: string; score: number; heat: string; rating: string;
   nbaLabel: string; nbaIcon: string;
@@ -2139,4 +2142,254 @@ export async function addLmsNote(
 
 export async function deleteLmsNote(id: string): Promise<void> {
   await send<void>("DELETE", `/lms/notes/${encodeURIComponent(id)}`);
+}
+
+// ═══ Workforce ═══════════════════════════════════════════════════════════
+
+/** The staff directory. `trainersOnly` is what every trainer picker calls —
+ *  a filter rather than a separate endpoint so the shape stays identical. */
+export async function getWorkers(opts: {
+  q?: string; trainersOnly?: boolean; includeExited?: boolean;
+} = {}): Promise<T.Worker[]> {
+  const qs = new URLSearchParams();
+  if (opts.q) qs.set("q", opts.q);
+  if (opts.trainersOnly) qs.set("trainers", "1");
+  if (opts.includeExited) qs.set("includeExited", "1");
+  const suffix = qs.toString() ? `?${qs}` : "";
+  const { workers } = await get<{ workers: T.Worker[] }>(`/workers${suffix}`);
+  return workers;
+}
+
+export async function getWorker(partyId: string): Promise<T.Worker> {
+  const { worker } = await get<{ worker: T.Worker }>(`/workers/${encodeURIComponent(partyId)}`);
+  return worker;
+}
+
+export async function createWorker(input: T.WorkerInput): Promise<T.Worker> {
+  const { worker } = await post<{ worker: T.Worker }>("/workers", input);
+  return worker;
+}
+
+export async function updateWorker(partyId: string, patch: T.WorkerInput): Promise<T.Worker> {
+  const { worker } = await send<{ worker: T.Worker }>(
+    "PATCH", `/workers/${encodeURIComponent(partyId)}`, patch);
+  return worker;
+}
+
+// ═══ B2B — accounts and contacts ═════════════════════════════════════════
+
+export async function getAccounts(opts: { q?: string; type?: string } = {}): Promise<T.Account[]> {
+  const qs = new URLSearchParams();
+  if (opts.q) qs.set("q", opts.q);
+  if (opts.type) qs.set("type", opts.type);
+  const suffix = qs.toString() ? `?${qs}` : "";
+  const { accounts } = await get<{ accounts: T.Account[] }>(`/accounts${suffix}`);
+  return accounts;
+}
+
+/** Detail carries the account's contacts, opportunities and requisitions. */
+export async function getAccount(partyId: string): Promise<T.Account> {
+  const { account } = await get<{ account: T.Account }>(`/accounts/${encodeURIComponent(partyId)}`);
+  return account;
+}
+
+export async function createAccount(input: T.AccountInput): Promise<T.Account> {
+  const { account } = await post<{ account: T.Account }>("/accounts", input);
+  return account;
+}
+
+export async function updateAccount(partyId: string, patch: T.AccountInput): Promise<T.Account> {
+  const { account } = await send<{ account: T.Account }>(
+    "PATCH", `/accounts/${encodeURIComponent(partyId)}`, patch);
+  return account;
+}
+
+export async function getContacts(opts: { q?: string; accountId?: string } = {}): Promise<T.Contact[]> {
+  const qs = new URLSearchParams();
+  if (opts.q) qs.set("q", opts.q);
+  if (opts.accountId) qs.set("accountId", opts.accountId);
+  const suffix = qs.toString() ? `?${qs}` : "";
+  const { contacts } = await get<{ contacts: T.Contact[] }>(`/contacts${suffix}`);
+  return contacts;
+}
+
+export async function createContact(input: T.ContactInput): Promise<T.Contact> {
+  const { contact } = await post<{ contact: T.Contact }>("/contacts", input);
+  return contact;
+}
+
+/** Passing a new accountPartyId end-dates the previous affiliation rather
+ *  than editing it, so employment history survives. */
+export async function updateContact(partyId: string, patch: T.ContactInput): Promise<T.Contact> {
+  const { contact } = await send<{ contact: T.Contact }>(
+    "PATCH", `/contacts/${encodeURIComponent(partyId)}`, patch);
+  return contact;
+}
+
+// ═══ B2B — opportunity pipeline ══════════════════════════════════════════
+
+/** Defaults to open deals only. stageTotals covers every stage regardless of
+ *  the filter, so the board header stays honest while the list is narrowed. */
+export async function getOpportunities(opts: {
+  q?: string; stage?: string; accountId?: string; includeClosed?: boolean;
+} = {}): Promise<{ opportunities: T.Opportunity[]; stageTotals: T.OpportunityStageTotal[] }> {
+  const qs = new URLSearchParams();
+  if (opts.q) qs.set("q", opts.q);
+  if (opts.stage) qs.set("stage", opts.stage);
+  if (opts.accountId) qs.set("accountId", opts.accountId);
+  if (opts.includeClosed) qs.set("includeClosed", "1");
+  const suffix = qs.toString() ? `?${qs}` : "";
+  return get<{ opportunities: T.Opportunity[]; stageTotals: T.OpportunityStageTotal[] }>(
+    `/opportunities${suffix}`);
+}
+
+export async function getOpportunity(workItemId: string): Promise<T.Opportunity> {
+  const { opportunity } = await get<{ opportunity: T.Opportunity }>(
+    `/opportunities/${encodeURIComponent(workItemId)}`);
+  return opportunity;
+}
+
+export async function createOpportunity(input: T.OpportunityInput): Promise<T.Opportunity> {
+  const { opportunity } = await post<{ opportunity: T.Opportunity }>("/opportunities", input);
+  return opportunity;
+}
+
+/** Moving to closed_won / closed_lost sets the close date server-side when
+ *  the caller does not supply one — dragging a card should just work. */
+export async function updateOpportunity(
+  workItemId: string, patch: T.OpportunityInput,
+): Promise<T.Opportunity> {
+  const { opportunity } = await send<{ opportunity: T.Opportunity }>(
+    "PATCH", `/opportunities/${encodeURIComponent(workItemId)}`, patch);
+  return opportunity;
+}
+
+// ═══ Staffing ════════════════════════════════════════════════════════════
+
+export async function getRequisitions(opts: {
+  q?: string; status?: string; accountId?: string;
+} = {}): Promise<T.Requisition[]> {
+  const qs = new URLSearchParams();
+  if (opts.q) qs.set("q", opts.q);
+  if (opts.status) qs.set("status", opts.status);
+  if (opts.accountId) qs.set("accountId", opts.accountId);
+  const suffix = qs.toString() ? `?${qs}` : "";
+  const { requisitions } = await get<{ requisitions: T.Requisition[] }>(`/requisitions${suffix}`);
+  return requisitions;
+}
+
+export async function getRequisition(id: string): Promise<T.Requisition> {
+  const { requisition } = await get<{ requisition: T.Requisition }>(
+    `/requisitions/${encodeURIComponent(id)}`);
+  return requisition;
+}
+
+export async function createRequisition(input: T.RequisitionInput): Promise<T.Requisition> {
+  const { requisition } = await post<{ requisition: T.Requisition }>("/requisitions", input);
+  return requisition;
+}
+
+export async function updateRequisition(
+  id: string, patch: T.RequisitionInput,
+): Promise<T.Requisition> {
+  const { requisition } = await send<{ requisition: T.Requisition }>(
+    "PATCH", `/requisitions/${encodeURIComponent(id)}`, patch);
+  return requisition;
+}
+
+/** `eligibleOnly` reads the candidate_eligible view — qualified AND consented
+ *  AND profile ready/active. Use it for any "add to requisition" picker. */
+export async function getCandidates(opts: {
+  q?: string; eligibleOnly?: boolean;
+} = {}): Promise<T.Candidate[]> {
+  const qs = new URLSearchParams();
+  if (opts.q) qs.set("q", opts.q);
+  if (opts.eligibleOnly) qs.set("eligible", "1");
+  const suffix = qs.toString() ? `?${qs}` : "";
+  const { candidates } = await get<{ candidates: T.Candidate[] }>(`/candidates${suffix}`);
+  return candidates;
+}
+
+export async function getCandidate(partyId: string): Promise<T.Candidate> {
+  const { candidate } = await get<{ candidate: T.Candidate }>(
+    `/candidates/${encodeURIComponent(partyId)}`);
+  return candidate;
+}
+
+/** Requires the partyId of an existing learner — there is no path that
+ *  creates a person here. */
+export async function createCandidate(input: T.CandidateInput): Promise<T.Candidate> {
+  const { candidate } = await post<{ candidate: T.Candidate }>("/candidates", input);
+  return candidate;
+}
+
+export async function updateCandidate(
+  partyId: string, patch: T.CandidateInput,
+): Promise<T.Candidate> {
+  const { candidate } = await send<{ candidate: T.Candidate }>(
+    "PATCH", `/candidates/${encodeURIComponent(partyId)}`, patch);
+  return candidate;
+}
+
+export async function getApplications(opts: {
+  requisitionId?: string; candidateId?: string; stage?: string;
+} = {}): Promise<T.JobApplication[]> {
+  const qs = new URLSearchParams();
+  if (opts.requisitionId) qs.set("requisitionId", opts.requisitionId);
+  if (opts.candidateId) qs.set("candidateId", opts.candidateId);
+  if (opts.stage) qs.set("stage", opts.stage);
+  const suffix = qs.toString() ? `?${qs}` : "";
+  const { applications } = await get<{ applications: T.JobApplication[] }>(`/applications${suffix}`);
+  return applications;
+}
+
+/** Rejected by the API unless the candidate passes the eligibility gate and
+ *  the requisition is open. */
+export async function createApplication(input: T.ApplicationInput): Promise<T.JobApplication> {
+  const { application } = await post<{ application: T.JobApplication }>("/applications", input);
+  return application;
+}
+
+/** Moving to hired / rejected / withdrawn needs staffing.decide, not
+ *  staffing.write — and 'rejected' needs a rejectionReason. */
+export async function updateApplication(
+  id: string, patch: T.ApplicationInput,
+): Promise<T.JobApplication> {
+  const { application } = await send<{ application: T.JobApplication }>(
+    "PATCH", `/applications/${encodeURIComponent(id)}`, patch);
+  return application;
+}
+
+// ═══ post-0088 field sets ════════════════════════════════════════════════
+
+/** The enrolment's own attributes — owner, mode, timezone, dates and the two
+ *  admission gates. Deliberately separate from `updateEnrollmentFee`, which
+ *  keeps its own ledger trail; money is not settable here. */
+export async function updateEnrollment(
+  idOrNumber: string,
+  patch: {
+    advisorId?: string | null;
+    deliveryMode?: T.DeliveryMode | null;
+    timezone?: string | null;
+    startDate?: string | null;
+    expectedCompletionDate?: string | null;
+    admissionChecklistStatus?: "pending" | "partial" | "complete";
+    identityProofStatus?: "not_submitted" | "submitted" | "verified" | "rejected";
+    staffingInterest?: boolean;
+  },
+): Promise<{ ok: true; enrolment: Record<string, unknown> }> {
+  return send("PATCH", `/enrollments/${encodeURIComponent(idOrNumber)}`, patch);
+}
+
+/** Progress, risk, and the staffing gate.
+ *
+ *  The two staffing fields live on the learner rather than on their candidate
+ *  record so that withdrawing consent removes them from staffing however many
+ *  applications are open — the `candidate_eligible` view reads exactly these.
+ *  Setting consent to 'granted' stamps the timestamp server-side. */
+export async function updateLearnerProfile(
+  partyId: string,
+  patch: T.LearnerProfileInput,
+): Promise<{ ok: true; profile: Record<string, unknown> }> {
+  return send("PATCH", `/learners/${encodeURIComponent(partyId)}/profile`, patch);
 }

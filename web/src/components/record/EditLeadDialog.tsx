@@ -32,6 +32,9 @@ export interface LeadEditable {
   timeZone: string | null;
   deliveryMode: "online" | "classroom" | "hybrid" | null;
   leadStatus: string | null;
+  workingStatus: "student" | "working" | "not_working" | null;
+  yearOfPassout: number | null;
+  currentCompany: string | null;
   city: string | null;
   programId: string | null;
   programName: string | null;
@@ -69,6 +72,9 @@ function Dialog({ leadNumber, lead, onClose }: { leadNumber: string; lead: LeadE
   const [phoneCountryCode, setPhoneCountryCode] = useState(lead.phoneCountryCode ?? "+91");
   const [timeZone, setTimeZone]       = useState(lead.timeZone ?? "Asia/Kolkata");
   const [deliveryMode, setDeliveryMode] = useState<string>(lead.deliveryMode ?? "");
+  const [workingStatus, setWorkingStatus]   = useState<string>(lead.workingStatus ?? "");
+  const [yearOfPassout, setYearOfPassout]   = useState(lead.yearOfPassout?.toString() ?? "");
+  const [currentCompany, setCurrentCompany] = useState(lead.currentCompany ?? "");
   const [leadStatus, setLeadStatus]     = useState<string>(lead.leadStatus ?? "");
   const [city, setCity]               = useState(lead.city ?? "");
   const [programId, setProgramId]     = useState(lead.programId ?? "");
@@ -114,6 +120,9 @@ function Dialog({ leadNumber, lead, onClose }: { leadNumber: string; lead: LeadE
         phoneCountryCode: phoneCountryCode.trim() || null,
         timeZone: timeZone || null,
         deliveryMode: (deliveryMode || null) as "online" | "classroom" | "hybrid" | null,
+        workingStatus: (workingStatus || null) as "student" | "working" | "not_working" | null,
+        yearOfPassout: yearOfPassout.trim() ? Number(yearOfPassout) : null,
+        currentCompany: currentCompany.trim() || null,
         leadStatus: leadStatus || null,
         city: city.trim() || null,
         programId: programId || null,
@@ -233,6 +242,38 @@ function Dialog({ leadNumber, lead, onClose }: { leadNumber: string; lead: LeadE
                     <option key={s.key} value={s.key}>{s.label}</option>
                   ))}
                 </select>
+              </Field>
+              <Field label="Working status">
+                <select
+                  className={inputCls}
+                  value={workingStatus}
+                  onChange={(e) => setWorkingStatus(e.target.value)}
+                >
+                  <option value="">— none —</option>
+                  <option value="student">Student</option>
+                  <option value="working">Working</option>
+                  <option value="not_working">Not working</option>
+                </select>
+              </Field>
+            </div>
+            <div className="grid grid-cols-2 gap-4">
+              <Field label="Year of passout">
+                <input
+                  className={inputCls}
+                  value={yearOfPassout}
+                  onChange={(e) => setYearOfPassout(e.target.value)}
+                  inputMode="numeric"
+                  placeholder="e.g. 2026"
+                />
+              </Field>
+              <Field label="Current company">
+                <input
+                  className={inputCls}
+                  value={currentCompany}
+                  onChange={(e) => setCurrentCompany(e.target.value)}
+                  placeholder="Blank if studying"
+                  disabled={workingStatus === "student" || workingStatus === "not_working"}
+                />
               </Field>
             </div>
           </Section>

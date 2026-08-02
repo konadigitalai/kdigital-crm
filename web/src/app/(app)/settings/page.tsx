@@ -47,6 +47,14 @@ const ALL_CARDS: SettingsCard[] = [
     title: "Advisors",
     blurb: "Add / edit / deactivate advisors that leads get assigned to.",
     requires: "users.manage" },
+  // Distinct from Advisors, which is about who can sign in and own a lead.
+  // This is the employment record — and it is what fills the trainer pickers.
+  { section: "Workspace",
+    href: "/admin/workers",
+    icon: "users",
+    title: "Workforce",
+    blurb: "Staff directory — designation, department, reporting line, shift, skills, and who can train.",
+    requires: "workers.read" },
 
   // Operations — academic structure
   { section: "Operations", href: "/admin/stacks",   icon: "chart", title: "Stacks",

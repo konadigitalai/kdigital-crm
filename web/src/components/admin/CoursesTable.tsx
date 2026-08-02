@@ -9,12 +9,21 @@ import type { Course } from "@/lib/types";
 import { FilterBar } from "@/components/filter/FilterBar";
 import { useFilter } from "@/components/filter/useFilter";
 import type { FilterField } from "@/components/filter/types";
+import { Pill, RegistryId, distinct } from "@/components/admin/formKit";
 
-function buildFields(): FilterField[] {
+function buildFields(rows: Course[]): FilterField[] {
+  const families = distinct(rows, (c) => c.family);
   return [
     { key: "name",             label: "Course",      type: "text",   get: (c: Course) => c.name },
+    { key: "registryId",       label: "Registry ID", type: "text",   get: (c: Course) => c.registryId },
+    { key: "shortCode",        label: "Code",        type: "text",   get: (c: Course) => c.shortCode },
+    { key: "family",           label: "Family",      type: "enum",   options: families.map((f) => ({ value: f, label: f })), get: (c: Course) => c.family },
     { key: "description",      label: "Description", type: "text",   get: (c: Course) => c.description },
     { key: "enabled",          label: "Active",      type: "boolean",get: (c: Course) => c.enabled },
+    // CAT-002 — whether completing this course carries credit into another
+    // pathway. The single most useful thing to filter a 52-course registry by.
+    { key: "reusable",         label: "Reusable",    type: "boolean",get: (c: Course) => c.reusableAcrossProgrammes },
+    { key: "standalone",       label: "Standalone",  type: "boolean",get: (c: Course) => c.independentlyDeliverable },
     { key: "programCount",     label: "Programs",    type: "number", get: (c: Course) => c.programCount },
     { key: "batchCount",       label: "Batches",     type: "number", get: (c: Course) => c.batchCount },
     { key: "activeLearners",   label: "Active learners", type: "number", get: (c: Course) => c.activeLearners },
@@ -33,7 +42,7 @@ export function CoursesTable({ initial }: { initial: Course[] }) {
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const fields = useMemo(() => buildFields(), []);
+  const fields = useMemo(() => buildFields(courses), [courses]);
   const [filtered, filterState, setFilterState] = useFilter(courses, fields);
 
   function reload() { router.refresh(); }
@@ -104,7 +113,8 @@ export function CoursesTable({ initial }: { initial: Course[] }) {
       <div className="overflow-hidden rounded-2xl border border-rule bg-paper">
         <Row hdr>
           <div>Course</div>
-          <div>Description</div>
+          <div>Family</div>
+          <div className="text-center">Reuse</div>
           <div className="text-center">Programs</div>
           <div className="text-center">Batches</div>
           <div className="text-center">Running</div>
@@ -119,15 +129,42 @@ export function CoursesTable({ initial }: { initial: Course[] }) {
           filtered.map((c) => (
             <Row key={c.id} dimmed={!c.enabled}>
               <div className="min-w-0">
-                <div className="flex items-center gap-2">
+                <div className="flex flex-wrap items-center gap-2">
                   <span className="text-[14px] font-semibold tracking-[-.005em]">{c.name}</span>
-                  {!c.enabled && (
-                    <span className="mono-cap rounded-full bg-warm2 px-2 py-0.5 text-[9px] font-semibold text-mute">inactive</span>
+                  {c.shortCode && (
+                    <span className="mono-cap rounded bg-grad-soft px-1.5 py-0.5 text-[9.5px] font-bold tracking-[.06em] text-brand-violet">
+                      {c.shortCode}
+                    </span>
+                  )}
+                  {!c.enabled && <Pill>inactive</Pill>}
+                  {c.catalogueStatus === "Retired" && <Pill tone="bad">retired</Pill>}
+                </div>
+                <div className="mt-1 flex flex-wrap items-center gap-2">
+                  <RegistryId id={c.registryId} />
+                  {/* CAT-015: the stable ID and the dated syllabus are
+                      different things. Showing the pattern makes that visible
+                      at the point someone would otherwise conflate them. */}
+                  {c.curriculumVersionPattern && (
+                    <span
+                      className="font-mono text-[10.5px] text-hint"
+                      title="Curriculum version pattern — a batch teaches a dated version of this stable course (CAT-015)"
+                    >
+                      {c.curriculumVersionPattern}
+                    </span>
                   )}
                 </div>
               </div>
               <div className="min-w-0 truncate text-[13px] text-ink2">
-                {c.description ?? <span className="text-mute">—</span>}
+                {c.family ?? <span className="text-mute">—</span>}
+              </div>
+              <div className="flex items-center justify-center gap-1">
+                {c.reusableAcrossProgrammes && (
+                  <Pill tone="good" title="Completion can be credited into another pathway (CAT-002/003)">reusable</Pill>
+                )}
+                {c.independentlyDeliverable && (
+                  <Pill tone="info" title="Can be sold and delivered on its own, outside any pathway">standalone</Pill>
+                )}
+                {!c.reusableAcrossProgrammes && !c.independentlyDeliverable && <span className="text-mute">—</span>}
               </div>
               <div className="text-center text-[13px]">{c.programCount > 0 ? c.programCount : <span className="text-mute">—</span>}</div>
               <div className="text-center text-[13px]">{c.batchCount > 0 ? c.batchCount : <span className="text-mute">—</span>}</div>
@@ -190,7 +227,7 @@ function Row({ hdr = false, dimmed = false, children }: { hdr?: boolean; dimmed?
         hdr ? "mono-cap py-3 text-[9.5px] font-semibold tracking-[.12em] text-mute bg-warm" : "py-3.5",
         dimmed && !hdr && "bg-warm/40",
       )}
-      style={{ gridTemplateColumns: "1.4fr 2fr 90px 90px 90px 100px 200px" }}
+      style={{ gridTemplateColumns: "2fr 1.1fr 190px 90px 90px 90px 100px 200px" }}
     >
       {children}
     </div>

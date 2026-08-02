@@ -2,7 +2,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { Topbar } from "@/components/shell/Topbar";
 import { Icon } from "@/components/ui/Icon";
-import { getLearner } from "@/lib/api";
+import { getCurrentUser, getLearner } from "@/lib/api";
 import { requirePagePermission } from "@/lib/guards";
 import { cn } from "@/lib/cn";
 import type {
@@ -14,6 +14,7 @@ import { UnassignCourseButton } from "@/components/learner/UnassignCourseButton"
 import { UnassignBatchButton } from "@/components/learner/UnassignBatchButton";
 import { LearnerDescription } from "@/components/learner/LearnerDescription";
 import { FeeLedgerCard } from "@/components/learner/FeeLedgerCard";
+import { LearnerProfileCard } from "@/components/learner/LearnerProfileCard";
 import { TimelineTabs } from "@/components/record/TimelineTabs";
 import { ShareToSlackButton } from "@/components/share/ShareToSlackButton";
 import { BATCH_STATUS_CLS } from "@/lib/batchStatus";
@@ -56,8 +57,11 @@ function CourseActiveBadge({ enabled }: { enabled: boolean }) {
 export default async function LearnerRecordPage({ params }: { params: Promise<{ partyId: string }> }) {
   await requirePagePermission("learners.read");
   const { partyId } = await params;
-  const data = await getLearner(partyId);
+  const [data, me] = await Promise.all([getLearner(partyId), getCurrentUser()]);
   if (!data) notFound();
+  // Reading a learner and changing their staffing consent are different
+  // privileges — the page gate is learners.read, this card needs write.
+  const canEditProfile = me?.permissions.includes("learners.write") ?? false;
 
   const { party, enrolments, courseAssignments, assignments, timeline, originLead } = data;
   const initials = party.attributes?.initials ?? party.name.slice(0, 2).toUpperCase();
@@ -147,6 +151,22 @@ export default async function LearnerRecordPage({ params }: { params: Promise<{ 
               feeNotes:      party.feeNotes,
             }}
           />
+
+          <div className="mt-6">
+            <LearnerProfileCard
+              partyId={party.id}
+              canEdit={canEditProfile}
+              initial={{
+                progressPercent:           party.progressPercent,
+                riskLevel:                 party.riskLevel,
+                riskReason:                party.riskReason,
+                staffingEligibilityStatus: party.staffingEligibilityStatus ?? "not_assessed",
+                staffingConsentStatus:     party.staffingConsentStatus ?? "not_asked",
+                staffingConsentAt:         party.staffingConsentAt,
+                hasCandidateProfile:       party.hasCandidateProfile ?? 0,
+              }}
+            />
+          </div>
 
           {[...groups.values()].length === 0 ? (
             <div className="rounded-2xl border border-dashed border-rule p-10 text-center text-[13px] text-mute">

@@ -1,6 +1,7 @@
 node_modules
 .next
 out
+.next-build
 dist
 .env*.local
 .DS_Store

@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import { Icon } from "@/components/ui/Icon";
 import { cn } from "@/lib/cn";
 import { createLead, getCatalog } from "@/lib/api";
-import type { CatalogResponse, LeadRating } from "@/lib/types";
+import type { CatalogResponse, LeadRating, WorkingStatus } from "@/lib/types";
 import { LEAD_RATINGS } from "@/lib/types";
 import { ratingStyles } from "@/lib/ui";
 import { emitCrmMutation } from "@/lib/live-summary";
@@ -101,6 +101,12 @@ export function NewLeadDialog({
   const [nextFollowupAt, setNextFollowupAt] = useState<string>("");   // YYYY-MM-DD
   const [visitingDate,   setVisitingDate]   = useState<string>("");   // YYYY-MM-DD
   const [deliveryMode,   setDeliveryMode]   = useState<"" | "online" | "classroom" | "hybrid">("");
+  // Qualification — the three things an advisor establishes on the first
+  // call. They drive segmentation ("final-year students in Hyderabad") and
+  // the fee conversation, and were previously typed into the description.
+  const [workingStatus,  setWorkingStatus]  = useState<"" | WorkingStatus>("");
+  const [yearOfPassout,  setYearOfPassout]  = useState("");
+  const [currentCompany, setCurrentCompany] = useState("");
 
   useEffect(() => {
     // Load the catalog for the program dropdown. Program is optional — leave
@@ -157,6 +163,9 @@ export function NewLeadDialog({
         nextFollowupAt: nextFollowupAt || undefined,
         visitingDate:   visitingDate   || undefined,
         deliveryMode:   deliveryMode   || undefined,
+        workingStatus:  workingStatus  || undefined,
+        yearOfPassout:  yearOfPassout.trim() ? Number(yearOfPassout) : undefined,
+        currentCompany: currentCompany.trim() || undefined,
       };
       const created = submitOverride
         ? await submitOverride(payload)
@@ -405,6 +414,42 @@ export function NewLeadDialog({
                 })}
               </div>
             </Field>
+
+            <div className="grid grid-cols-3 gap-4">
+              <Field label="Working status">
+                <select
+                  className={inputCls}
+                  value={workingStatus}
+                  onChange={(e) => setWorkingStatus(e.target.value as "" | WorkingStatus)}
+                >
+                  <option value="">—</option>
+                  <option value="student">Student</option>
+                  <option value="working">Working</option>
+                  <option value="not_working">Not working</option>
+                </select>
+              </Field>
+              <Field label="Year of passout">
+                <input
+                  className={inputCls}
+                  value={yearOfPassout}
+                  onChange={(e) => setYearOfPassout(e.target.value)}
+                  inputMode="numeric"
+                  placeholder="e.g. 2026"
+                />
+              </Field>
+              <Field label="Current company">
+                <input
+                  className={inputCls}
+                  value={currentCompany}
+                  onChange={(e) => setCurrentCompany(e.target.value)}
+                  placeholder="Blank if studying"
+                  /* Only meaningful for someone who is working — disabled
+                     rather than hidden so the form does not reflow as the
+                     status changes. */
+                  disabled={workingStatus === "student" || workingStatus === "not_working"}
+                />
+              </Field>
+            </div>
 
             <Field label="Next-best-action label (optional)">
               <input

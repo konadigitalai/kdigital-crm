@@ -13,6 +13,14 @@ const nextConfig = {
   reactStrictMode: true,
   outputFileTracingRoot: __dirname,
 
+  // `next dev` and `next build` both own .next, and on Windows the dev
+  // server's file locks make a concurrent build hang rather than fail — it
+  // sits there producing nothing until someone kills it. Setting
+  // NEXT_DIST_DIR gives a build its own output directory so it can run while
+  // the dev server stays up. Unset (the normal case, and every deployment)
+  // it is exactly the default.
+  distDir: process.env.NEXT_DIST_DIR || ".next",
+
   // Browser-side requests go to /api/* on the same Vercel origin and Next.js
   // forwards them to the actual Express API on Render. This sidesteps the
   // third-party-cookie problem cross-origin auth has on modern Chrome —

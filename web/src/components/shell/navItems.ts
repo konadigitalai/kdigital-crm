@@ -37,6 +37,7 @@ export const SETTINGS_ANY_PERMISSIONS = [
   "admin.programs.manage",
   "admin.courses.manage",
   "admin.batches.manage",
+  "workers.read",
   "integrations.read",
   "leads.delete",
 ];
@@ -51,6 +52,18 @@ export function buildNavItems(summary: SummaryResponse): NavItem[] {
     { href: "/enrollments",               icon: "stamp",           label: "Enrollments",                    requires: "learners.read" },
     { href: "/learners",                  icon: "graduation-cap",  label: "Learners",                       requires: "learners.read" },
     { href: "/cases",                     icon: "life-ring",       label: "Cases",       badge: caseBadge, requires: "cases.read" },
+    // ─── B2B ───────────────────────────────────────────────────────────────
+    // Deliberately separate entries rather than folded into Leads: an account
+    // is an organisation with contacts, deals and open roles hanging off it,
+    // and a B2C advisor working a lead list has no reason to see corporate
+    // deal values. The permissions are disjoint, so most people see neither.
+    { href: "/accounts",                  icon: "doc",             label: "Accounts",                       requires: "accounts.read" },
+    { href: "/opportunities",             icon: "stamp",           label: "Opportunities",                  requires: "opportunities.read" },
+    // ─── Staffing ──────────────────────────────────────────────────────────
+    // One entry for a three-tab module — requisitions, candidates and
+    // applications are one pipeline and a recruiter moves between them
+    // constantly.
+    { href: "/staffing/requisitions",     icon: "user-plus",       label: "Staffing",                       requires: "staffing.read" },
     // Pipeline was dropped from the nav 2026-07-12: /leads now carries the
     // same List / Kanban / Chart modes and group-by axes, so the two screens
     // were the same tool twice. The /pipeline route itself still resolves —
@@ -93,6 +106,9 @@ const DEDICATED_HREFS = [
   "/enrollments",
   "/learners",
   "/cases",
+  "/accounts",
+  "/opportunities",
+  "/staffing",
   "/batches",         // operational Batches board (admin CRUD still at /admin/cohorts)
   "/calendar",
   "/agents",
@@ -104,6 +120,10 @@ export function isActive(pathname: string, href: string): boolean {
   if (href === "/enrollments") return pathname.startsWith("/enrollments");
   if (href === "/learners") return pathname.startsWith("/learners");
   if (href === "/cases") return pathname.startsWith("/cases");
+  if (href === "/accounts") return pathname.startsWith("/accounts");
+  if (href === "/opportunities") return pathname.startsWith("/opportunities");
+  // One nav entry, three tabs — any /staffing/* path lights the same item.
+  if (href === "/staffing/requisitions") return pathname.startsWith("/staffing");
   if (href === "/batches") return pathname.startsWith("/batches");
   // Settings is the catch-all for admin config. But it must NOT light up
   // when the user is on a path that has its own dedicated nav entry — those

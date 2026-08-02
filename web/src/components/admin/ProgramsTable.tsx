@@ -9,15 +9,24 @@ import type { Course, DurationUnit, Program, ProgramInput, Stack } from "@/lib/t
 import { FilterBar } from "@/components/filter/FilterBar";
 import { useFilter } from "@/components/filter/useFilter";
 import type { FilterField } from "@/components/filter/types";
+import { DialogShell, Pill, RegistryId, distinct } from "@/components/admin/formKit";
+import { deliveryModeLabel, normaliseDeliveryMode } from "@/lib/deliveryMode";
 
 function buildFields(rows: Program[]): FilterField[] {
-  const stacks = [...new Set(rows.map((r) => r.stackName).filter(Boolean))] as string[];
+  const stacks = distinct(rows, (r) => r.stackName);
+  const families = distinct(rows, (r) => r.family);
   return [
     { key: "name",           label: "Name",       type: "text",   get: (p: Program) => p.name },
+    { key: "registryId",     label: "Registry ID",type: "text",   get: (p: Program) => p.registryId },
+    { key: "shortCode",      label: "Code",       type: "text",   get: (p: Program) => p.shortCode },
     { key: "stack",          label: "Stack",      type: "enum",   options: stacks.map((s) => ({ value: s, label: s })), get: (p: Program) => p.stackName },
+    // Family is the registry's own grouping and is far more useful than stack
+    // for the nine KDigital pathways, which all sit in one stack.
+    { key: "family",         label: "Family",     type: "enum",   options: families.map((f) => ({ value: f, label: f })), get: (p: Program) => p.family },
     { key: "price",          label: "Price",      type: "number", get: (p: Program) => p.price ? Number(p.price) : null },
     { key: "duration",       label: "Duration",   type: "number", get: (p: Program) => p.durationValue },
     { key: "enabled",        label: "Active",     type: "boolean",get: (p: Program) => p.enabled },
+    { key: "composite",      label: "Composite",  type: "boolean",get: (p: Program) => p.referencedProgrammeCount > 0 },
     { key: "leadCount",      label: "Leads",      type: "number", get: (p: Program) => p.leadCount },
     { key: "courseCount",    label: "Courses",    type: "number", get: (p: Program) => p.courseCount },
     { key: "batchCount",     label: "Batches",    type: "number", get: (p: Program) => p.batchCount },
@@ -38,6 +47,7 @@ export function ProgramsTable({
   const router = useRouter();
   const [programs, setPrograms] = useState<Program[]>(initial);
   const [mode, setMode] = useState<Mode>({ kind: "idle" });
+  const [detail, setDetail] = useState<Program | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -90,11 +100,48 @@ export function ProgramsTable({
     }
   }
 
+  // The registry ships no price. Programmes land unpriced and stay sellable —
+  // an advisor quotes per lead — but the gap is worth surfacing once at the
+  // top rather than only as a dash in each row.
+  const unpriced = programs.filter((p) => p.enabled && !p.price);
+  const registryCount = programs.filter((p) => p.registryId).length;
+
   return (
     <>
+      {unpriced.length > 0 && (
+        <div className="mb-4 flex items-start gap-3 rounded-[14px] border border-state-warn/30 bg-state-warn/8 p-[14px_18px] text-[13px] text-ink2">
+          <span className="mt-0.5 flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-[9px] bg-state-warn/15 text-state-warn">
+            <Icon name="info" size={15} strokeWidth={2} />
+          </span>
+          <div>
+            <b className="font-bold text-ink">
+              {unpriced.length} active program{unpriced.length === 1 ? " has" : "s have"} no price.
+            </b>{" "}
+            The KDigital registry does not carry pricing, so imported pathways arrive unpriced.
+            They stay selectable and an advisor can quote per lead — set a catalogue price here
+            when one is agreed.
+            <div className="mt-1.5 flex flex-wrap gap-1.5">
+              {unpriced.slice(0, 6).map((p) => (
+                <button
+                  key={p.id}
+                  onClick={() => setMode({ kind: "editing", program: p })}
+                  className="rounded-full border border-state-warn/40 px-2.5 py-0.5 text-[11.5px] font-semibold text-state-warn hover:bg-state-warn/10"
+                >
+                  {p.shortCode ?? p.name}
+                </button>
+              ))}
+              {unpriced.length > 6 && (
+                <span className="px-1 py-0.5 text-[11.5px] text-mute">+{unpriced.length - 6} more</span>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
       <div className="mb-4 flex items-center justify-between">
         <div className="text-[13px] text-mute">
           {programs.length} program{programs.length === 1 ? "" : "s"} · {programs.filter((p) => p.enabled).length} active
+          {registryCount > 0 && <> · {registryCount} from the KDigital registry</>}
         </div>
         <button
           onClick={() => activeStacks.length > 0 && setMode({ kind: "creating" })}
@@ -120,10 +167,10 @@ export function ProgramsTable({
       <div className="overflow-hidden rounded-2xl border border-rule bg-paper">
         <Row hdr>
           <div>Program</div>
-          <div>Stack</div>
+          <div>Family</div>
           <div className="text-right">Price</div>
           <div>Duration</div>
-          <div className="text-center">Courses</div>
+          <div className="text-center">Structure</div>
           <div className="text-center">Batches</div>
           <div className="text-center">Enrolments</div>
           <div className="text-right">Actions</div>
@@ -137,31 +184,75 @@ export function ProgramsTable({
           filtered.map((p) => (
             <Row key={p.id} dimmed={!p.enabled}>
               <div className="min-w-0">
-                <div className="flex items-center gap-2">
+                <div className="flex flex-wrap items-center gap-2">
                   <span className="text-[14px] font-semibold tracking-[-.005em]">{p.name}</span>
-                  {!p.enabled && (
-                    <span className="mono-cap rounded-full bg-warm2 px-2 py-0.5 text-[9px] font-semibold text-mute">inactive</span>
+                  {p.shortCode && (
+                    <span className="mono-cap rounded bg-grad-soft px-1.5 py-0.5 text-[9.5px] font-bold tracking-[.06em] text-brand-violet">
+                      {p.shortCode}
+                    </span>
+                  )}
+                  {!p.enabled && <Pill>inactive</Pill>}
+                  {p.catalogueStatus === "Retired" && <Pill tone="bad">retired</Pill>}
+                </div>
+                <div className="mt-1 flex flex-wrap items-center gap-2">
+                  <RegistryId id={p.registryId} />
+                  {/* The official long name, only when it differs — CAT-010
+                      keeps both and they are usually identical. */}
+                  {p.fullName && p.fullName !== p.name && (
+                    <span className="truncate text-[11.5px] text-mute" title={p.fullName}>{p.fullName}</span>
                   )}
                 </div>
               </div>
-              <div className="text-[13px] text-ink2 truncate">{p.stackName ?? <span className="text-mute">—</span>}</div>
-              <div className="text-right font-mono text-[13px] text-ink2">
-                {p.price ? `₹${Number(p.price).toLocaleString("en-IN")}` : <span className="text-mute">—</span>}
+
+              <div className="min-w-0 text-[13px] text-ink2">
+                <div className="truncate">{p.family ?? p.stackName ?? <span className="text-mute">—</span>}</div>
+                {p.deliveryModes && p.deliveryModes.length > 0 && (
+                  <div className="mt-0.5 truncate text-[11px] text-mute">
+                    {p.deliveryModes
+                      .map((m) => deliveryModeLabel(normaliseDeliveryMode(m) ?? m))
+                      .join(" · ")}
+                  </div>
+                )}
               </div>
+
+              <div className="text-right font-mono text-[13px] text-ink2">
+                {p.price
+                  ? `₹${Number(p.price).toLocaleString("en-IN")}`
+                  : <span className="text-state-warn" title="No catalogue price. Still sellable — an advisor quotes per lead.">not set</span>}
+              </div>
+
               <div className="text-[13px] text-ink2">
                 {p.durationValue != null && p.durationUnit
                   ? `${p.durationValue} ${p.durationUnit}`
                   : <span className="text-mute">—</span>}
               </div>
-              <div
-                className="text-center text-[13px]"
-                title={p.courses.map((c) => c.name).join(", ") || undefined}
-              >
-                {p.courseCount > 0 ? p.courseCount : <span className="text-mute">—</span>}
+
+              {/* Courses and referenced programmes are different things and a
+                  composite pathway has both. One number could only ever be
+                  wrong about one of them. */}
+              <div className="text-center text-[13px]">
+                <span title={p.courses.map((c) => c.name).join(", ") || undefined}>
+                  {p.courseCount > 0 ? `${p.courseCount} course${p.courseCount === 1 ? "" : "s"}` : <span className="text-mute">—</span>}
+                </span>
+                {p.referencedProgrammeCount > 0 && (
+                  <div
+                    className="mt-1"
+                    title={`References: ${p.referencedProgrammes.map((r) => r.name).join(", ")}`}
+                  >
+                    <Pill tone="info">+{p.referencedProgrammeCount} pathways</Pill>
+                  </div>
+                )}
               </div>
+
               <div className="text-center text-[13px]">{p.batchCount > 0 ? p.batchCount : <span className="text-mute">—</span>}</div>
               <div className="text-center text-[13px]">{p.enrolmentCount > 0 ? p.enrolmentCount : <span className="text-mute">—</span>}</div>
               <div className="flex items-center justify-end gap-1.5">
+                <button
+                  onClick={() => setDetail(p)}
+                  className="rounded-md border border-rule bg-paper px-2.5 py-1 text-[11.5px] font-semibold text-ink2 hover:border-brand-violet hover:text-brand-violet"
+                >
+                  Structure
+                </button>
                 <button
                   onClick={() => setMode({ kind: "editing", program: p })}
                   className="rounded-md border border-rule bg-paper px-2.5 py-1 text-[11.5px] font-semibold text-ink2 hover:border-brand-violet hover:text-brand-violet"
@@ -204,7 +295,127 @@ export function ProgramsTable({
           busy={busy === mode.program.id}
         />
       )}
+      {detail && <ProgramStructureDialog program={detail} onClose={() => setDetail(null)} />}
     </>
+  );
+}
+
+// ─── Structure ────────────────────────────────────────────────────────────
+//
+// What a pathway is actually made of. Two lists, because the registry has two
+// kinds of component and flattening them loses the thing that matters: a
+// composite pathway REFERENCES other pathways rather than copying their
+// courses (CAT-007), and courses grouped under a specialisation stay grouped
+// (CAT-008).
+
+function ProgramStructureDialog({ program, onClose }: { program: Program; onClose: () => void }) {
+  // Group by the registry's specialisation_group. Courses with none fall into
+  // a single unlabelled bucket rendered first.
+  const grouped = useMemo(() => {
+    const buckets = new Map<string, typeof program.courses>();
+    for (const c of [...program.courses].sort((a, b) => a.rank - b.rank)) {
+      const key = c.specialisationGroup ?? "";
+      const list = buckets.get(key) ?? [];
+      list.push(c);
+      buckets.set(key, list);
+    }
+    return [...buckets.entries()].sort(([a], [b]) => (a === "" ? -1 : b === "" ? 1 : a.localeCompare(b)));
+  }, [program]);
+
+  return (
+    <DialogShell
+      title={program.name}
+      subtitle={
+        program.programmeType === "Composite Career Pathway"
+          ? "A composite pathway. It references other pathways rather than duplicating their courses, so a learner who has completed one of them carries that credit in."
+          : "The ordered components of this pathway, as published in the KDigital registry."
+      }
+      onClose={onClose}
+    >
+      <div className="space-y-5">
+        <div className="flex flex-wrap items-center gap-2">
+          {program.registryId && <RegistryId id={program.registryId} />}
+          {program.credentialType && <Pill tone="brand">{program.credentialType}</Pill>}
+          {program.catalogueVersion && <Pill>catalogue {program.catalogueVersion}</Pill>}
+          {program.catalogueStatus && (
+            <Pill tone={program.catalogueStatus === "Published" ? "good" : "warn"}>
+              {program.catalogueStatus}
+            </Pill>
+          )}
+        </div>
+
+        {program.referencedProgrammes.length > 0 && (
+          <section>
+            <h3 className="mono-cap mb-2 text-[10px] font-semibold tracking-[.12em] text-mute">
+              Referenced pathways ({program.referencedProgrammes.length})
+            </h3>
+            <div className="flex flex-col gap-1.5">
+              {[...program.referencedProgrammes].sort((a, b) => a.rank - b.rank).map((r) => (
+                <div
+                  key={r.id}
+                  className="flex items-center gap-3 rounded-[10px] border border-brand-violet/25 bg-grad-soft p-2.5"
+                >
+                  <span className="flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-md bg-brand-violet/15 font-mono text-[11px] font-bold text-brand-violet">
+                    {r.rank + 1}
+                  </span>
+                  <div className="min-w-0 flex-1">
+                    <div className="truncate text-[13px] font-semibold">{r.name}</div>
+                    <div className="mt-0.5 flex items-center gap-2">
+                      <RegistryId id={r.registryId} />
+                      {r.role && <span className="text-[11px] text-mute">{r.role}</span>}
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </section>
+        )}
+
+        <section>
+          <h3 className="mono-cap mb-2 text-[10px] font-semibold tracking-[.12em] text-mute">
+            {program.referencedProgrammes.length > 0 ? "Its own courses" : "Courses"} ({program.courseCount})
+          </h3>
+          {program.courses.length === 0 ? (
+            <p className="rounded-[10px] border border-rule bg-warm/30 p-3 text-[12.5px] text-mute">
+              No courses attached yet.
+            </p>
+          ) : (
+            <div className="space-y-3">
+              {grouped.map(([group, courses]) => (
+                <div key={group || "_"}>
+                  {group && (
+                    <div className="mono-cap mb-1.5 text-[9.5px] font-semibold tracking-[.1em] text-brand-violet">
+                      {group}
+                    </div>
+                  )}
+                  <div className="flex flex-col gap-1.5">
+                    {courses.map((c) => (
+                      <div key={c.id} className="flex items-center gap-3 rounded-[10px] border border-rule bg-paper p-2.5">
+                        <span className="flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-md bg-warm2 font-mono text-[11px] font-bold text-mute">
+                          {c.rank + 1}
+                        </span>
+                        <div className="min-w-0 flex-1">
+                          <div className="truncate text-[13px] font-semibold">{c.name}</div>
+                          <div className="mt-0.5 flex flex-wrap items-center gap-2">
+                            <RegistryId id={c.registryId} />
+                            {c.role && <span className="text-[11px] text-mute">{c.role}</span>}
+                          </div>
+                        </div>
+                        {c.required === false && <Pill tone="warn">optional</Pill>}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </section>
+
+        <div className="flex justify-end pt-1">
+          <button onClick={onClose} className="btn">Close</button>
+        </div>
+      </div>
+    </DialogShell>
   );
 }
 
@@ -244,38 +455,9 @@ function Row({ hdr = false, dimmed = false, children }: { hdr?: boolean; dimmed?
           : "py-3.5",
         dimmed && !hdr && "bg-warm/40",
       )}
-      style={{ gridTemplateColumns: "1.8fr 1.2fr 110px 100px 80px 80px 100px 200px" }}
+      style={{ gridTemplateColumns: "2.2fr 1.2fr 100px 100px 130px 80px 100px 260px" }}
     >
       {children}
-    </div>
-  );
-}
-
-function DialogShell({
-  title, subtitle, onClose, children,
-}: {
-  title: string; subtitle?: string; onClose: () => void; children: React.ReactNode;
-}) {
-  return (
-    <div
-      className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/40 p-6 backdrop-blur-sm"
-      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
-    >
-      <div
-        className="my-12 w-full max-w-[640px] rounded-2xl border border-rule bg-paper p-7 shadow-card"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="mb-6 flex items-start justify-between gap-4">
-          <div>
-            <h2 className="font-serif text-[26px] font-normal leading-tight tracking-[-.01em]">{title}</h2>
-            {subtitle && <p className="mt-1 text-[13px] leading-[1.5] text-mute">{subtitle}</p>}
-          </div>
-          <button onClick={onClose} className="text-mute hover:text-ink" aria-label="Close">
-            <Icon name="plus" size={18} strokeWidth={2} className="rotate-45" />
-          </button>
-        </div>
-        {children}
-      </div>
     </div>
   );
 }

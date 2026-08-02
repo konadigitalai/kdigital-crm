@@ -5,7 +5,8 @@ import { useRouter } from "next/navigation";
 import { Icon } from "@/components/ui/Icon";
 import { cn } from "@/lib/cn";
 import { createBatch, updateBatch } from "@/lib/api";
-import type { Batch, BatchSlot, BatchStatus, Course, WeekDay } from "@/lib/types";
+import type { Batch, BatchSlot, BatchStatus, Course, DeliveryMode, WeekDay } from "@/lib/types";
+import { DELIVERY_MODES, deliveryModeLabel } from "@/lib/deliveryMode";
 import { FilterBar } from "@/components/filter/FilterBar";
 import { useFilter } from "@/components/filter/useFilter";
 import type { FilterField } from "@/components/filter/types";
@@ -297,6 +298,10 @@ interface BatchFormValues {
   daysOfWeek: WeekDay[];
   startTime: string | null;
   endTime: string | null;
+  deliveryMode: DeliveryMode | null;
+  timezone: string;
+  location: string | null;
+  curriculumVersion: string | null;
 }
 
 function BatchFormDialog({
@@ -323,6 +328,14 @@ function BatchFormDialog({
   const [daysOfWeek,   setDaysOfWeek]   = useState<WeekDay[]>(initial?.daysOfWeek ?? []);
   const [startTime,    setStartTime]    = useState(initial?.startTime ?? "");
   const [endTime,      setEndTime]      = useState(initial?.endTime ?? "");
+  // Where this run actually happens. join_url being set used to be the only
+  // proxy for "is this online", and hybrid batches have one too.
+  const [deliveryMode, setDeliveryMode] = useState<DeliveryMode | "">(initial?.deliveryMode ?? "");
+  const [timezone,     setTimezone]     = useState(initial?.timezone ?? "Asia/Kolkata");
+  const [location,     setLocation]     = useState(initial?.location ?? "");
+  // CAT-015 — the dated syllabus this run teaches. Free text against the
+  // course's pattern, because a batch can legitimately run an older version.
+  const [curriculumVersion, setCurriculumVersion] = useState(initial?.curriculumVersion ?? "");
   const [formError,    setFormError]    = useState<string | null>(null);
 
   function toggleDay(d: WeekDay) {
@@ -368,6 +381,10 @@ function BatchFormDialog({
             daysOfWeek,
             startTime: startTime || null,
             endTime:   endTime   || null,
+            deliveryMode: (deliveryMode || null) as DeliveryMode | null,
+            timezone,
+            location: location.trim() || null,
+            curriculumVersion: curriculumVersion.trim() || null,
           });
         }}
         onClick={(e) => e.stopPropagation()}
@@ -457,6 +474,54 @@ function BatchFormDialog({
               <input className={inputCls} type="time" value={endTime} onChange={(e) => setEndTime(e.target.value)} />
             </Field>
           </div>
+
+          <div className="grid grid-cols-3 gap-4">
+            <Field label="Delivery mode">
+              <select
+                className={inputCls}
+                value={deliveryMode}
+                onChange={(e) => setDeliveryMode(e.target.value as DeliveryMode | "")}
+              >
+                <option value="">— not set —</option>
+                {DELIVERY_MODES.map((m) => (
+                  <option key={m} value={m}>{deliveryModeLabel(m)}</option>
+                ))}
+              </select>
+            </Field>
+            <Field label="Time zone">
+              <select className={inputCls} value={timezone} onChange={(e) => setTimezone(e.target.value)}>
+                <option value="Asia/Kolkata">IST · India</option>
+                <option value="America/New_York">ET · US Eastern</option>
+                <option value="America/Los_Angeles">PT · US Pacific</option>
+                <option value="Europe/London">UK · London</option>
+                <option value="Asia/Dubai">GST · Dubai</option>
+              </select>
+            </Field>
+            <Field label="Location">
+              <input
+                className={inputCls}
+                value={location}
+                onChange={(e) => setLocation(e.target.value)}
+                placeholder="Campus or room"
+                /* Only meaningful when someone has to physically be there. */
+                disabled={deliveryMode === "online"}
+              />
+            </Field>
+          </div>
+
+          <Field label="Curriculum version">
+            <input
+              className={inputCls}
+              value={curriculumVersion}
+              onChange={(e) => setCurriculumVersion(e.target.value)}
+              placeholder={initial?.curriculumVersionPattern?.replace("VYYYY.N", "V2026.1") ?? "e.g. K-C008-PYTH-V2026.1"}
+            />
+            <span className="mt-1 block text-[11px] leading-[1.45] text-hint">
+              The dated syllabus this run teaches. The course ID is permanent; the version is not,
+              so two batches of the same course a term apart can legitimately differ — and the
+              certificate has to name which.
+            </span>
+          </Field>
 
           <div className="grid grid-cols-2 gap-4">
             <Field label="Start date">

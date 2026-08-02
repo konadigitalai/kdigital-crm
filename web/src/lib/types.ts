@@ -1,5 +1,11 @@
 // Types shared between API responses and components. Kept narrow.
 
+// The one delivery-mode vocabulary — online | classroom | hybrid. Re-exported
+// from lib/deliveryMode.ts, which also carries the label + normalise helpers
+// and the history of how this schema briefly had two spellings for it.
+import type { DeliveryMode } from "./deliveryMode";
+export type { DeliveryMode };
+
 // ── Twilio messaging (SMS + WhatsApp) ────────────────────────────────────
 
 // 'voice' (Exotel) and 'email' (Gmail) reuse the same conversation/message
@@ -263,6 +269,13 @@ export interface Lead {
   deliveryMode?: string | null;     // online | classroom | hybrid
   leadStatus?: string | null;       // see LEAD_STATUS_KEYS server-side
   timeZone?: string | null;          // IANA tz
+  // Qualification (post-0088) — the three questions asked on the first call.
+  // Previously typed into `description` by hand, which made them unsearchable.
+  workingStatus?: WorkingStatus | null;
+  yearOfPassout?: number | null;
+  currentCompany?: string | null;
+  currency?: string | null;
+  sourceCampaignId?: string | null;
   feePaid?: string | null;
   feeDue?: string | null;
   dueDate?: string | null;
@@ -716,7 +729,27 @@ export interface ProgramCourseRef {
   id: string;
   name: string;
   rank: number;
+  /** "K-C008-PYTH" — null for a course created in the CRM, not the registry. */
+  registryId?: string | null;
+  /** 'Core Course' | 'Foundation Course' | 'Product Specialisation' | … */
+  role?: string | null;
+  /** CAT-008 — how ServiceNow product areas stay grouped. */
+  specialisationGroup?: string | null;
+  required?: boolean;
 }
+
+/** A programme this programme references rather than duplicating (CAT-007).
+ *  Only composite pathways have any — today that is Forward Deployed AI
+ *  Engineer, which references seven other pathways. */
+export interface ProgramProgrammeRef {
+  id: string;
+  name: string;
+  rank: number;
+  registryId: string | null;
+  role: string | null;
+}
+
+export type CatalogueStatus = "Draft" | "Published" | "Retired";
 
 export interface Program {
   id: string;
@@ -733,6 +766,20 @@ export interface Program {
   batchCount: number;
   enrolmentCount: number;
   courses: ProgramCourseRef[];
+  // ─── KDigital registry (post-0087) ──────────────────────────────────────
+  // registryId is the permanent identifier credit and certificates resolve
+  // by. Null on a programme created in the CRM rather than imported.
+  registryId: string | null;
+  shortCode: string | null;
+  fullName: string | null;
+  programmeType: string | null;          // 'Career Pathway' | 'Composite Career Pathway'
+  family: string | null;
+  credentialType: string | null;
+  deliveryModes: string[] | null;        // registry spelling — see lib/deliveryMode.ts
+  catalogueVersion: string | null;
+  catalogueStatus: CatalogueStatus | null;
+  referencedProgrammeCount: number;
+  referencedProgrammes: ProgramProgrammeRef[];
 }
 
 export interface ProgramInput {
@@ -755,6 +802,16 @@ export interface Course {
   batchCount: number;
   runningBatchCount: number;
   activeLearners: number;
+  // ─── KDigital registry (post-0087) ──────────────────────────────────────
+  registryId: string | null;             // "K-C008-PYTH" — permanent (CAT-001)
+  shortCode: string | null;
+  family: string | null;
+  credentialType: string | null;
+  curriculumVersionPattern: string | null;  // CAT-015
+  reusableAcrossProgrammes: boolean;        // CAT-002 — may credit carry across?
+  independentlyDeliverable: boolean;
+  catalogueVersion: string | null;
+  catalogueStatus: CatalogueStatus | null;
 }
 
 export interface CourseInput {
@@ -792,6 +849,17 @@ export interface Batch {
   coTrainerId:   string | null;
   coTrainerName: string | null;
   daysOfWeek:    WeekDay[] | null;
+  // Where and when this run actually happens (post-0088). join_url being set
+  // used to be the only proxy for "is this online", and hybrid batches have
+  // one too.
+  deliveryMode:  DeliveryMode | null;
+  timezone:      string;
+  location:      string | null;
+  // CAT-015 — the dated syllabus this run teaches, e.g. "K-C008-PYTH-V2026.1".
+  // The pattern comes from the course and is shown alongside so the pair
+  // reads together.
+  curriculumVersion:        string | null;
+  curriculumVersionPattern: string | null;
   startTime:     string | null;   // "HH:MM"
   endTime:       string | null;
 }
@@ -982,6 +1050,35 @@ export interface LearnerSummary {
   skillLevel: string | null;
   placementStatus: string | null;
   mentorPartyId: string | null;
+  // ─── Progress, risk and the staffing gate (post-0088) ──────────────────
+  /** Cached roll-up. The truth is resource_progress; this is cached because
+   *  the board renders it for every row. */
+  progressPercent: number | null;
+  riskLevel: RiskLevel | null;
+  riskReason: string | null;
+  /** Both staffing columns live on the LEARNER, not on their candidate
+   *  record, so withdrawing consent removes them from staffing however many
+   *  applications are open. */
+  staffingEligibilityStatus: StaffingEligibility;
+  staffingConsentStatus: StaffingConsent;
+  staffingConsentAt: string | null;
+  /** >0 when this learner already has a candidate profile. */
+  hasCandidateProfile: number;
+}
+
+export type RiskLevel = "low" | "medium" | "high";
+export type StaffingEligibility = "not_assessed" | "qualified" | "not_qualified";
+export type StaffingConsent = "not_asked" | "granted" | "withheld" | "withdrawn";
+
+/** Body of PATCH /learners/:partyId/profile. */
+export interface LearnerProfileInput {
+  progressPercent?: number | null;
+  riskLevel?: RiskLevel | null;
+  riskReason?: string | null;
+  staffingEligibilityStatus?: StaffingEligibility;
+  /** Setting 'granted' stamps staffingConsentAt server-side; anything else
+   *  clears it, so a withdrawn consent cannot leave a stale timestamp. */
+  staffingConsentStatus?: StaffingConsent;
 }
 
 // KPI aggregates for the Learners board stat cards.
@@ -1058,6 +1155,15 @@ export interface LearnerRecord {
     paymentProofUrl: string | null;
     paymentProofs:   string[];
     feeNotes:        string | null;
+    // ─── learner_profile (post-0088) ────────────────────────────────────
+    // Progress and risk, plus the two columns the staffing module gates on.
+    progressPercent: number | null;
+    riskLevel: RiskLevel | null;
+    riskReason: string | null;
+    staffingEligibilityStatus: StaffingEligibility;
+    staffingConsentStatus: StaffingConsent;
+    staffingConsentAt: string | null;
+    hasCandidateProfile: number;
   };
   enrolments: ProgramEnrolment[];
   courseAssignments: CourseAssignment[];
@@ -1187,6 +1293,10 @@ export interface BatchInput {
   daysOfWeek?:   WeekDay[] | null;
   startTime?:    string | null;
   endTime?:      string | null;
+  deliveryMode?: DeliveryMode | null;
+  timezone?:     string | null;
+  location?:     string | null;
+  curriculumVersion?: string | null;
 }
 
 export interface CatalogResponse {
@@ -1439,7 +1549,13 @@ export interface CreateLeadInput {
   nextFollowupAt?: string;   // YYYY-MM-DD
   visitingDate?: string;     // YYYY-MM-DD
   deliveryMode?: "online" | "classroom" | "hybrid";
+  workingStatus?: WorkingStatus | null;
+  yearOfPassout?: number | null;
+  currentCompany?: string | null;
 }
+
+/** What the lead is doing now. Drives segmentation and the fee conversation. */
+export type WorkingStatus = "student" | "working" | "not_working";
 
 export interface SummaryResponse {
   overall: {
@@ -1486,6 +1602,10 @@ export interface RecordResponse {
       deliveryMode?: "online" | "classroom" | "hybrid" | null;
       // Workflow tag — see LEAD_STATUS_KEYS on the server.
       leadStatus?: string | null;
+      // Qualification (post-0088) — established on the first call.
+      workingStatus?: WorkingStatus | null;
+      yearOfPassout?: number | null;
+      currentCompany?: string | null;
       signals?: { text: string; weight: string; kind: "pos" | "neg" | "neu" }[];
       nbaCard?: { confidence: number; headline: string; why: string } | null;
       agentsOnLead?: { name: string; status: string; glyph: AvatarGrad; icon: "spark" | "star" | "clock"; badge: { label: string; kind: "done" | "run" } }[];
@@ -1791,4 +1911,429 @@ export interface LmsNote {
   body: string;
   createdAt: string;
   updatedAt: string;
+}
+
+// ═══ Workforce (post-0089) ═══════════════════════════════════════════════
+//
+// A worker is a satellite of a party, so name / email / phone / city come
+// from the party and are edited there — never duplicated onto the worker.
+
+export type WorkerType     = "employee" | "contractor" | "trainer" | "intern" | "vendor";
+export type EmploymentType = "full_time" | "part_time" | "contract" | "intern";
+export type WorkerStatus   = "active" | "on_leave" | "notice_period" | "exited";
+
+export interface WorkerDirectReport {
+  partyId: string;
+  name: string;
+  designation: string | null;
+  status: WorkerStatus;
+}
+
+export interface Worker {
+  partyId: string;
+  employeeNumber: string;
+  name: string;
+  email: string | null;
+  phone: string | null;
+  city: string | null;
+  workerType: WorkerType;
+  designation: string | null;
+  department: string | null;
+  employmentType: EmploymentType | null;
+  dateOfJoining: string | null;
+  dateOfExit: string | null;
+  reportingToPartyId: string | null;
+  reportingToName: string | null;
+  status: WorkerStatus;
+  timezone: string;
+  workingHoursPerWeek: string | null;
+  shift: string | null;
+  skills: string[];
+  trainerCapable: boolean;
+  deploymentAvailable: boolean;
+  createdAt: string;
+  updatedAt: string;
+  directReportCount: number;
+  /** Batches they are on the hook for right now, not batches that exist. */
+  activeBatchCount: number;
+  leadCount: number;
+  directReports?: WorkerDirectReport[];
+}
+
+export interface WorkerInput {
+  /** Employ someone the CRM already knows. Preferred over `name`. */
+  partyId?: string;
+  /** Create the person and employ them in one step. */
+  name?: string;
+  email?: string | null;
+  phone?: string | null;
+  city?: string | null;
+  workerType?: WorkerType;
+  designation?: string | null;
+  department?: string | null;
+  employmentType?: EmploymentType | null;
+  dateOfJoining?: string | null;
+  dateOfExit?: string | null;
+  reportingToPartyId?: string | null;
+  status?: WorkerStatus;
+  timezone?: string;
+  workingHoursPerWeek?: string | number | null;
+  shift?: string | null;
+  skills?: string[];
+  trainerCapable?: boolean;
+  deploymentAvailable?: boolean;
+}
+
+// ═══ B2B (post-0090) ═════════════════════════════════════════════════════
+
+export type AccountType   = "client" | "prospect" | "partner" | "vendor" | "hiring_partner";
+export type AccountStatus = "active" | "inactive" | "churned";
+export type AccountRating = "hot" | "warm" | "cold";
+export type ContactRole   = "decision_maker" | "evaluator" | "sponsor" | "influencer" | "user" | "gatekeeper";
+export type ContactMethod = "email" | "phone" | "whatsapp" | "sms" | "none";
+
+export interface Account {
+  partyId: string;
+  accountNumber: string;
+  name: string;
+  email: string | null;
+  phone: string | null;
+  city: string | null;
+  accountType: AccountType;
+  industry: string | null;
+  ownership: string | null;
+  website: string | null;
+  annualRevenue: string | null;
+  currency: string;
+  ownerPartyId: string | null;
+  ownerName: string | null;
+  rating: AccountRating | null;
+  status: AccountStatus;
+  description: string | null;
+  createdAt: string;
+  updatedAt: string;
+  /** Currently-affiliated people only — an ex-employee should not inflate it. */
+  contactCount: number;
+  openOpportunityCount: number;
+  openPipelineValue: string;
+  openRequisitionCount: number;
+  contacts?: Contact[];
+  opportunities?: OpportunitySummary[];
+  requisitions?: RequisitionSummary[];
+}
+
+export interface AccountInput {
+  name?: string;
+  email?: string | null;
+  phone?: string | null;
+  city?: string | null;
+  accountType?: AccountType;
+  industry?: string | null;
+  ownership?: string | null;
+  website?: string | null;
+  annualRevenue?: string | number | null;
+  currency?: string;
+  ownerPartyId?: string | null;
+  rating?: AccountRating | null;
+  status?: AccountStatus;
+  description?: string | null;
+}
+
+export interface Contact {
+  partyId: string;
+  name: string;
+  email: string | null;
+  phone: string | null;
+  city: string | null;
+  jobTitle: string | null;
+  department: string | null;
+  contactRole: ContactRole | null;
+  preferredContactMethod: ContactMethod | null;
+  preferredLanguage: string | null;
+  state: string | null;
+  country: string;
+  description: string | null;
+  createdAt: string;
+  updatedAt: string;
+  /** From the current primary party_affiliation, not a column on `contact`. */
+  accountPartyId: string | null;
+  accountName: string | null;
+  roleAtOrg: string | null;
+  affiliationValidFrom: string | null;
+}
+
+export interface ContactInput {
+  name?: string;
+  email?: string | null;
+  phone?: string | null;
+  city?: string | null;
+  /** Setting this end-dates the previous employer rather than editing it. */
+  accountPartyId?: string | null;
+  jobTitle?: string | null;
+  department?: string | null;
+  contactRole?: ContactRole | null;
+  preferredContactMethod?: ContactMethod | null;
+  preferredLanguage?: string | null;
+  state?: string | null;
+  country?: string | null;
+  description?: string | null;
+}
+
+export type OpportunityStage =
+  | "qualification" | "discovery" | "proposal" | "negotiation" | "closed_won" | "closed_lost";
+export type OpportunityType =
+  | "corporate_training" | "hiring" | "consulting" | "renewal" | "upsell";
+
+export interface OpportunitySummary {
+  workItemId: string;
+  number: string;
+  name: string | null;
+  stage: OpportunityStage;
+  value: string | null;
+  currency: string;
+  expectedCloseDate: string | null;
+  probability: number | null;
+}
+
+export interface Opportunity extends OpportunitySummary {
+  stageUpdatedAt: string;
+  /** Computed server-side so every caller shows the same number. */
+  daysInStage: number;
+  opportunityType: OpportunityType | null;
+  expectedRevenue: string | null;
+  actualCloseDate: string | null;
+  nextAction: string | null;
+  description: string | null;
+  accountPartyId: string | null;
+  accountName: string | null;
+  primaryContactPartyId: string | null;
+  primaryContactName: string | null;
+  ownerPartyId: string | null;
+  ownerName: string | null;
+  state: string;
+  priority: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface OpportunityStageTotal {
+  stage: OpportunityStage;
+  count: number;
+  value: string;
+}
+
+export interface OpportunityInput {
+  name?: string;
+  accountPartyId?: string;
+  primaryContactPartyId?: string | null;
+  opportunityType?: OpportunityType | null;
+  stage?: OpportunityStage;
+  value?: string | number | null;
+  currency?: string;
+  probability?: number | null;
+  expectedRevenue?: string | number | null;
+  expectedCloseDate?: string | null;
+  /** Omit when moving to a closed stage — the API defaults it to today. */
+  actualCloseDate?: string | null;
+  nextAction?: string | null;
+  description?: string | null;
+  ownerPartyId?: string | null;
+  priority?: number;
+}
+
+// ═══ Staffing (post-0091) ════════════════════════════════════════════════
+
+export type RequisitionStatus = "draft" | "open" | "on_hold" | "filled" | "cancelled" | "closed";
+export type WorkMode          = "onsite" | "remote" | "hybrid";
+export type ApprovalStatus    = "not_required" | "pending" | "approved" | "rejected";
+export type CandidateStatus   = "draft" | "ready" | "active" | "placed" | "withdrawn";
+export type ApplicationStage  =
+  | "applied" | "screening" | "shortlisted" | "interviewing" | "offered" | "hired" | "rejected" | "withdrawn";
+export type InterviewStatus = "not_scheduled" | "scheduled" | "completed" | "no_show" | "cancelled";
+export type OfferStatus     = "none" | "extended" | "accepted" | "declined" | "withdrawn";
+
+export interface RequisitionSummary {
+  id: string;
+  number: string;
+  jobTitle: string;
+  openings: number;
+  status: RequisitionStatus;
+  targetCloseDate: string | null;
+  applicationCount: number;
+}
+
+export interface Requisition extends RequisitionSummary {
+  accountPartyId: string;
+  accountName: string;
+  designation: string | null;
+  department: string | null;
+  jobDescription: string | null;
+  keyResponsibilities: string | null;
+  employmentType: EmploymentType | null;
+  workLocation: string | null;
+  workMode: WorkMode | null;
+  /** Months, not years — "18 months minimum" has to be expressible. */
+  minimumExperienceMonths: number | null;
+  maximumExperienceMonths: number | null;
+  requiredQualification: string | null;
+  requiredSkills: string[];
+  preferredSkills: string[];
+  languages: string[];
+  salaryMin: string | null;
+  salaryMax: string | null;
+  currency: string;
+  budgetApproved: boolean;
+  hiringManagerPartyId: string | null;
+  hiringManagerName: string | null;
+  recruiterPartyId: string | null;
+  recruiterName: string | null;
+  approvalStatus: ApprovalStatus;
+  approvedAt: string | null;
+  priority: number;
+  hiredCount: number;
+  /** openings − hired. What the board actually needs. */
+  openSeats: number;
+  createdAt: string;
+  updatedAt: string;
+  applications?: ApplicationSummary[];
+}
+
+export interface RequisitionInput {
+  accountPartyId?: string;
+  jobTitle?: string;
+  designation?: string | null;
+  department?: string | null;
+  jobDescription?: string | null;
+  keyResponsibilities?: string | null;
+  openings?: number;
+  employmentType?: EmploymentType | null;
+  workLocation?: string | null;
+  workMode?: WorkMode | null;
+  minimumExperienceMonths?: number | null;
+  maximumExperienceMonths?: number | null;
+  requiredQualification?: string | null;
+  requiredSkills?: string[];
+  preferredSkills?: string[];
+  languages?: string[];
+  salaryMin?: string | number | null;
+  salaryMax?: string | number | null;
+  currency?: string;
+  budgetApproved?: boolean;
+  hiringManagerPartyId?: string | null;
+  recruiterPartyId?: string | null;
+  /** Setting 'approved' stamps the signed-in user as approver server-side. */
+  approvalStatus?: ApprovalStatus;
+  priority?: number;
+  targetCloseDate?: string | null;
+  status?: RequisitionStatus;
+}
+
+export interface CandidateApplicationRef {
+  id: string;
+  number: string;
+  stage: ApplicationStage;
+  appliedAt: string;
+  screeningScore: number | null;
+  requisitionId: string;
+  requisitionNumber: string;
+  jobTitle: string;
+  accountName: string;
+}
+
+export interface Candidate {
+  partyId: string;
+  number: string;
+  name: string;
+  email: string | null;
+  phone: string | null;
+  city: string | null;
+  totalExperienceMonths: number | null;
+  currentEmployer: string | null;
+  currentDesignation: string | null;
+  currentCtc: string | null;
+  expectedCtc: string | null;
+  currency: string;
+  noticePeriodDays: number | null;
+  skills: string[];
+  highestQualification: string | null;
+  workHistorySummary: string | null;
+  certifications: string[];
+  resumeAttachmentId: string | null;
+  portfolioUrl: string | null;
+  profileStatus: CandidateStatus;
+  createdAt: string;
+  updatedAt: string;
+  // ─── The gate, read from learner_profile — never stored on `candidate` ──
+  eligibilityStatus: "not_assessed" | "qualified" | "not_qualified" | null;
+  consentStatus: "not_asked" | "granted" | "withheld" | "withdrawn" | null;
+  progressPercent: number | null;
+  placementStatus: string | null;
+  /** qualified AND consented AND profile ready/active. The only thing the UI
+   *  should test before offering someone to a requisition. */
+  eligible: boolean;
+  openApplicationCount: number;
+  applications?: CandidateApplicationRef[];
+}
+
+export interface CandidateInput {
+  /** Required on create — a candidate is an existing learner, never a new person. */
+  partyId?: string;
+  totalExperienceMonths?: number | null;
+  currentEmployer?: string | null;
+  currentDesignation?: string | null;
+  currentCtc?: string | number | null;
+  expectedCtc?: string | number | null;
+  currency?: string;
+  noticePeriodDays?: number | null;
+  skills?: string[];
+  highestQualification?: string | null;
+  workHistorySummary?: string | null;
+  certifications?: string[];
+  resumeAttachmentId?: string | null;
+  portfolioUrl?: string | null;
+  profileStatus?: CandidateStatus;
+}
+
+export interface ApplicationSummary {
+  id: string;
+  number: string;
+  stage: ApplicationStage;
+  screeningScore: number | null;
+  appliedAt: string;
+  candidatePartyId: string;
+  candidateName: string;
+  candidateNumber: string;
+}
+
+export interface JobApplication extends ApplicationSummary {
+  requisitionId: string;
+  requisitionNumber: string;
+  jobTitle: string;
+  accountName: string;
+  stageUpdatedAt: string;
+  screeningFactors: Record<string, unknown>;
+  assignedRecruiterPartyId: string | null;
+  assignedRecruiterName: string | null;
+  interviewStatus: InterviewStatus | null;
+  offerStatus: OfferStatus | null;
+  rejectionReason: string | null;
+  /** An automated screen must be signed off before it can reject anyone. */
+  humanReviewStatus: ApprovalStatus;
+  status: "open" | "closed";
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ApplicationInput {
+  candidatePartyId?: string;
+  requisitionId?: string;
+  stage?: ApplicationStage;
+  screeningScore?: number | null;
+  screeningFactors?: Record<string, unknown>;
+  assignedRecruiterPartyId?: string | null;
+  interviewStatus?: InterviewStatus | null;
+  offerStatus?: OfferStatus | null;
+  /** Mandatory when stage is 'rejected' — enforced in SQL as well. */
+  rejectionReason?: string | null;
+  humanReviewStatus?: ApprovalStatus;
 }
