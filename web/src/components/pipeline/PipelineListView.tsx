@@ -38,7 +38,7 @@ export type ColumnKey =
   | "nextFollowupAt" | "demoAttendedAt"
   | "visitedDate" | "visitingDate"
   | "feePaid" | "feeDue" | "dueDate" | "registeredDate"
-  | "description" | "createdAt";
+  | "description" | "createdAt" | "landingPageUrl";
 
 type CellType =
   | "text"
@@ -83,6 +83,10 @@ const COLUMNS: ColumnDef[] = [
   { key: "program",         label: "Program",          width: "200px", type: "select-program" },
   { key: "advisor",         label: "Advisor",          width: "160px", type: "select-advisor" },
   { key: "source",          label: "Source",           width: "150px", type: "select-source" },
+  // Read-only: a fact about the visit, captured by the website form. `source`
+  // says which channel; this says which page, which is what tells you whether
+  // a landing page is earning its keep.
+  { key: "landingPageUrl",  label: "Submitted from",   width: "260px", type: "readonly-derived" },
   { key: "value",           label: "Price quoted (₹)", width: "130px", type: "money" },
   { key: "score",           label: "Score",            width: "130px", type: "readonly-score" },
   { key: "deliveryMode",    label: "Mode",             width: "120px", type: "select-delivery" },
@@ -248,6 +252,9 @@ function csvCell(v: unknown): string {
 function exportValueFor(l: Lead, col: ColumnKey): string {
   switch (col) {
     case "name":            return l.name ?? "";
+    // The full URL, not the prettified host+path the grid shows. An export
+    // is for analysis and the query string carries the UTMs.
+    case "landingPageUrl":  return l.landingPageUrl ?? "";
     case "rating":          return ratingStyles[l.rating]?.label ?? l.rating ?? "";
     case "leadStatus":      return l.leadStatus ? (LEAD_STATUS_LABEL[l.leadStatus] ?? l.leadStatus) : "";
     case "number":          return l.number ?? "";
@@ -318,6 +325,9 @@ interface SortState { key: ColumnKey; dir: SortDir }
 function sortValueFor(l: Lead, col: ColumnKey): number | string | null {
   switch (col) {
     case "name":            return (l.name ?? "").toLowerCase();
+    // Sort on host+path so pages group together. Sorting the raw URL would
+    // order by "https://" first, which every value shares.
+    case "landingPageUrl":  return l.landingPageUrl ? prettyUrl(l.landingPageUrl).toLowerCase() : "";
     case "rating":          return LEAD_RATINGS.indexOf(l.rating);
     case "leadStatus":      return l.leadStatus ? (LEAD_STATUS_LABEL[l.leadStatus] ?? l.leadStatus).toLowerCase() : "";
     case "number":          return l.number ?? "";
@@ -385,6 +395,19 @@ function fmtINRFull(v: string | number | null | undefined): string {
   const n = typeof v === "number" ? v : Number(v);
   if (Number.isNaN(n)) return String(v);
   return `₹${n.toLocaleString("en-IN")}`;
+}
+
+// Landing-page URLs are long and mostly boilerplate. Show host + path, which
+// is what identifies the page, and let the title and the link carry the query
+// string where the UTMs live.
+function prettyUrl(raw: string): string {
+  try {
+    const u = new URL(raw);
+    const path = u.pathname === "/" ? "" : u.pathname.replace(/\/$/, "");
+    return u.host.replace(/^www\./, "") + path + (u.search ? " ?…" : "");
+  } catch {
+    return raw;
+  }
 }
 
 function fmtDate(s: string | null | undefined): string {
@@ -1500,6 +1523,20 @@ function CellIdle({
     case "family":         return lead.family
       ? <span className="truncate" title={lead.family}>{lead.family}</span>
       : <span className="mono-cap text-[10px] tracking-[.08em] text-hint" title="No programme assigned">TBD</span>;
+    case "landingPageUrl": return lead.landingPageUrl
+      ? (
+        <a
+          href={lead.landingPageUrl}
+          target="_blank"
+          rel="noreferrer noopener"
+          title={lead.landingPageUrl}
+          onClick={(e) => e.stopPropagation()}
+          className="truncate text-brand-violet hover:underline"
+        >
+          {prettyUrl(lead.landingPageUrl)}
+        </a>
+      )
+      : <span className="text-hint">—</span>;
     case "program":        return <span className="truncate" title={lead.program ?? undefined}>{lead.program || "—"}</span>;
     case "advisor":        return <AdvisorChip name={lead.advisorName} />;
     case "source":         return <span className="truncate">{lead.sourceLabel || lead.source || "—"}</span>;

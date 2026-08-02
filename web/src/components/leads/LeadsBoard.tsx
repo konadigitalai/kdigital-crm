@@ -138,6 +138,10 @@ function buildFields(leads: Lead[]): FilterField[] {
     { key: "program",          label: "Program",          type: "enum",   options: programs.map((p) => ({ value: p, label: p })), get: (l: Lead) => l.program },
     { key: "advisor",          label: "Advisor",          type: "enum",   options: advisors.map((a) => ({ value: a, label: a })), get: (l: Lead) => l.advisorName },
     { key: "source",           label: "Source",           type: "enum",   options: sources.map((s) => ({ value: s, label: s })),  get: (l: Lead) => l.sourceLabel ?? l.source },
+    // Text, not enum: every landing page is a distinct value and the list
+    // grows with the marketing site. "contains /data-engineering" is the
+    // useful query here, not picking from a dropdown of every URL ever seen.
+    { key: "landingPageUrl",   label: "Submitted from",   type: "text",   get: (l: Lead) => l.landingPageUrl },
     { key: "rating",           label: "Rating",           type: "enum",   options: RATING_OPTIONS,  get: (l: Lead) => l.rating },
     { key: "leadStatus",       label: "Lead status",      type: "enum",   options: LEAD_STATUS_OPTIONS, get: (l: Lead) => l.leadStatus },
     { key: "stage",            label: "Stage",            type: "enum",   options: STAGE_OPTIONS,   get: (l: Lead) => l.stage },
