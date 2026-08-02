@@ -2,13 +2,14 @@
   KDigital — website lead-intake form
   ===================================
 
-  Two fields: name and phone. Everything else is captured in the background.
+  Two visible fields: full name and mobile (with a country-code select).
+  Everything else is captured in the background.
 
   Drop-in replacement for the Freshworks overlay. Reuses the outer
   ids/classes you already have (freshworks_form_overlay,
   freshworks_form_overlay_content, freshworks_form_overlay_close_button) so
   any site-level CSS you wrote for the wrapper keeps working. Every new style
-  is scoped under `.kd-intake` so it can't leak into the rest of the page.
+  is scoped under `.kd-*` so it cannot leak into the rest of the page.
 
   Before you deploy:
     1. Replace API_BASE below with your API's public URL, e.g.
@@ -30,50 +31,75 @@
                      included, so ?utm_source=... rides along with the lead.
                      Shows on the lead record as "Submitted from".
 
-    phoneCountryCode Sent so the CRM can store a real E.164 number. This
-                     matters more than it looks: without a country code the
-                     server can only guess, and a number it cannot resolve
-                     gets NO contact point at all — meaning WhatsApp and SMS
-                     can never reach that lead, and their replies will not
-                     match back to them. A visitor who types their own
-                     +country code overrides it.
+    phoneCountryCode Taken from the select. This matters more than it looks:
+                     mobile is the ONLY way to reach these leads, and a
+                     number the server cannot resolve to E.164 gets no
+                     contact point at all — WhatsApp and SMS could never
+                     reach them, and their replies would not match back.
+                     The select removes the guesswork entirely.
+
+  To change the country list, edit COUNTRIES below. Order is the order
+  shown; the first entry is the default.
 -->
 <div id="freshworks_form_overlay" class="freshworks_form_overlay">
-  <div class="freshworks_form_overlay_content">
-    <div class="freshworks_form_overlay_header">
-      <h4 class="h4title">Get Skilled</h4>
+  <div class="freshworks_form_overlay_content kd-card">
+
+    <div class="kd-head">
+      <h4 class="kd-title h4title">Get Skilled</h4>
       <button
         onclick="document.getElementById('freshworks_form_overlay').style.display='none';"
-        class="freshworks_form_overlay_close_button"
+        class="freshworks_form_overlay_close_button kd-close"
         type="button"
         aria-label="Close">
-        &times;
+        <svg viewBox="0 0 20 20" width="15" height="15" aria-hidden="true" focusable="false">
+          <path d="M5 5l10 10M15 5L5 15" fill="none" stroke="currentColor"
+                stroke-width="2.2" stroke-linecap="round" />
+        </svg>
       </button>
     </div>
 
-    <form class="kd-intake" novalidate>
-      <label class="kd-field">
-        <span class="kd-label">Full name</span>
+    <form class="kd-form" novalidate>
+      <div class="kd-field">
+        <label class="kd-label" for="kd-name">
+          Full name <span class="kd-req" aria-hidden="true">*</span>
+        </label>
         <input
+          id="kd-name"
           class="kd-input"
           type="text"
           name="name"
           required
           autocomplete="name"
           placeholder="Your full name" />
-      </label>
+      </div>
 
-      <label class="kd-field">
-        <span class="kd-label">Phone</span>
-        <input
-          class="kd-input"
-          type="tel"
-          name="phone"
-          required
-          autocomplete="tel"
-          inputmode="tel"
-          placeholder="98765 43210" />
-      </label>
+      <div class="kd-field">
+        <label class="kd-label" for="kd-phone">
+          Mobile <span class="kd-req" aria-hidden="true">*</span>
+        </label>
+        <div class="kd-phone-row">
+          <!-- Options are injected from COUNTRIES so the list lives in one
+               place. A native <select> on purpose: it is keyboard- and
+               screen-reader-correct for free, and on a phone it opens the
+               OS picker, which beats any custom dropdown on a form whose
+               whole job is to be filled in thirty seconds. -->
+          <select
+            id="kd-cc"
+            class="kd-input kd-cc"
+            name="phoneCountryCode"
+            aria-label="Country dialling code"></select>
+
+          <input
+            id="kd-phone"
+            class="kd-input kd-phone"
+            type="tel"
+            name="phone"
+            required
+            autocomplete="tel"
+            inputmode="tel"
+            placeholder="89775 32244" />
+        </div>
+      </div>
 
       <!-- Honeypot: invisible to humans, catches bots that fill every field.
            Keep it. It is most of what stops this endpoint being scraped. -->
@@ -82,7 +108,7 @@
         <input type="text" name="company" tabindex="-1" autocomplete="off" />
       </label>
 
-      <button class="kd-submit" type="submit">Get started</button>
+      <button class="kd-submit" type="submit">Submit</button>
 
       <div class="kd-status" role="status" aria-live="polite"></div>
     </form>
@@ -90,57 +116,131 @@
 </div>
 
 <style>
-  /* Scoped under `.kd-intake` so it cannot clash with the outer overlay
-     styles you already have. */
-  .kd-intake {
+  /* All scoped under .kd-* so nothing here can reach the rest of the page. */
+  .kd-card {
+    box-sizing: border-box;
+    background: #fff;
+    border-radius: 18px;
+    padding: 0;
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    color: #16161d;
+  }
+
+  .kd-head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 16px;
+    padding: 26px 30px 20px;
+    border-bottom: 1px solid #ececf1;
+  }
+  .kd-title {
+    margin: 0;
+    font-size: 30px;
+    font-weight: 700;
+    line-height: 1.15;
+    letter-spacing: -.02em;
+    color: #16161d;
+  }
+  .kd-close {
+    flex: 0 0 auto;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 36px;
+    height: 36px;
+    padding: 0;
+    color: #55555f;
+    background: #ededf1;
+    border: 0;
+    border-radius: 50%;
+    cursor: pointer;
+    transition: background .12s, color .12s;
+  }
+  .kd-close:hover { background: #e0e0e6; color: #16161d; }
+  .kd-close:focus-visible { outline: 2px solid #8b2fc9; outline-offset: 2px; }
+
+  .kd-form {
     display: flex;
     flex-direction: column;
-    gap: 14px;
-    padding: 4px 0 0;
-    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    gap: 20px;
+    padding: 24px 30px 30px;
   }
-  .kd-field { display: flex; flex-direction: column; gap: 6px; }
+  .kd-field { display: flex; flex-direction: column; gap: 9px; }
+
   .kd-label {
-    font-size: 12px;
+    font-size: 15px;
     font-weight: 600;
-    color: #4a4a55;
-    letter-spacing: .02em;
+    color: #16161d;
   }
+  .kd-req { color: #e5177b; font-weight: 700; }
+
   .kd-input {
-    width: 100%;
     box-sizing: border-box;
-    padding: 10px 12px;
-    font-size: 14px;
-    color: #1f1f28;
+    width: 100%;
+    height: 52px;
+    padding: 0 16px;
+    font-family: inherit;
+    font-size: 15px;
+    color: #16161d;
     background: #fff;
-    border: 1px solid #d7d9e0;
-    border-radius: 8px;
+    border: 1px solid #dcdce4;
+    border-radius: 10px;
     outline: none;
     transition: border-color .12s, box-shadow .12s;
   }
+  .kd-input::placeholder { color: #a6a6b2; }
   .kd-input:focus {
-    border-color: #4b6cf7;
-    box-shadow: 0 0 0 3px rgba(75, 108, 247, .18);
+    border-color: #8b2fc9;
+    box-shadow: 0 0 0 3px rgba(139, 47, 201, .16);
   }
-  .kd-input:disabled { background: #f5f5f8; cursor: not-allowed; }
+  .kd-input:disabled { background: #f6f6f9; cursor: not-allowed; }
+  .kd-input.is-invalid { border-color: #d93025; }
+
+  /* Country code + number sit on one line. The select is fixed-width so the
+     number field keeps the room; it shrinks on very narrow phones rather
+     than pushing the input off-screen. */
+  .kd-phone-row { display: flex; gap: 12px; }
+  .kd-cc {
+    flex: 0 0 132px;
+    width: 132px;
+    padding-right: 34px;
+    font-weight: 600;
+    cursor: pointer;
+    /* Native arrow is hidden and redrawn so the control matches the text
+       inputs across browsers. */
+    -webkit-appearance: none;
+    -moz-appearance: none;
+    appearance: none;
+    background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1 1.5 6 6.5l5-5' fill='none' stroke='%2355555f' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 14px center;
+  }
+  .kd-phone { flex: 1 1 auto; min-width: 0; }
+  @media (max-width: 380px) {
+    .kd-cc { flex-basis: 112px; width: 112px; }
+  }
 
   .kd-submit {
+    height: 54px;
     margin-top: 4px;
-    padding: 12px 16px;
-    font-size: 14.5px;
-    font-weight: 600;
+    padding: 0 24px;
+    font-family: inherit;
+    font-size: 16.5px;
+    font-weight: 700;
     color: #fff;
-    background: linear-gradient(135deg, #4b6cf7, #6b47dc);
+    background: linear-gradient(90deg, #7d1fc0 0%, #d2117f 100%);
     border: 0;
-    border-radius: 8px;
+    border-radius: 999px;
     cursor: pointer;
-    transition: opacity .12s, transform .05s;
+    transition: filter .12s, transform .05s, opacity .12s;
   }
-  .kd-submit:hover  { opacity: .95; }
+  .kd-submit:hover { filter: brightness(1.06); }
   .kd-submit:active { transform: translateY(1px); }
-  .kd-submit:disabled { opacity: .55; cursor: not-allowed; }
+  .kd-submit:disabled { opacity: .6; cursor: not-allowed; filter: none; }
+  .kd-submit:focus-visible { outline: 2px solid #16161d; outline-offset: 3px; }
 
-  .kd-status { min-height: 20px; font-size: 13px; line-height: 1.35; }
+  .kd-status { min-height: 20px; font-size: 13.5px; line-height: 1.4; }
   .kd-status.is-ok    { color: #1e874b; }
   .kd-status.is-error { color: #d93025; }
 
@@ -160,15 +260,43 @@
   var INTAKE_KEY   = "REPLACE_WITH_INTAKE_API_KEY";
   var SOURCE       = "web";
   var SOURCE_LABEL = "Website form";
-  var COUNTRY_CODE = "91";   // default dialling code, digits only, no "+"
+
+  // First entry is the default. `digits` is the expected national-number
+  // length, used only for a gentle length check — leave it 0 to skip.
+  var COUNTRIES = [
+    { iso: "IN", code: "91",  digits: 10 },
+    { iso: "US", code: "1",   digits: 10 },
+    { iso: "GB", code: "44",  digits: 10 },
+    { iso: "AU", code: "61",  digits: 9  },
+    { iso: "SG", code: "65",  digits: 8  },
+    { iso: "AE", code: "971", digits: 9  },
+    { iso: "QA", code: "974", digits: 8  },
+    { iso: "SA", code: "966", digits: 9  },
+    { iso: "DE", code: "49",  digits: 0  },
+    { iso: "FR", code: "33",  digits: 9  }
+  ];
   // ────────────────────────────────────────────────────────────────────────
 
   var root = document.getElementById("freshworks_form_overlay");
   if (!root) return;
-  var form   = root.querySelector(".kd-intake");
+  var form   = root.querySelector(".kd-form");
   var status = root.querySelector(".kd-status");
   var submit = root.querySelector(".kd-submit");
-  if (!form || !status || !submit) return;
+  var ccSel  = root.querySelector("#kd-cc");
+  var phoneI = root.querySelector("#kd-phone");
+  var nameI  = root.querySelector("#kd-name");
+  if (!form || !status || !submit || !ccSel || !phoneI || !nameI) return;
+
+  // Build the country list from COUNTRIES so it is defined in one place.
+  for (var i = 0; i < COUNTRIES.length; i++) {
+    var c = COUNTRIES[i];
+    var opt = document.createElement("option");
+    opt.value = c.code;
+    opt.textContent = c.iso + " +" + c.code;
+    opt.setAttribute("data-digits", String(c.digits));
+    ccSel.appendChild(opt);
+  }
+  ccSel.selectedIndex = 0;
 
   function setStatus(msg, kind) {
     status.textContent = msg || "";
@@ -176,6 +304,17 @@
     if (kind === "ok")    status.classList.add("is-ok");
     if (kind === "error") status.classList.add("is-error");
   }
+
+  function markInvalid(el) {
+    el.classList.add("is-invalid");
+    el.focus();
+  }
+  function clearInvalid() {
+    nameI.classList.remove("is-invalid");
+    phoneI.classList.remove("is-invalid");
+  }
+  nameI.addEventListener("input", clearInvalid);
+  phoneI.addEventListener("input", clearInvalid);
 
   // The page this form was submitted from.
   //
@@ -203,29 +342,49 @@
   form.addEventListener("submit", function (e) {
     e.preventDefault();
     setStatus("");
+    clearInvalid();
 
-    var data  = new FormData(form);
-    var name  = String(data.get("name")  || "").trim();
-    var phone = String(data.get("phone") || "").trim();
+    var name  = String(nameI.value  || "").trim();
+    var phone = String(phoneI.value || "").trim();
+    var cc    = String(ccSel.value  || "");
 
-    if (!name)  { setStatus("Please enter your name.", "error"); return; }
-    if (!phone) { setStatus("Please enter your phone number.", "error"); return; }
-
-    // Loose on purpose. The server normalises properly, and a strict
-    // client-side pattern rejects valid international numbers that people
-    // type in shapes you did not anticipate. This only catches obvious slips.
-    if (phone.replace(/\D/g, "").length < 7) {
-      setStatus("That phone number looks too short.", "error");
+    if (!name) {
+      setStatus("Please enter your full name.", "error");
+      markInvalid(nameI);
       return;
+    }
+
+    var digits = phone.replace(/\D/g, "");
+    if (!digits) {
+      setStatus("Please enter your mobile number.", "error");
+      markInvalid(phoneI);
+      return;
+    }
+
+    // A visitor who types their own +country code overrides the select, so
+    // an international number is never mangled into +91… In that case the
+    // expected-length check does not apply, because the code they typed is
+    // not necessarily the one selected.
+    var typedOwnCode = phone.charAt(0) === "+";
+    if (!typedOwnCode) {
+      var expected = Number(ccSel.options[ccSel.selectedIndex].getAttribute("data-digits") || 0);
+      if (expected && digits.length !== expected) {
+        setStatus("Please enter a valid " + expected + "-digit mobile number.", "error");
+        markInvalid(phoneI);
+        return;
+      }
+      if (!expected && digits.length < 7) {
+        setStatus("That mobile number looks too short.", "error");
+        markInvalid(phoneI);
+        return;
+      }
     }
 
     var payload = {
       name: name,
       phone: phone,
-      // Skipped when the visitor typed their own +country code, so an
-      // international number is not mangled into +91…
-      phoneCountryCode: phone.charAt(0) === "+" ? "" : COUNTRY_CODE,
-      company: String(data.get("company") || ""),  // honeypot echo
+      phoneCountryCode: typedOwnCode ? "" : cc,
+      company: String((form.querySelector('[name="company"]') || {}).value || ""), // honeypot echo
       source: SOURCE,
       sourceLabel: SOURCE_LABEL,
       landingPageUrl: currentPageUrl(),
@@ -247,12 +406,12 @@
         if (out.r.ok && out.j && out.j.ok) {
           setStatus("Thanks! One of our advisors will call you shortly.", "ok");
           form.reset();
+          ccSel.selectedIndex = 0;
           // Auto-hide after a couple of seconds. Comment out to leave the
           // overlay open with the confirmation showing.
           setTimeout(function () { root.style.display = "none"; }, 2500);
         } else {
-          var err = (out.j && out.j.error) || "Something went wrong. Please try again.";
-          setStatus(err, "error");
+          setStatus((out.j && out.j.error) || "Something went wrong. Please try again.", "error");
         }
       })
       .catch(function () {
@@ -260,7 +419,7 @@
       })
       .finally(function () {
         submit.disabled = false;
-        submit.textContent = "Get started";
+        submit.textContent = "Submit";
       });
   });
 })();
