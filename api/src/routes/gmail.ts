@@ -16,7 +16,7 @@
 
 import { Router } from "express";
 import { sql } from "drizzle-orm";
-import { withTenant } from "../db/app.js";
+import { withTenant, tenantExec } from "../db/app.js";
 import { requirePermission } from "../middleware/require.js";
 import { resolveActorPartyId } from "../lib/party/resolve.js";
 import {
@@ -75,7 +75,12 @@ gmailRouter.post("/send", requirePermission("messaging.send"), async (req, res, 
       throw e;
     }
 
-    const result = await withTenant(req.tenantId!, async (db) => {
+    // Three-phase: resolve + build the MIME, COMMIT, then talk to Google with
+    // no transaction held, then record. Token refresh and the Gmail send are
+    // both network calls; leaving them inside the transaction pinned a pool
+    // connection for the round trip. See the contract on withTenant in
+    // db/app.ts.
+    const prep = await withTenant(req.tenantId!, async (db) => {
       const account = await resolveSenderAccount(db, req.userId!);
       if (!account) return { kind: "no-account" as const };
 
@@ -131,9 +136,40 @@ gmailRouter.post("/send", requirePermission("messaging.send"), async (req, res, 
         references,
       });
 
-      const token = await accessTokenFor(db, account);
-      const send  = await sendRaw(token, mime, threadId);
+      return {
+        kind: "ready" as const,
+        account, target, threadId, inReplyTo, subject, attachments, actorPartyId, mime,
+      };
+    });
 
+    switch (prep.kind) {
+      case "no-account":
+        return res.status(503).json({
+          code: "no_gmail_account",
+          error: "No Gmail account is connected. Connect yours in Settings, or ask an admin to connect the shared mailbox.",
+        });
+      case "no-email":
+        return res.status(400).json({ code: "no_email", error: `No email address on file for ${to}` });
+      case "bad-parent":
+        return res.status(400).json({ error: "inReplyToMessageId does not refer to an email message" });
+      case "missing":
+        return res.status(400).json({ error: `Unknown media asset: ${prep.assetId}` });
+      case "too-big":
+        return res.status(400).json({
+          error: `Attachments total ${Math.round(prep.bytes / 1024 / 1024)} MB — Gmail's limit is 25 MB.`,
+        });
+    }
+
+    const { account, target, threadId, inReplyTo, subject, attachments, actorPartyId } = prep;
+
+    // Network phase — no transaction open. accessTokenFor may itself write a
+    // refreshed token back, so it gets the per-statement handle rather than a
+    // held transaction.
+    const token = await accessTokenFor(tenantExec(req.tenantId!), account);
+    const send  = await sendRaw(token, prep.mime, threadId);
+
+    // Bookkeeping phase — the mail has already left Google's side.
+    const result = await withTenant(req.tenantId!, async (db) => {
       const conv = await upsertConversation(
         db, target.partyId, "email", target.workItemId == null,
       );
@@ -182,26 +218,10 @@ gmailRouter.post("/send", requirePermission("messaging.send"), async (req, res, 
       };
     });
 
-    switch (result.kind) {
-      case "no-account":
-        return res.status(503).json({
-          code: "no_gmail_account",
-          error: "No Gmail account is connected. Connect yours in Settings, or ask an admin to connect the shared mailbox.",
-        });
-      case "no-email":
-        return res.status(400).json({ code: "no_email", error: `No email address on file for ${to}` });
-      case "bad-parent":
-        return res.status(400).json({ error: "inReplyToMessageId does not refer to an email message" });
-      case "missing":
-        return res.status(400).json({ error: `Unknown media asset: ${result.assetId}` });
-      case "too-big":
-        return res.status(400).json({
-          error: `Attachments total ${Math.round(result.bytes / 1024 / 1024)} MB — Gmail's limit is 25 MB.`,
-        });
-      default:
-        if (!result.ok) return res.status(502).json({ error: result.error ?? "Gmail send failed" });
-        return res.json(result);
-    }
+    // The validation branches are handled off `prep` above, before the send —
+    // by this point the only outcome left is whether Gmail accepted it.
+    if (!result.ok) return res.status(502).json({ error: result.error ?? "Gmail send failed" });
+    return res.json(result);
   } catch (e) { next(e); }
 });
 

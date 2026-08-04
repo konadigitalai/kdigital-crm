@@ -65,7 +65,9 @@ exotelRouter.post("/call", requirePermission("messaging.send"), async (req, res,
       throw e;
     }
 
-    const result = await withTenant(req.tenantId!, async (db) => {
+    // Three-phase: resolve + gate, COMMIT, place the call with no transaction
+    // held, then persist. See the contract on withTenant in db/app.ts.
+    const prep = await withTenant(req.tenantId!, async (db) => {
       // ── Resolve target (E.164 or LEAD-XXXX) ──────────────────────────
       const target = await resolveTargetParty(db, to);
       if (!target) return { kind: "unknown-target" as const };
@@ -93,15 +95,33 @@ exotelRouter.post("/call", requirePermission("messaging.send"), async (req, res,
         return { kind: "no-consent" as const, reason };
       }
 
-      // ── Fire the Exotel call ─────────────────────────────────────────
-      const send = await initiateCall({
-        agentPhone:    advisorPhone,
-        customerPhone: target.partyPhone,
-        customField:   target.workItemId ?? "",
-        record:        true,
-      }, cfg);
+      return {
+        kind: "ready" as const,
+        // Rebuild `target` with partyPhone narrowed — the guard above proved
+        // it non-null, but that narrowing doesn't survive the return.
+        target: { ...target, partyPhone: target.partyPhone },
+        actorPartyId, advisor, advisorPhone, usingFallback,
+      };
+    });
 
-      // ── Persist outbound tw_message + activity ───────────────────────
+    // Envelope every validation failure with a distinct code the FE can render.
+    if (prep.kind === "unknown-target")   return res.status(400).json({ error: `Unknown lead or invalid phone: ${to}`, code: "unknown_target" });
+    if (prep.kind === "no-phone")         return res.status(400).json({ error: `No phone number for ${to}`, code: "no_phone" });
+    if (prep.kind === "no-advisor-phone") return res.status(400).json({ error: "Your Advisor profile has no phone number. Set one under Settings → Advisors, or ask an admin to configure EXOTEL_FALLBACK_AGENT_NUMBER.", code: "no_advisor_phone" });
+    if (prep.kind === "no-consent")       return res.status(400).json({ error: `This lead has not opted in for calls (${prep.reason})`, code: "no_consent" });
+
+    const { target, actorPartyId, advisor, advisorPhone, usingFallback } = prep;
+
+    // ── Fire the Exotel call — no transaction open ─────────────────────
+    const send = await initiateCall({
+      agentPhone:    advisorPhone,
+      customerPhone: target.partyPhone,
+      customField:   target.workItemId ?? "",
+      record:        true,
+    }, cfg);
+
+    // ── Persist outbound tw_message + activity ─────────────────────────
+    const result = await withTenant(req.tenantId!, async (db) => {
       const conv = await upsertConversation(db, target.partyId, "voice", target.workItemId == null);
       const messageId = await recordOutbound(db, conv.id, {
         channel: "voice",
@@ -136,25 +156,19 @@ exotelRouter.post("/call", requirePermission("messaging.send"), async (req, res,
         mediaMimes: [],
       });
 
-      return {
-        kind:            "ok" as const,
-        conversationId:  conv.id,
-        messageId,
-        callSid:         send.callSid,
-        exotelOk:        send.ok,
-        errorCode:       send.errorCode,
-        errorMessage:    send.errorMessage,
-        usingFallback,
-      };
+      return { conversationId: conv.id, messageId };
     });
 
-    // Envelope every failure with a distinct code the FE can render.
-    if (result.kind === "unknown-target")   return res.status(400).json({ error: `Unknown lead or invalid phone: ${to}`, code: "unknown_target" });
-    if (result.kind === "no-phone")         return res.status(400).json({ error: `No phone number for ${to}`, code: "no_phone" });
-    if (result.kind === "no-advisor-phone") return res.status(400).json({ error: "Your Advisor profile has no phone number. Set one under Settings → Advisors, or ask an admin to configure EXOTEL_FALLBACK_AGENT_NUMBER.", code: "no_advisor_phone" });
-    if (result.kind === "no-consent")       return res.status(400).json({ error: `This lead has not opted in for calls (${result.reason})`, code: "no_consent" });
-
-    return res.json(result);
+    return res.json({
+      kind:            "ok" as const,
+      conversationId:  result.conversationId,
+      messageId:       result.messageId,
+      callSid:         send.callSid,
+      exotelOk:        send.ok,
+      errorCode:       send.errorCode,
+      errorMessage:    send.errorMessage,
+      usingFallback,
+    });
   } catch (err) { next(err); }
 });
 

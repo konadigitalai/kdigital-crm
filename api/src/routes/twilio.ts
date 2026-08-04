@@ -96,7 +96,13 @@ twilioRouter.post("/send", requirePermission("messaging.send"), async (req, res,
       throw e;
     }
 
-    const result = await withTenant(req.tenantId!, async (db) => {
+    // Phase 1 — resolve and validate everything the send needs, then COMMIT.
+    //
+    // The Twilio call used to sit in the middle of this transaction, which
+    // pinned a pool connection for the whole round-trip to Twilio (~300-800ms).
+    // Under any real send volume that starved the pool and slowed the entire
+    // API. See the contract on withTenant in db/app.ts.
+    const prep = await withTenant(req.tenantId!, async (db) => {
       const { partyId, partyPhone, workItemId } = await resolveToParty(db, to);
       if (!partyPhone) return { kind: "no-phone" as const };
 
@@ -105,6 +111,10 @@ twilioRouter.post("/send", requirePermission("messaging.send"), async (req, res,
       // Template mode: verify the template exists AND is approved for
       // WhatsApp. Rejecting non-approved templates here is a hard gate —
       // Twilio itself would reject the send otherwise with a cryptic 63016.
+      // Keep the friendly name from this same lookup — the post-send activity
+      // row needs it, and re-querying it after the send would mean a second
+      // round trip for a value we already have in hand.
+      let templateFriendlyName: string | null = null;
       if (contentSid) {
         const tplRow = await db.execute(sql`
           SELECT friendly_name AS "friendlyName", approval_status AS "approvalStatus"
@@ -119,6 +129,7 @@ twilioRouter.post("/send", requirePermission("messaging.send"), async (req, res,
         if (tpl.approvalStatus !== "approved") {
           return { kind: "bad-template" as const, reason: `Template ${tpl.friendlyName} is ${tpl.approvalStatus}, not approved.` };
         }
+        templateFriendlyName = tpl.friendlyName;
       }
 
       // Resolve media assets: must be owned by the actor OR in the library.
@@ -157,68 +168,76 @@ twilioRouter.post("/send", requirePermission("messaging.send"), async (req, res,
         }
       }
 
-      const send = contentSid
-        ? await sendMessage(channel, partyPhone, "", cfg, { contentSid, contentVariables })
-        : await sendMessage(channel, partyPhone, text, cfg, { mediaUrls });
+      return {
+        kind: "ready" as const,
+        partyId, partyPhone, workItemId, actorPartyId,
+        mediaUrls, mediaMimes, templateFriendlyName,
+      };
+    });
 
-      const conv = await upsertConversation(db, partyId, channel, workItemId == null);
+    if (prep.kind === "no-phone") {
+      return res.status(400).json({ error: `No phone number for ${to}` });
+    }
+    if (prep.kind === "bad-media") {
+      return res.status(400).json({ error: prep.reason });
+    }
+    if (prep.kind === "bad-template") {
+      return res.status(400).json({ error: prep.reason });
+    }
+
+    // Phase 2 — the network call, with NO transaction open.
+    const send = contentSid
+      ? await sendMessage(channel, prep.partyPhone, "", cfg, { contentSid, contentVariables })
+      : await sendMessage(channel, prep.partyPhone, text, cfg, { mediaUrls: prep.mediaUrls });
+
+    // Phase 3 — record the outcome. Twilio has already accepted (or rejected)
+    // the message by now, so this transaction is bookkeeping only; there is
+    // nothing left that a rollback could undo on Twilio's side.
+    //
+    // For template sends we don't have the resolved body server-side — we only
+    // shipped Twilio the SID + variables — so the timeline gets a
+    // "[template: <friendlyName>]" marker instead.
+    const activityBody = contentSid
+      ? `[template: ${prep.templateFriendlyName ?? contentSid}]`
+      : text;
+
+    const result = await withTenant(req.tenantId!, async (db) => {
+      const conv = await upsertConversation(db, prep.partyId, channel, prep.workItemId == null);
       const msgId = await recordOutbound(db, conv.id, {
         channel,
         fromE164: channel === "whatsapp" ? cfg.waFrom : cfg.smsFrom,
-        toE164:   partyPhone,
+        toE164:   prep.partyPhone,
         body:     text,
-        senderUserPartyId: actorPartyId,
+        senderUserPartyId: prep.actorPartyId,
         mediaAssetIds,
         contentSid: contentSid || null,
         contentVariables: contentVariables ?? null,
         send,
       });
-      // For template sends we don't have the resolved body server-side —
-      // we only shipped Twilio the SID + variables. Best we can do is a
-      // "template: <friendlyName>" marker in the timeline. Look up the
-      // friendly name we already validated above.
-      let activityBody = text;
-      if (contentSid) {
-        const tR = await db.execute(sql`
-          SELECT friendly_name AS "friendlyName" FROM wa_template WHERE content_sid = ${contentSid} LIMIT 1
-        `);
-        const fn = (tR.rows[0] as { friendlyName?: string } | undefined)?.friendlyName ?? contentSid;
-        activityBody = `[template: ${fn}]`;
-      }
       await insertActivityForMessage(db, {
-        workItemId,
-        partyId,
+        workItemId: prep.workItemId,
+        partyId:    prep.partyId,
         actorType:    "user",
-        actorPartyId,
+        actorPartyId: prep.actorPartyId,
         actorName:    req.user?.name ?? "You",
         direction:    "outbound",
         channel,
         body:         activityBody,
         mediaCount:   mediaAssetIds.length,
-        mediaMimes,
+        mediaMimes:   prep.mediaMimes,
       });
-
-      return {
-        kind: "ok" as const,
-        conversationId: conv.id,
-        messageId: msgId,
-        ok: send.ok,
-        providerMessageId: send.providerMessageId,
-        errorCode: send.errorCode,
-        errorMessage: send.errorMessage,
-      };
+      return { conversationId: conv.id, messageId: msgId };
     });
 
-    if (result.kind === "no-phone") {
-      return res.status(400).json({ error: `No phone number for ${to}` });
-    }
-    if (result.kind === "bad-media") {
-      return res.status(400).json({ error: result.reason });
-    }
-    if (result.kind === "bad-template") {
-      return res.status(400).json({ error: result.reason });
-    }
-    return res.json(result);
+    return res.json({
+      kind: "ok" as const,
+      conversationId: result.conversationId,
+      messageId: result.messageId,
+      ok: send.ok,
+      providerMessageId: send.providerMessageId,
+      errorCode: send.errorCode,
+      errorMessage: send.errorMessage,
+    });
   } catch (err) { next(err); }
 });
 
@@ -571,7 +590,9 @@ twilioRouter.post("/conversations/:id/messages", requirePermission("messaging.se
       throw e;
     }
 
-    const result = await withTenant(req.tenantId!, async (db) => {
+    // Same three-phase shape as POST /twilio/send above: resolve + validate,
+    // COMMIT, call Twilio with no transaction held, then record the outcome.
+    const prep = await withTenant(req.tenantId!, async (db) => {
       const cR = await db.execute(sql`
         SELECT
           c.id,
@@ -629,8 +650,21 @@ twilioRouter.post("/conversations/:id/messages", requirePermission("messaging.se
         }
       }
 
-      const send = await sendMessage(conv.channel, conv.partyPhone, text, cfg, mediaUrls);
-      const msgId = await recordOutbound(db, conv.id, {
+      return { kind: "ready" as const, conv, actorPartyId, mediaUrls, mediaMimes };
+    });
+
+    if (prep.kind === "not-found") return res.status(404).json({ error: "Conversation not found" });
+    if (prep.kind === "no-phone")  return res.status(400).json({ error: "This contact has no phone number" });
+    if (prep.kind === "bad-media") return res.status(400).json({ error: prep.reason });
+
+    const { conv, actorPartyId } = prep;
+
+    // Network call — no transaction open.
+    const send = await sendMessage(conv.channel, conv.partyPhone, text, cfg, prep.mediaUrls);
+
+    // Bookkeeping only; the message has already left.
+    const msgId = await withTenant(req.tenantId!, async (db) => {
+      const id = await recordOutbound(db, conv.id, {
         channel: conv.channel,
         fromE164: conv.channel === "whatsapp" ? cfg.waFrom : cfg.smsFrom,
         toE164:   conv.partyPhone,
@@ -649,23 +683,19 @@ twilioRouter.post("/conversations/:id/messages", requirePermission("messaging.se
         channel:    conv.channel,
         body:       text,
         mediaCount: mediaAssetIds.length,
-        mediaMimes,
+        mediaMimes: prep.mediaMimes,
       });
-
-      return {
-        kind: "ok" as const,
-        messageId: msgId,
-        ok: send.ok,
-        providerMessageId: send.providerMessageId,
-        errorCode: send.errorCode,
-        errorMessage: send.errorMessage,
-      };
+      return id;
     });
 
-    if (result.kind === "not-found") return res.status(404).json({ error: "Conversation not found" });
-    if (result.kind === "no-phone")  return res.status(400).json({ error: "This contact has no phone number" });
-    if (result.kind === "bad-media") return res.status(400).json({ error: result.reason });
-    return res.json(result);
+    return res.json({
+      kind: "ok" as const,
+      messageId: msgId,
+      ok: send.ok,
+      providerMessageId: send.providerMessageId,
+      errorCode: send.errorCode,
+      errorMessage: send.errorMessage,
+    });
   } catch (err) { next(err); }
 });
 
