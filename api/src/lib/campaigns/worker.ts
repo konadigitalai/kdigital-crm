@@ -77,11 +77,12 @@ async function tick(): Promise<void> {
 
   for (const tenantId of tenantIds) {
     try {
-      await withTenant(tenantId, async (db) => {
-        await promoteScheduled(db);
-        await dispatchRunning(db);
-        await completeIfDrained(db);
-      });
+      // promoteScheduled and completeIfDrained are pure SQL and stay in short
+      // transactions. dispatchRunning manages its own, because it has to send
+      // to Twilio between them — see the contract on withTenant in db/app.ts.
+      await withTenant(tenantId, (db) => promoteScheduled(db));
+      await dispatchRunning(tenantId);
+      await withTenant(tenantId, (db) => completeIfDrained(db));
     } catch (err) {
       console.error(`[campaign-worker] tenant ${tenantId}:`, (err as Error).message);
     }
@@ -146,7 +147,7 @@ interface CampaignRow {
   dailyCap:                 number | null;
 }
 
-async function dispatchRunning(db: Exec): Promise<void> {
+async function dispatchRunning(tenantId: string): Promise<void> {
   // Grab config once — same rules apply to every campaign.
   let cfg;
   try { cfg = readTwilioConfig(); }
@@ -155,43 +156,56 @@ async function dispatchRunning(db: Exec): Promise<void> {
     throw e;
   }
 
-  const cR = await db.execute(sql`
-    SELECT
-      id, channel,
-      content_sid AS "contentSid",
-      content_variable_bindings AS "contentVariableBindings",
-      send_rate_per_sec         AS "sendRatePerSec",
-      daily_cap                 AS "dailyCap"
-    FROM campaign
-    WHERE status = 'running'
-  `);
-  const campaigns = cR.rows as CampaignRow[];
+  const campaigns = await withTenant(tenantId, async (db) => {
+    const cR = await db.execute(sql`
+      SELECT
+        id, channel,
+        content_sid AS "contentSid",
+        content_variable_bindings AS "contentVariableBindings",
+        send_rate_per_sec         AS "sendRatePerSec",
+        daily_cap                 AS "dailyCap"
+      FROM campaign
+      WHERE status = 'running'
+    `);
+    return cR.rows as unknown as CampaignRow[];
+  });
   if (campaigns.length === 0) return;
 
   for (const c of campaigns) {
     // Daily cap check first — cheap and a hard stop.
     if (c.dailyCap != null) {
-      const dc = await db.execute(sql`
-        SELECT COUNT(*)::int AS n
-        FROM campaign_recipient
-        WHERE campaign_id = ${c.id}
-          AND sent_at IS NOT NULL
-          AND sent_at::date = CURRENT_DATE
-      `);
-      const sentToday = Number((dc.rows[0] as { n: number })?.n ?? 0);
-      if (sentToday >= c.dailyCap) {
+      const capped = await withTenant(tenantId, async (db) => {
+        const dc = await db.execute(sql`
+          SELECT COUNT(*)::int AS n
+          FROM campaign_recipient
+          WHERE campaign_id = ${c.id}
+            AND sent_at IS NOT NULL
+            AND sent_at::date = CURRENT_DATE
+        `);
+        const sentToday = Number((dc.rows[0] as { n: number })?.n ?? 0);
+        if (sentToday < c.dailyCap!) return false;
         // Auto-pause; ops can resume manually or the caller can add a
         // per-day resume via a separate worker.
         await db.execute(sql`
           UPDATE campaign SET status = 'paused' WHERE id = ${c.id} AND status = 'running'
         `);
-        continue;
-      }
+        return true;
+      });
+      if (capped) continue;
     }
 
     // Batch size = rate × tick_seconds, capped
     const batchSize = Math.min(MAX_BATCH, Math.max(1, c.sendRatePerSec * (WORKER_TICK_MS / 1000)));
 
+    // ── Claim phase ──────────────────────────────────────────────────────
+    // One transaction: lock a batch, mark it 'sending', apply the consent and
+    // variable gates, and COMMIT. Nothing here talks to Twilio.
+    //
+    // FOR UPDATE SKIP LOCKED is what makes the claim safe with more than one
+    // worker running. Without it, two processes select the same pending rows
+    // and both send — duplicate WhatsApp/SMS to real people, billed twice.
+    // The status guard on the UPDATE below is the second half of that fence.
+    const claimed = await withTenant(tenantId, async (db) => {
     // Pick pending recipients + hydrate the context we need for variable
     // resolution + the send call itself, all in one query.
     //
@@ -220,6 +234,7 @@ async function dispatchRunning(db: Exec): Promise<void> {
         AND cr.status = 'pending'
       ORDER BY cr.queued_at ASC
       LIMIT ${batchSize}
+      FOR UPDATE OF cr SKIP LOCKED
     `);
     const rawRows = rR.rows as Array<{
       recipientId: string; partyId: string; workItemId: string | null;
@@ -235,7 +250,7 @@ async function dispatchRunning(db: Exec): Promise<void> {
       partyEmail: r.partyEmail, partyCity: r.partyCity,
       leadNumber: r.leadNumber, leadProgram: r.leadProgram, leadStage: r.leadStage,
     }));
-    if (recipients.length === 0) continue;
+    if (recipients.length === 0) return [];
 
     // Consent gate — one query for the whole batch.
     const channel: TwChannel = (c.channel === "whatsapp" ? "whatsapp" : "sms");
@@ -246,6 +261,8 @@ async function dispatchRunning(db: Exec): Promise<void> {
     );
     const allowedSet = new Set(consented.allowed);
     const blockedMap = new Map(consented.blocked.map((b) => [b.partyId, b.reason]));
+
+    const ready: Array<{ rec: typeof recipients[number]; resolved: Record<string, string> }> = [];
 
     for (const rec of recipients) {
       // Consent skip
@@ -301,67 +318,93 @@ async function dispatchRunning(db: Exec): Promise<void> {
       // Mark sending BEFORE the network call so a crash mid-flight doesn't
       // leave the recipient in `pending` forever (we'd double-send on
       // restart).
-      await db.execute(sql`
+      //
+      // The `AND status = 'pending'` guard is the other half of the
+      // SKIP LOCKED fence above: if a concurrent worker somehow got there
+      // first, this updates 0 rows and we drop the recipient from the batch
+      // rather than sending twice.
+      const claimRes = await db.execute(sql`
         UPDATE campaign_recipient
         SET status = 'sending', resolved_variables = ${JSON.stringify(resolved)}::jsonb
-        WHERE id = ${rec.recipientId}
+        WHERE id = ${rec.recipientId} AND status = 'pending'
+        RETURNING id
       `);
+      if (claimRes.rows.length === 0) continue;
 
-      const from = channel === "whatsapp" ? cfg.waFrom : cfg.smsFrom;
+      ready.push({ rec, resolved });
+    }
+
+    return ready;
+    });
+
+    if (claimed.length === 0) continue;
+
+    // ── Send phase ───────────────────────────────────────────────────────
+    // No transaction held. Every recipient here is already marked 'sending'
+    // and committed, so a crash from this point leaves rows in 'sending' —
+    // exactly what the boot sweep reaps.
+    const channel: TwChannel = (c.channel === "whatsapp" ? "whatsapp" : "sms");
+    const from = channel === "whatsapp" ? cfg.waFrom : cfg.smsFrom;
+
+    for (const { rec, resolved } of claimed) {
       let send;
       try {
-        send = await sendMessage(channel, rec.partyPhone, "", cfg, {
+        send = await sendMessage(channel, rec.partyPhone!, "", cfg, {
           contentSid: c.contentSid,
           contentVariables: resolved,
         });
       } catch (err) {
-        await db.execute(sql`
+        await withTenant(tenantId, (db) => db.execute(sql`
           UPDATE campaign_recipient
           SET status = 'failed', error_code = 'exception',
               error_message = ${(err as Error).message.slice(0, 300)}
           WHERE id = ${rec.recipientId}
-        `);
+        `));
         continue;
       }
 
-      // Persist tw_message + conversation + campaign_recipient status.
-      const conv = await upsertConversation(
-        // The upsert helper takes a Drizzle db; withTenant already gave us
-        // one — cast through unknown to satisfy the interface.
-        db as unknown as import("../twilio/inbox.js").DbExec,
-        rec.partyId, channel, rec.workItemId == null,
-      );
-      const msgId = await recordOutbound(
-        db as unknown as import("../twilio/inbox.js").DbExec,
-        conv.id,
-        {
-          channel,
-          fromE164: from,
-          toE164:   rec.partyPhone,
-          body:     "",
-          senderUserPartyId: null,
-          contentSid: c.contentSid,
-          contentVariables: resolved,
-          campaignId: c.id,
-          send,
-        },
-      );
+      // ── Record phase ───────────────────────────────────────────────────
+      // Per recipient, so one bad row can't roll back a batch of sends that
+      // already left. Twilio has the message either way.
+      await withTenant(tenantId, async (db) => {
+        const conv = await upsertConversation(
+          // The upsert helper takes a Drizzle db; withTenant already gave us
+          // one — cast through unknown to satisfy the interface.
+          db as unknown as import("../twilio/inbox.js").DbExec,
+          rec.partyId, channel, rec.workItemId == null,
+        );
+        const msgId = await recordOutbound(
+          db as unknown as import("../twilio/inbox.js").DbExec,
+          conv.id,
+          {
+            channel,
+            fromE164: from,
+            toE164:   rec.partyPhone!,
+            body:     "",
+            senderUserPartyId: null,
+            contentSid: c.contentSid,
+            contentVariables: resolved,
+            campaignId: c.id,
+            send,
+          },
+        );
 
-      if (send.ok) {
-        await db.execute(sql`
-          UPDATE campaign_recipient
-          SET status = 'sent', tw_message_id = ${msgId}, sent_at = NOW()
-          WHERE id = ${rec.recipientId}
-        `);
-      } else {
-        await db.execute(sql`
-          UPDATE campaign_recipient
-          SET status = 'failed', tw_message_id = ${msgId},
-              error_code    = ${send.errorCode ?? 'send_failed'},
-              error_message = ${send.errorMessage ?? 'unknown error'}
-          WHERE id = ${rec.recipientId}
-        `);
-      }
+        if (send.ok) {
+          await db.execute(sql`
+            UPDATE campaign_recipient
+            SET status = 'sent', tw_message_id = ${msgId}, sent_at = NOW()
+            WHERE id = ${rec.recipientId}
+          `);
+        } else {
+          await db.execute(sql`
+            UPDATE campaign_recipient
+            SET status = 'failed', tw_message_id = ${msgId},
+                error_code    = ${send.errorCode ?? 'send_failed'},
+                error_message = ${send.errorMessage ?? 'unknown error'}
+            WHERE id = ${rec.recipientId}
+          `);
+        }
+      });
     }
   }
 }
