@@ -119,10 +119,52 @@ async function failResponse(method: string, path: string, r: Response): Promise<
   throw new ApiError(r.status, body, `${method} ${path} → ${r.status}: ${serverMsg}`);
 }
 
-async function get<T>(path: string): Promise<T> {
+// How long a server-side fetch may take before we log it.
+//
+// This measures the round trip from the Next.js server to the Express API,
+// so it captures the network distance between the two deployments as well as
+// the API's own time. The API returns its internal split in a Server-Timing
+// header (see api/src/lib/timing.ts); logging both together is what lets you
+// separate "the API is slow" from "the API is far away".
+const SLOW_FETCH_MS = Number(process.env.SLOW_FETCH_MS ?? 800);
+
+async function timedFetch(method: string, path: string, init: RequestInit): Promise<Response> {
+  if (!isServer) return fetch(`${API_URL}${path}`, init);
+
+  const t0 = Date.now();
+  const r = await fetch(`${API_URL}${path}`, init);
+  const elapsed = Date.now() - t0;
+  if (elapsed >= SLOW_FETCH_MS) {
+    // The API's own accounting, when present, tells us how much of `elapsed`
+    // was actually spent working vs. in transit.
+    const serverTiming = r.headers.get("Server-Timing");
+    console.warn(
+      `[slow-fetch] ${method} ${path} ${r.status} ${elapsed}ms` +
+      (serverTiming ? ` | api: ${serverTiming}` : ""),
+    );
+  }
+  return r;
+}
+
+/**
+ * Cache policy for a GET.
+ *
+ * Default is no-store: this is a CRM, and a stale lead or conversation is
+ * worse than a slow one. `cacheFor` opts a specific call into Next's data
+ * cache, and is reserved for reference data that changes on a human timescale.
+ *
+ * Note this only affects SERVER-side fetches. Client-side calls go straight to
+ * the API through the /api rewrite and are never cached here.
+ */
+async function get<T>(
+  path: string,
+  cacheFor?: { seconds: number; tags: string[] },
+): Promise<T> {
   const headers = await authHeaders();
-  const r = await fetch(`${API_URL}${path}`, {
-    cache: "no-store",
+  const r = await timedFetch("GET", path, {
+    ...(cacheFor === undefined
+      ? { cache: "no-store" as const }
+      : { next: { revalidate: cacheFor.seconds, tags: cacheFor.tags } }),
     credentials: "include",
     headers,
   });
@@ -130,9 +172,38 @@ async function get<T>(path: string): Promise<T> {
   return r.json() as Promise<T>;
 }
 
+/**
+ * Catalog, programs and courses: edited by an admin every few weeks, read on
+ * nearly every page render. They were being refetched from the API every time.
+ *
+ * The TTL is a backstop, not the primary mechanism — the mutation helpers below
+ * bust REFERENCE_TAG on write, so an admin's own edit shows up immediately
+ * rather than up to a minute later. Without that, `router.refresh()` after a
+ * save would re-render Server Components straight into the cached response and
+ * look like the save had failed.
+ *
+ * Deliberately NOT cached: /cohorts (batch schedules and statuses are
+ * operational, not reference) and /groups (permission data — staleness there
+ * is a security-adjacent surprise, and it's cheap to fetch).
+ */
+const REFERENCE_TAG = "reference-data";
+const REFERENCE_CACHE = { seconds: 60, tags: [REFERENCE_TAG] };
+
+/** Drop the reference-data cache after a write. Best-effort: a failure here
+ *  means a viewer sees stale catalog data for up to 60s, which must never turn
+ *  an otherwise-successful save into a thrown error. */
+async function bustReferenceCache(): Promise<void> {
+  try {
+    const { revalidateReferenceData } = await import("./revalidate");
+    await revalidateReferenceData();
+  } catch (err) {
+    console.warn("[api] reference-data cache revalidation failed:", err);
+  }
+}
+
 async function post<T>(path: string, body: unknown, signal?: AbortSignal): Promise<T> {
   const headers = { "Content-Type": "application/json", ...(await authHeaders()) };
-  const r = await fetch(`${API_URL}${path}`, {
+  const r = await timedFetch("POST", path, {
     method: "POST",
     headers,
     cache: "no-store",
@@ -147,7 +218,7 @@ async function post<T>(path: string, body: unknown, signal?: AbortSignal): Promi
 // Generic "send method M with optional body" used for PATCH/PUT/DELETE.
 async function send<T>(method: string, path: string, body?: unknown): Promise<T> {
   const headers = { "Content-Type": "application/json", ...(await authHeaders()) };
-  const r = await fetch(`${API_URL}${path}`, {
+  const r = await timedFetch(method, path, {
     method,
     headers,
     cache: "no-store",
@@ -250,23 +321,25 @@ export async function getSummary(): Promise<SummaryResponse> {
 }
 
 export async function getCatalog(): Promise<CatalogResponse> {
-  return await get<CatalogResponse>("/catalog");
+  return await get<CatalogResponse>("/catalog", REFERENCE_CACHE);
 }
 
 // ── Programs CRUD ──────────────────────────────────────────────────────────
 
 export async function getPrograms(): Promise<Program[]> {
-  const { programs } = await get<{ programs: Program[] }>("/programs");
+  const { programs } = await get<{ programs: Program[] }>("/programs", REFERENCE_CACHE);
   return programs;
 }
 
 export async function createProgram(input: ProgramInput): Promise<Program> {
   const { program } = await post<{ program: Program }>("/programs", input);
+  await bustReferenceCache();
   return program;
 }
 
 export async function updateProgram(id: string, patch: Partial<ProgramInput>): Promise<Program> {
   const { program } = await send<{ program: Program }>("PATCH", `/programs/${id}`, patch);
+  await bustReferenceCache();
   return program;
 }
 
@@ -486,17 +559,19 @@ export async function patchEnrollmentFee(
 // ── Courses ───────────────────────────────────────────────────────────────
 
 export async function getCourses(): Promise<Course[]> {
-  const { courses } = await get<{ courses: Course[] }>("/courses");
+  const { courses } = await get<{ courses: Course[] }>("/courses", REFERENCE_CACHE);
   return courses;
 }
 
 export async function createCourse(input: CourseInput): Promise<Course> {
   const { course } = await post<{ course: Course }>("/courses", input);
+  await bustReferenceCache();
   return course;
 }
 
 export async function updateCourse(id: string, patch: Partial<CourseInput>): Promise<Course> {
   const { course } = await send<{ course: Course }>("PATCH", `/courses/${id}`, patch);
+  await bustReferenceCache();
   return course;
 }
 

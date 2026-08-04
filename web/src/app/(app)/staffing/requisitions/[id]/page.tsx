@@ -14,18 +14,20 @@ export default async function RequisitionDetailPage({
   await requirePagePermission("staffing.read");
   const { id } = await params;
 
-  let requisition;
-  try {
-    requisition = await getRequisition(id);
-  } catch {
-    notFound();
-  }
+  // These two don't depend on each other, so they go out together — one round
+  // trip to the API instead of two back-to-back. The permission gate above
+  // stays sequential on purpose: nothing should be fetched for a caller who
+  // hasn't cleared it.
+  //
+  // Only people who pass the eligibility gate can be offered. Asking the server
+  // for the eligible set rather than filtering client-side means the rule lives
+  // in one place — the candidate_eligible view.
+  const [requisition, eligible] = await Promise.all([
+    getRequisition(id).catch(() => null),
+    getCandidates({ eligibleOnly: true }),
+  ]);
   if (!requisition) notFound();
 
-  // Only people who pass the gate can be offered. Asking the server for the
-  // eligible set rather than filtering client-side means the rule lives in one
-  // place — the candidate_eligible view.
-  const eligible = await getCandidates({ eligibleOnly: true });
   const alreadyApplied = new Set((requisition.applications ?? []).map((a) => a.candidatePartyId));
   const available = eligible.filter((c) => !alreadyApplied.has(c.partyId));
 
