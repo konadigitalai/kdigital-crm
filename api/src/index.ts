@@ -5,6 +5,7 @@ dotenv.config({ override: true });
 import express from "express";
 import { appPool } from "./db/app.js";
 import { authMiddleware } from "./middleware/auth.js";
+import { timingMiddleware } from "./lib/timing.js";
 import { requirePermission, requireAnyPermission } from "./middleware/require.js";
 import { leadsRouter } from "./routes/leads.js";
 import { intakeRouter } from "./routes/intake.js";
@@ -97,6 +98,13 @@ app.use(
 // just the outer body-parser guard.
 app.use(express.json({ limit: "6mb" }));
 
+// Per-request timing. Adds a Server-Timing response header splitting each
+// request into Postgres time vs everything else, and logs anything over
+// SLOW_REQUEST_MS. Mounted before the routers so it wraps every handler;
+// the webhook routes above are deliberately outside it (they're machine
+// traffic and we don't want their headers touched).
+app.use(timingMiddleware);
+
 // CORS_ORIGIN can be a single origin or a comma-separated allowlist (e.g.
 // the prod Vercel domain plus any custom domain). Credentialed requests
 // require an exact echoed origin — wildcards are rejected by the browser.
@@ -118,6 +126,11 @@ app.use((req, res, next) => {
   res.header("Vary", "Origin");
   res.header("Access-Control-Allow-Methods", "GET,POST,PATCH,PUT,DELETE,OPTIONS");
   res.header("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Intake-Key");
+  // Without this, browser devtools silently drops Server-Timing on
+  // cross-origin calls (local dev, where the web app talks to :4000 directly).
+  // In production the browser goes through the same-origin /api rewrite, so
+  // this only matters for dev — but that's where you read it most.
+  res.header("Access-Control-Expose-Headers", "Server-Timing");
   if (req.method === "OPTIONS") return res.sendStatus(204);
   return next();
 });
