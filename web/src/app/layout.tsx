@@ -8,6 +8,18 @@ export const metadata: Metadata = {
   description: "Digital Edify Agentic CRM",
 };
 
+// Execute in Mumbai, not Vercel's us-east-1 default.
+//
+// Our users and our data are both in India: the browser is in-country and
+// Azure Postgres sits in Central India. Left unpinned, every Server Component
+// fetch and every /api/* rewrite hop ran out of Washington DC — roughly half a
+// second of pure network per request, crossing the Pacific twice. Pinning to
+// bom1 deletes both of those legs.
+//
+// vercel.json sets this project-wide too; this is the belt for the suspenders,
+// since a route segment can otherwise silently opt itself elsewhere.
+export const preferredRegion = ["bom1"];
+
 // The design system is drawn in these three faces — Inter Tight for body,
 // Instrument Serif for display headings, JetBrains Mono for the uppercase
 // labels (.mono-cap: ADVISOR, RATING, TODAY · 12 JUL, LEAD-####). They were
