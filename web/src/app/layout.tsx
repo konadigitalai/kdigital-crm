@@ -8,17 +8,26 @@ export const metadata: Metadata = {
   description: "Digital Edify Agentic CRM",
 };
 
-// Execute in Mumbai, not Vercel's us-east-1 default.
+// Execute next to the DATABASE, not next to the users.
 //
-// Our users and our data are both in India: the browser is in-country and
-// Azure Postgres sits in Central India. Left unpinned, every Server Component
-// fetch and every /api/* rewrite hop ran out of Washington DC — roughly half a
-// second of pure network per request, crossing the Pacific twice. Pinning to
-// bom1 deletes both of those legs.
+// This was pinned to bom1 (Mumbai) on the belief that Azure Postgres sat in
+// Central India. It does not — `de-crm-pg` is in **Canada Central**, which is
+// why a warm pooled `SELECT now()` measured ~230ms while the server executed
+// it in 0.1ms. The app is latency-bound, and withTenant makes three round
+// trips per operation, so that mistake cost ~690ms on every tenant-scoped
+// query.
 //
-// vercel.json sets this project-wide too; this is the belt for the suspenders,
-// since a route segment can otherwise silently opt itself elsewhere.
-export const preferredRegion = ["bom1"];
+// Users therefore pay one longer hop to Cleveland instead of 230ms multiplied
+// by every round trip, which is several times faster overall.
+//
+// The right end state is the database in Central India and this back on bom1:
+// ~110ms to Vercel AND ~5ms to Postgres. Until that migration happens, compute
+// belongs beside the data.
+//
+// MUST match `regions` in vercel.json. If they disagree, Server Components
+// render in one region and the /api handlers run in another, so every
+// in-app fetch crosses continents.
+export const preferredRegion = ["cle1"];
 
 // The design system is drawn in these three faces — Inter Tight for body,
 // Instrument Serif for display headings, JetBrains Mono for the uppercase

@@ -108,8 +108,15 @@ silently excludes them from routing:
    - **Root Directory**: `web` ← **important**
    - Leave Build / Output / Install commands at defaults.
 
-`web/vercel.json` already pins the region to `bom1` (Mumbai, next to the database)
-and declares the three cron schedules.
+`web/vercel.json` pins the region to `cle1` (Cleveland) and declares the three cron
+schedules.
+
+**Why Cleveland and not Mumbai:** `de-crm-pg` is in **Canada Central**, not Central
+India as this runbook previously claimed. A warm pooled `SELECT now()` from Mumbai
+measured ~230ms against 0.1ms of server-side execution, and `withTenant` makes three
+round trips per operation — so compute sits beside the data until the database is
+moved. `preferredRegion` in `src/app/layout.tsx` MUST match, or Server Components and
+the API handlers run in different regions and every in-app fetch crosses continents.
 
 ### A2. Environment variables
 
