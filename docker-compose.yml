@@ -1,5 +1,5 @@
 # Local Postgres parity: same major version + extensions as Azure Flexible Server.
-# Use this when you want to develop offline. Switch DATABASE_URL in api/.env to:
+# Use this when you want to develop offline. Switch DATABASE_URL in web/.env.local to:
 #   postgres://decrm:decrm@localhost:5433/decrm
 
 services:

@@ -3,8 +3,12 @@ DE CRM — Quick Reference
 
 REPO LAYOUT
 -----------
-  web/      Next.js 15 frontend, port 3000
-  api/      Node + Express + Drizzle backend, port 4000
+  web/      The whole app, port 3000
+              src/app/          pages + the API catch-all at /api/**
+              src/server/       the API: routes, lib, db, agents
+              src/server/http/  the small router that replaced Express
+              drizzle/          SQL migrations
+  (api/ is gone — the Express service was folded into web/, Render retired)
   project docs/   architecture, data model, build plan
   Digital Edify Agentic CRM (standalone).html   original Subframe design
 
@@ -12,25 +16,27 @@ REPO LAYOUT
 FIRST-TIME SETUP (already done — skip unless on a fresh machine)
 ----------------------------------------------------------------
   cd web && npm install
-  cd ../api && npm install
-  copy api\.env.example api\.env       # then edit .env, fill passwords
-  cd api && npm run db:migrate         # creates 21 tables on Azure
-  cd api && npm run db:seed            # loads tenant + 12 leads + agents
+  copy web\.env.example web\.env.local   # then edit, fill passwords + keys
+  cd web && npm run db:migrate           # creates the schema on Azure
+  cd web && npm run db:seed              # loads tenant + 12 leads + agents
 
 
 RUN LOCALLY (every day)
 -----------------------
-  Terminal 1 — frontend:
+  One terminal — app and API together:
     cd web && npm run dev              # http://localhost:3000
+                                       # API at localhost:3000/api/health
 
-  Terminal 2 — backend:
-    cd api && npm run dev              # http://localhost:4000/health
+  (Optional) DB browser:
+    cd web && npx drizzle-kit studio   # https://local.drizzle.studio
 
-  (Optional) Terminal 3 — DB browser:
-    cd api && npx drizzle-kit studio   # https://local.drizzle.studio
+  No background worker process any more. The three scheduled jobs are
+  ordinary endpoints — trigger them when you need them:
+    curl -H "Authorization: Bearer $CRON_SECRET" localhost:3000/api/cron/campaigns
+  (campaign dispatch also fires automatically on launch/resume)
 
 
-DB COMMANDS (run from api/)
+DB COMMANDS (run from web/)
 ---------------------------
   npm run db:check     ping Azure + list installed extensions
   npm run db:migrate   apply pending schema changes
@@ -40,8 +46,8 @@ DB COMMANDS (run from api/)
 
 EDITING THE SCHEMA
 ------------------
-  1. Edit api/src/db/schema.ts
-  2. cd api && npx drizzle-kit generate   # writes new SQL into drizzle/
+  1. Edit web/src/server/db/schema.ts
+  2. cd web && npx drizzle-kit generate   # writes new SQL into drizzle/
   3. npm run db:migrate                   # applies it
 
 
@@ -50,10 +56,13 @@ AZURE DATABASE
   Server:    de-crm-pg.postgres.database.azure.com
   Region:    Central India
   Version:   PostgreSQL 17, Burstable B1ms (~$15/mo)
+             NOTE: Burstable caps near 35 connections and has NO built-in
+             PgBouncer. That matters now the API is serverless — see
+             DEPLOY.md, "The one thing to get right".
   Extensions enabled: pgcrypto, pg_trgm, vector
   Tables:    21 (full doc-03 model)
 
-  Two roles (passwords in api/.env, NOT api/.env.example):
+  Two roles (passwords in web/.env.local, NOT web/.env.example):
     decrm_admin   migrations + seed only (bypasses RLS — Azure default)
     decrm_app     the API connects as this role (NOBYPASSRLS, RLS enforced)
 
@@ -87,8 +96,8 @@ INTEGRATION STATUS — FULLY WIRED
       /records/:id → /records/:id   (accepts uuid OR LEAD-XXXX number)
   - The sidebar's "Recent agent runs" is also live (/agents/recent).
 
-  PROOF: stop `api/` and refresh any page — every Server Component will
-  throw "fetch failed" instead of rendering. (Try it; restart api/ to recover.)
+  Server Components call this same app's /api/** rather than a separate
+  service, so there is no second process to stop as a proof any more.
 
   The API connects as `decrm_app` (NOBYPASSRLS), not the admin role —
   so RLS isolates per tenant for real.
@@ -98,13 +107,13 @@ QUICK TROUBLESHOOTING
 ---------------------
   "ETIMEDOUT 5432"           public IP rotated. Re-add IP in Azure Networking.
   "type vector does not exist"   extension allowlist not saved. Server params → azure.extensions.
-  ".env not loading"         confirm api/.env exists (not just .env.example).
+  ".env not loading"         confirm web/.env.local exists (not .env.example).
   "drizzle studio: schema not found"   run `npm run db:migrate` first.
 
 
 URLS YOU'LL ACTUALLY USE
 ------------------------
   http://localhost:3000              the app
-  http://localhost:4000/health       backend health check
+  http://localhost:3000/api/health   API health check
   https://local.drizzle.studio       DB browser (after `drizzle-kit studio`)
   https://portal.azure.com           Azure Portal — find server `de-crm-pg`

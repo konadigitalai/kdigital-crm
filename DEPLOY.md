@@ -1,22 +1,69 @@
 # Deployment runbook
 
-The frontend deploys to **Vercel**, the backend to **Render**, the database stays on **Azure Postgres**.
+One deployment target: **Vercel**. The database stays on **Azure Postgres**.
 
 ## TL;DR
 
 ```
 GitHub repo (this)
-  ├── web/   → Vercel project   → https://<your-app>.vercel.app
-  └── api/   → Render web service → https://<your-app>.onrender.com
-                ↓
-         Azure Postgres (de-crm-pg)
+  └── web/   → Vercel project → https://<your-app>.vercel.app
+                 ├── Next.js pages + Server Components
+                 ├── the whole API at /api/**        (src/app/api/[...path]/route.ts)
+                 └── three scheduled jobs            (Vercel Cron → /api/cron/*)
+                        ↓
+                 Azure Postgres (de-crm-pg)   ← currently Burstable B1ms,
+                                                so no PgBouncer. See below.
 ```
 
-## Why this split
+There is no separate backend service. Express was removed and the API now runs as
+Next.js route handlers in the same project — see `web/src/server/app.ts` for the
+mount table and `web/src/server/http/` for the router that replaced Express.
 
-Vercel turns each request into a serverless function. That's perfect for Next.js Server Components — but bad for our Express API, because each cold start opens a new Postgres connection (slow + risk of exhausting the DB pool). Render gives the API a long-running container with a persistent connection pool. Both have generous free tiers.
+## The one thing to get right
 
-If you'd rather host everything on Vercel, the API has to be rewritten as Next.js Route Handlers under `web/src/app/api/*/route.ts` — not done yet.
+Render existed for exactly one reason: it gave the API a long-running container with a
+**persistent connection pool**, which Vercel's per-request functions cannot.
+
+Every concurrent invocation is its own process with its own pool, so connections
+reaching Postgres are `concurrent invocations × DB_POOL_MAX`. `DB_POOL_MAX` therefore
+defaults to **2**, not the 20 that was right for a single Express process. Raise it
+only once a pooler is in front of Postgres.
+
+### This deployment is on Burstable B1ms — read this before scaling
+
+`de-crm-pg` is **PostgreSQL 17, Burstable B1ms**, and that tier has two properties
+that matter here:
+
+- **~35 max_connections total**, shared with your `psql` sessions and the migration runner.
+- **No built-in PgBouncer.** Azure only offers it on General Purpose and Memory
+  Optimized tiers.
+
+So the pooler that would replace Render's persistent pool is *not currently available
+to you*. That doesn't block the migration, but it does mean concurrency is the thing
+to watch. Three ways forward, cheapest first:
+
+1. **Keep Burstable, set `DB_POOL_MAX=2`, and leave Vercel Fluid compute on**
+   (it is the default). Fluid reuses one instance across concurrent requests instead
+   of spinning one per request, so the number of live pools stays small. At this
+   CRM's scale this is very likely sufficient — budget ~30 usable connections and
+   watch the pool-wait warnings.
+2. **Upgrade to General Purpose** if you start seeing `too many connections` or
+   sustained pool-wait warnings. That unlocks built-in PgBouncer: enable it under
+   `de-crm-pg` → **Server parameters** → `pgbouncer.enabled` = on, then move
+   `APP_DATABASE_URL` to port **6432**. Transaction mode is safe — `withTenant`
+   scopes tenants with `SET LOCAL`, which is transaction-scoped and survives
+   transaction pooling unchanged. Note this is a real cost step up from ~$15/mo.
+3. **A self-hosted PgBouncer** would work, but it means running a container again —
+   i.e. re-introducing the deployment target this migration removed. Only worth it
+   if you outgrow (1) and won't pay for (2).
+
+Signals to watch in the Vercel logs:
+
+```
+[db] withTenant: waited 812ms for a pool slot (size 2, 0 idle, 3 queued)
+```
+
+That line means requests are queueing on connections — the trigger to move to (2).
 
 ---
 
@@ -25,179 +72,221 @@ If you'd rather host everything on Vercel, the API has to be rewritten as Next.j
 Run from the repo root.
 
 ```bash
-# 1. Both sides typecheck cleanly.
-( cd api && npm run build )
+# 1. Typecheck.
 ( cd web && npx tsc --noEmit )
 
-# 2. The Next.js production build itself succeeds.
-( cd web && rm -rf .next && API_URL=http://localhost:4000 NEXT_PUBLIC_API_URL=http://localhost:4000 npx next build )
+# 2. The production build succeeds.
+( cd web && rm -rf .next && npx next build )
 
-# 3. No secrets in code. The only place a real key may live is api/.env (gitignored).
-grep -rn "sk-[A-Za-z0-9_-]\{15,\}" api/src web/src 2>/dev/null   # → empty
+# 3. No secrets in code. Real keys live only in web/.env.local (gitignored).
+grep -rn "sk-[A-Za-z0-9_-]\{15,\}" web/src 2>/dev/null   # → empty
 
 # 4. Migrations are idempotent (safe to re-run on prod):
-( cd api && npm run db:migrate && npm run db:migrate )           # both runs succeed
+( cd web && npm run db:migrate && npm run db:migrate )   # both runs succeed
 ```
 
-If any of those four fail — fix before pushing.
+The build output should list four API routes. If `/api/cron/*` are missing, something
+renamed them back under a `_`-prefixed folder — Next treats those as private and
+silently excludes them from routing:
+
+```
+├ ƒ /api/[...path]
+├ ƒ /api/cron/campaigns
+├ ƒ /api/cron/dedup
+├ ƒ /api/cron/gmail
+```
 
 ---
 
-## Part A — Backend on Render
+## Part A — The Vercel project
 
-### A1. Create the Render service
+### A1. Create it
 
-1. Sign up at https://render.com (free, GitHub login works).
-2. **New → Web Service** → connect this repo.
-3. Settings:
-   - **Name**: `digitaledify-crm-api`
-   - **Region**: Singapore (closest to Azure Central India)
-   - **Branch**: `main`
-   - **Root Directory**: `api`
-   - **Runtime**: Node
-   - **Build Command**: `npm install && npm run build`
-   - **Start Command**: `npm run start`
-   - **Plan**: Free (or Starter $7/mo if you want always-on)
+1. https://vercel.com → **Add New → Project** → import this repo.
+2. Settings:
+   - **Framework**: Next.js (auto-detected)
+   - **Root Directory**: `web` ← **important**
+   - Leave Build / Output / Install commands at defaults.
 
-### A2. Add environment variables
+`web/vercel.json` already pins the region to `bom1` (Mumbai, next to the database)
+and declares the three cron schedules.
 
-In Render → your service → **Environment**, set the full list below. Anything marked **(secret)** must be configured via Render's "Secret" toggle, not echoed in plain config.
+### A2. Environment variables
+
+**Settings → Environment Variables.** Everything the API needs now lives here — this
+is the list that used to be split across Render and Vercel.
 
 | Var | Value | Notes |
 |---|---|---|
-| `NODE_ENV` | `production` | **critical** — flips session cookie to `SameSite=None; Secure` so cross-site auth works |
-| `PORT` | `10000` | Render injects this automatically; leave it |
-| `DATABASE_URL` | `postgres://decrm_admin:<pwd>@de-crm-pg.postgres.database.azure.com:5432/postgres?sslmode=require` | **(secret)** admin role — used **only** by the migration runner |
-| `APP_DATABASE_URL` | `postgres://decrm_app:<pwd>@de-crm-pg.postgres.database.azure.com:5432/postgres?sslmode=require` | **(secret)** app role — used by every HTTP handler. NOBYPASSRLS, so RLS enforces tenant isolation |
-| `DECRM_APP_PASSWORD` | `<same pwd as APP_DATABASE_URL>` | **(secret)** the migrate runner re-asserts this on every deploy |
-| `CORS_ORIGIN` | `https://<your-app>.vercel.app` | comma-separate to allow more than one origin (e.g. preview + custom domain) |
-| `AI_PROVIDER` | `anthropic` | required for the Claude-backed agents (Outreach / Scoring / NBA / Forecast / Edify) |
+| `APP_DATABASE_URL` | `postgres://decrm_app:<pwd>@de-crm-pg.postgres.database.azure.com:5432/postgres?sslmode=require` | **(secret)** app role, NOBYPASSRLS — RLS enforces tenant isolation. Port **5432** on Burstable; **6432** once you're on General Purpose with PgBouncer |
+| `DATABASE_URL` | `postgres://decrm_admin:<pwd>@…:5432/postgres?sslmode=require` | **(secret)** admin role. Used by the migration runner and the LangGraph checkpointer. Direct port, not the pooler |
+| `DECRM_APP_PASSWORD` | `<same pwd as APP_DATABASE_URL>` | **(secret)** the migrate runner re-asserts this |
+| `CRON_SECRET` | a long random string | **(secret) NEW.** Vercel Cron sends it as `Authorization: Bearer`. The cron routes **refuse to run without it** — they fail closed, because they spend money on messaging |
+| `AUTH0_DOMAIN` | `<tenant>.auth0.com` | API verifies Bearer JWTs against this tenant's JWKS |
+| `AUTH0_AUDIENCE` | your API identifier | |
+| `AUTH0_PERMISSIONS_CLAIM` | `https://digitaledify.com/permissions` | optional; this is the default |
+| `AUTH0_CLIENT_ID` / `AUTH0_CLIENT_SECRET` / `AUTH0_SECRET` | | **(secret)** used by the Next SDK for the browser session |
+| `APP_BASE_URL` | `https://<your-app>.vercel.app` | Auth0 SDK callback base |
+| `DEFAULT_TENANT_ID` | uuid | pins the tenant instead of "newest row wins" |
+| `INTAKE_API_KEY` | `<random>` | **(secret)** guards the public lead-intake endpoint |
+| `CORS_ORIGIN` | `https://kdigital.ai,https://<your-app>.vercel.app` | now only matters for the public intake endpoint called cross-origin by marketing pages — everything else is same-origin |
+| `AI_PROVIDER` | `anthropic` | required for the Claude-backed agents |
 | `ANTHROPIC_API_KEY` | `sk-…` | **(secret)** |
-| `ANTHROPIC_BASE_URL` | `https://inference-api.nvidia.com/` | NVIDIA-hosted Anthropic endpoint (or `https://api.anthropic.com/` if you switch) |
-| `ANTHROPIC_MODEL` | `aws/anthropic/bedrock-claude-sonnet-4-6` | the model ID your key has access to |
+| `ANTHROPIC_BASE_URL` | `https://inference-api.nvidia.com/` | or `https://api.anthropic.com/` |
+| `ANTHROPIC_MODEL` | `aws/anthropic/bedrock-claude-sonnet-4-6` | model ID your key can reach |
+| `DB_POOL_MAX` | `2` | per-invocation. `2` because this deployment is on Burstable — see above |
+| `NEXT_PUBLIC_SITE_URL` | `https://crm.yourdomain.com` | optional. Only needed if you want Server Components to call a canonical domain rather than the per-deployment `VERCEL_URL` |
 
-> If you don't set the `ANTHROPIC_*` block, the agents pages still load but the agent **runs** will throw — leave them off only if that's intentional for the launch.
+Deliberately **gone**: `API_URL` and `NEXT_PUBLIC_API_URL` (the API is same-origin now),
+and `PORT` (that was Express's listen port).
 
-### A3. Allow Render's outbound IP through Azure firewall
+> If you don't set the `ANTHROPIC_*` block, the agents pages still load but agent
+> **runs** will throw. Leave them off only if that's intentional.
 
-Render free tier doesn't pin outbound IPs (they rotate). Two options:
+### A3. Azure firewall
 
-- **Easy**: in Azure Portal → `de-crm-pg` → Networking → enable **"Allow public access from any Azure service within Azure to this server"**. This lets every Render container reach the DB. Combined with `decrm_app`'s strong password and `sslmode=require`, it's acceptable for a small project. **Never put admin creds in app config** — only the migration runner uses `DATABASE_URL`.
-- **Strict**: pay for Render's Static Outbound IP ($7/mo per service) and whitelist that IP exclusively.
+Vercel functions do not have stable outbound IPs on Pro — the same problem Render's
+free tier had. Whatever rule currently admits Render has to be at least as permissive
+for Vercel, and note that Azure's *"Allow public access from any Azure service"*
+toggle does **not** cover either of them (neither runs in Azure).
 
-### A4. Deploy
+- **Pragmatic**: keep public access open at the network layer and rely on the strong
+  `decrm_app` password + `sslmode=require`. **Never put admin creds in app config** —
+  only the migration runner uses `DATABASE_URL`.
+- **Strict**: Vercel **Secure Compute** (Enterprise) gives static egress IPs you can
+  whitelist exclusively.
 
-Push `main` → Render auto-builds and deploys. First deploy takes ~3-5 min. Watch the live logs.
+### A4. Apply migrations
 
-Health-check:
-
-```bash
-curl https://<your-app>.onrender.com/health
-# → {"ok":true,"db":{"now":"…"}}
-```
-
-> **Free tier caveat**: services sleep after 15 min idle. First request after sleep takes ~30 s to wake. For demos, ping `/health` from a cron service like https://cron-job.org every 10 min, or upgrade to Starter ($7/mo).
-
-### A5. Apply migrations to the prod DB
-
-Migrations don't run automatically. Pick one path:
-
-**Option 1 — from your machine (recommended for the first deploy)**
+Migrations don't run automatically. From your machine, against prod:
 
 ```bash
-cd api
-# point at prod via the same DATABASE_URL you pasted in Render
-DATABASE_URL='postgres://decrm_admin:<pwd>@de-crm-pg…?sslmode=require' \
+cd web
+DATABASE_URL='postgres://decrm_admin:<pwd>@de-crm-pg…:5432/postgres?sslmode=require' \
 DECRM_APP_PASSWORD='<pwd>' \
   npm run db:migrate
 ```
 
-The runner is idempotent (every `post-*.sql` uses `IF NOT EXISTS` and constraint guards). Re-running is safe. If the DB is empty, also run `npm run db:seed` once for demo data.
+Two migrations are new and **required** before the first request:
 
-**Option 2 — from Render's Shell tab**
+- `post-0097-rate-limit-window.sql` — moves the four rate limiters out of process
+  memory. Without it they throw on every call (they fail open, so requests still
+  succeed, but the log fills and lead intake is effectively unlimited).
+- `post-0098-campaign-recipient-sending-at.sql` — adds `sending_at`. Without it the
+  campaign dispatcher's claim query errors and **no campaign sends at all**.
+
+The runner is idempotent; re-running is safe.
+
+### A5. Deploy and verify
+
+Push to `main`. Then:
 
 ```bash
-npm run db:migrate
+curl https://<your-app>.vercel.app/api/health
+# → {"ok":true,"db":{"now":"…"}}
 ```
 
-### A6. Seed your real admin user
+That single call proves the route handler, the mount table, and the database
+connection all work. Then check a cron endpoint rejects an unauthenticated caller:
 
-The seed creates `crmadmin@gmail.com / NewMani!23` as the super-admin. **Change it immediately** after first login (Admin · Users → reset-password), or run the seed against a fresh DB and supply your own credentials.
+```bash
+curl -i https://<your-app>.vercel.app/api/cron/dedup
+# → 401  (or 503 if you forgot CRON_SECRET)
+```
 
----
+### A6. Update the provider consoles
 
-## Part B — Frontend on Vercel
+The API moved origin, so anything holding a stored callback URL needs updating.
 
-### B1. Create the Vercel project
-
-1. Go to https://vercel.com → **Add New → Project** → import this repo.
-2. Vercel auto-detects Next.js. Settings:
-   - **Framework**: Next.js (auto-detected)
-   - **Root Directory**: `web` ← **important** (otherwise Vercel tries to build `api/`)
-   - Leave Build / Output / Install commands at defaults.
-
-### B2. Add environment variables
-
-In Vercel → your project → **Settings → Environment Variables**:
-
-| Var | Value | Scope |
+| Provider | Old | New |
 |---|---|---|
-| `API_URL` | `https://<your-app>.onrender.com` | **Production** + **Preview** + **Development** — used by Server Components |
-| `NEXT_PUBLIC_API_URL` | `https://<your-app>.onrender.com` | **Production** + **Preview** + **Development** — used by client-side fetches |
+| Auth0 | Allowed Callback/Logout URLs on Render | `https://<your-app>.vercel.app` |
+| Slack | `https://…onrender.com/auth/slack` | `https://<your-app>.vercel.app/api/auth/slack` |
+| Google | `https://…onrender.com/auth/google` | `https://<your-app>.vercel.app/api/auth/google` |
+| Twilio | `https://…onrender.com/webhooks/twilio` | `https://<your-app>.vercel.app/webhooks/twilio` |
+| Exotel | `https://…onrender.com/webhooks/exotel` | `https://<your-app>.vercel.app/webhooks/exotel` |
 
-Both must point at the **same** origin. `NEXT_PUBLIC_*` is baked into the client bundle at build time, so any change requires a redeploy.
+The two **webhook** paths keep their `/webhooks/...` shape — `next.config.mjs` rewrites
+them onto the API mount specifically so a live phone number's configuration doesn't
+have to change shape during the cutover. Only the host changes.
 
-### B3. Deploy
+Twilio also signs its webhook over the **exact URL**, so `TWILIO_WEBHOOK_URL` (or
+whatever `readTwilioConfig().webhookUrl` reads) must match the new URL character for
+character, or every inbound message fails signature verification with a 403.
 
-Vercel auto-deploys on every push to `main`. PRs get preview URLs.
+### A7. Smoke test
 
-After the first deploy:
-1. Note the production URL (`https://<your-app>.vercel.app`).
-2. Go back to **Render → API service → Environment** and set `CORS_ORIGIN` to that exact URL (comma-separated if you also have a custom domain or preview URL pattern).
-3. **Manual Deploy → Clear cache and deploy** on Render so the new CORS rule takes effect.
-
-### B4. Smoke test
-
-Visit `https://<your-app>.vercel.app`. You should hit `/login`. Sign in with the seeded credentials, then walk through:
+Sign in, then walk through:
 
 1. **/leads** — list renders, click a lead.
-2. **/records/[lead]** — inline-edit a field; activity timeline shows the diff.
-3. **/timesheet** — add a block, confirm it appears under the right day.
-4. **/admin/users** — create a test user, assign clients, deactivate, re-activate.
+2. **/records/[lead]** — inline-edit a field; the timeline shows the diff.
+3. **Send paths** — Twilio, Gmail, Exotel, and a two-recipient campaign.
+   These were restructured during the performance work *and* moved during the
+   migration. Do not skip them.
+4. **Inbound** — reply to the WhatsApp/SMS message and confirm it lands in the inbox
+   (this is what proves the webhook signature check survived the URL change).
 
-If anything fails, the most common issues:
+Common failures:
 
-- **"Not authenticated" on every request** → cookie isn't reaching the API. Confirm `NODE_ENV=production` on Render (which switches the cookie to `SameSite=None; Secure`) and that the API is reachable over **HTTPS** (Render's `.onrender.com` is HTTPS by default).
-- **CORS error in browser console** → `CORS_ORIGIN` on Render doesn't match the Vercel URL exactly (no trailing slash, must be `https://`). Add the URL, hit Manual Deploy.
-- **`fetch failed` / 500 from a page** → `API_URL` env var is wrong, or Render service is asleep (cold start; retry once).
-- **DB error in Render logs** → Azure firewall is blocking Render's IPs (see A3).
+- **Everything 302s to `/auth/login`** → `web/src/middleware.ts`'s matcher lost its
+  `api/` and `webhooks/` exclusions. Those are load-bearing: the API authenticates by
+  Bearer token, not by the browser session cookie.
+- **`too many connections`** → PgBouncer isn't actually in front. Confirm the port is
+  6432 and lower `DB_POOL_MAX`.
+- **Campaigns never send** → `post-0098` not applied, or `CRON_SECRET` unset.
+- **Inbound webhook 403** → the signing URL doesn't match the new one exactly.
 
 ---
 
-## Part C — Domains (optional)
+## Part B — Decommission Render
 
-### Custom domain on Vercel
-- Vercel → project → **Settings → Domains** → add `crm.yourdomain.com` → follow DNS instructions.
-- Update `CORS_ORIGIN` on Render to include the new domain (comma-separated with the default vercel.app URL during the cutover).
+Do this **after** A7 passes, not before.
 
-### Custom domain on Render
-- Render → service → **Settings → Custom Domains** → add `api.yourdomain.com`.
-- Update `API_URL` and `NEXT_PUBLIC_API_URL` on Vercel to the new URL → redeploy.
+1. Render → the API service → **Settings → Suspend**. Leave it suspended for a few
+   days rather than deleting — it is the fastest rollback if something surfaces late.
+2. Confirm nothing still points at `*.onrender.com`:
+   ```bash
+   grep -rn "onrender" --include=*.ts --include=*.json --include=*.md . | grep -v node_modules
+   ```
+3. Once you're satisfied: **Settings → Delete Service**, and drop the Azure firewall
+   rules that existed only for Render.
+4. Stale `*.onrender.com` health-check entries linger in `.claude/settings.json` and
+   `.claude/settings.local.json`. Harmless, but worth deleting when you next touch them.
+
+---
+
+## Part C — Custom domain (optional)
+
+- Vercel → project → **Settings → Domains** → add `crm.yourdomain.com`.
+- Set `APP_BASE_URL` and `NEXT_PUBLIC_SITE_URL` to the new origin, update Auth0's
+  allowed callback/logout URLs, and add the domain to `CORS_ORIGIN`.
+- Redeploy. There is no second service to keep in sync any more — the API rides along
+  on the same domain automatically.
 
 ---
 
 ## Day-2 ops
 
-- **Adding a migration**: drop a new `post-NNNN-*.sql` under `api/drizzle/`, ensure it's idempotent (`IF NOT EXISTS`, `DO $$ … pg_constraint check`, etc.). On the next push, run `npm run db:migrate` against prod once.
-- **Rotating the AI key**: Render → Environment → update `ANTHROPIC_API_KEY` → Manual Deploy (or wait ~30 s for the rolling restart).
-- **Inspecting prod logs**: Render → service → **Logs**. Vercel → project → **Logs** (stream from any deployment).
-- **Promoting a preview**: in Vercel, Preview deployments use the same `NEXT_PUBLIC_API_URL` you set above (i.e. **prod API**) — fine for read-only smoke tests, **dangerous for write operations**. If you want a true staging environment, see below.
+- **Adding a migration**: drop a new `post-NNNN-*.sql` under `web/drizzle/`, keep it
+  idempotent (`IF NOT EXISTS`, constraint guards), then run `npm run db:migrate`
+  against prod once.
+- **Rotating a secret**: Vercel → Environment Variables → update → redeploy.
+  `NEXT_PUBLIC_*` values are baked into the client bundle at build time, so those
+  always need a redeploy; server-only vars take effect on the next deployment too.
+- **Logs**: Vercel → project → **Logs**. Slow requests self-report — the API emits a
+  `Server-Timing` header splitting Postgres / pool-wait / everything-else, and logs
+  anything over `SLOW_REQUEST_MS`.
+- **Cron health**: Vercel → project → **Cron Jobs** shows the last run and status of
+  all three.
 
 ---
 
 ## What this deployment doesn't do
 
-- **No staging environment** — the cleanest way to add it is a `staging` branch + a second Render + Vercel project pointing at a separate database.
-- **No GitHub Actions** — pushes go to Vercel/Render directly via their git integrations. Add CI later if you want pre-merge typecheck/build gates.
-- **No automated DB backups** — Azure Postgres has automated PITR backups by default; verify retention in the portal under `de-crm-pg` → Backups.
-- **No managed observability** — Render has a free `Service Metrics` tab, Vercel has `Analytics` ($). If you outgrow them, Sentry + Vercel Analytics is the usual upgrade.
+- **No staging environment** — the cleanest way to add one is a `staging` branch + a
+  second Vercel project pointing at a separate database. Now a single project, not two.
+- **No GitHub Actions** — pushes deploy via Vercel's git integration. Add CI later if
+  you want pre-merge typecheck/build gates.
+- **No automated DB backups** — Azure Postgres has PITR backups by default; verify
+  retention under `de-crm-pg` → Backups.
+- **No managed observability** — Vercel Analytics ($) or Sentry is the usual upgrade.

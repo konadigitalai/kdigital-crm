@@ -1,7 +1,10 @@
-// Typed fetch helpers. Server Components call these; they hit the Express API.
+// Typed fetch helpers, used by Server Components and client components alike.
 //
-// API_URL: set in .env.local. Defaults to localhost:4000.
-// All routes are tenant-scoped on the server side via `tenantMiddleware`.
+// They call this same app's API at /api/** (src/app/api/[...path]/route.ts).
+// There is no separate API host and no API_URL to configure — see the URL
+// resolution note below. Every route is tenant-scoped server-side: the API
+// derives the tenant from the verified Auth0 token and scopes queries with
+// `withTenant`, which Postgres RLS then enforces.
 
 import type {
   AdminUser, Advisor, AdvisorInput, AdvisorRole, AgentCard, AgentCatalogEntry, AgentMode, AgentRunRecord, AttendanceRosterEntry, AttendanceStatus, Batch, BatchBoardRow, BatchBoardSession, BatchBoardSummary, BatchDetailData, BatchInput, BatchSession, BatchSessionDetail, BatchSessionStatus,
@@ -24,38 +27,29 @@ import type {
   SummaryResponse,
 } from "./types";
 
-// URL resolution differs between server- and client-side fetches.
+// URL resolution, after the API moved into this app.
 //
-// Server Components run on Vercel and call the API directly via API_URL.
-// The cookie-forwarding helper below copies the browser's session cookie
-// onto the outbound request, so RLS + auth work as expected.
+// There is no separate API host any more — the handlers are served by
+// src/app/api/[...path]/route.ts on this very origin. That deletes the
+// `rewrites()` proxy in next.config.mjs, the cross-origin CORS dance, and the
+// third-party-cookie problem the proxy existed to work around, in dev and prod
+// alike.
 //
-// Client-side, the browser fetches a *relative* /api/... URL on the same
-// vercel.app origin. Next.js's `rewrites` (see next.config.mjs) forwards
-// those to Render. This sidesteps third-party-cookie blocks: from the
-// browser's POV every API call is first-party to the Vercel domain.
-//
-// In local dev (NODE_ENV !== production), the browser falls back to a
-// direct localhost:4000 URL since there's no Vercel proxy in front.
+// The browser therefore always uses a relative `/api`. Server Components can't
+// — `fetch` on the server needs an absolute URL — so they resolve this app's
+// own origin. On Vercel that's VERCEL_URL; locally it's the dev server's port.
+// Set NEXT_PUBLIC_SITE_URL to override (e.g. behind a custom domain where you
+// want the canonical host rather than the deployment URL).
 const isServer = typeof window === "undefined";
-const API_URL = (() => {
-  if (isServer) {
-    return process.env.API_URL
-      ?? process.env.NEXT_PUBLIC_API_URL
-      ?? (process.env.NODE_ENV === "production" ? undefined : "http://localhost:4000");
-  }
-  // Browser: prefer the same-origin proxy in production, dev hits localhost.
-  return process.env.NODE_ENV === "production"
-    ? "/api"
-    : (process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4000");
-})();
 
-if (!API_URL) {
-  // Surface a clear error instead of failing with ECONNREFUSED.
-  throw new Error(
-    "API URL is not configured. Set API_URL (and NEXT_PUBLIC_API_URL) in your environment.",
-  );
+function selfOrigin(): string {
+  const explicit = process.env.NEXT_PUBLIC_SITE_URL?.trim();
+  if (explicit) return explicit.replace(/\/+$/, "");
+  if (process.env.VERCEL_URL) return `https://${process.env.VERCEL_URL}`;
+  return `http://localhost:${process.env.PORT ?? 3000}`;
 }
+
+const API_URL = isServer ? `${selfOrigin()}/api` : "/api";
 
 // Pull an Auth0 access token and attach it as Bearer on every API call.
 // Server vs. client get the token via different SDK paths but the end
