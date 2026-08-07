@@ -18,7 +18,7 @@ export const auth0 = new Auth0Client({
   secret: requireEnv("AUTH0_SECRET"),
   appBaseUrl: requireEnv("APP_BASE_URL"),
 
-  // Ask Auth0 for an access token scoped to our Express API. Without this,
+  // Ask Auth0 for an access token scoped to our API. Without this,
   // tokens come back unsigned for an arbitrary audience and our backend
   // rejects them. The audience string MUST match the API Identifier we
   // configured in Auth0 → Applications → APIs → Edify CRM API.

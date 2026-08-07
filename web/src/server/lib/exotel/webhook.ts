@@ -48,10 +48,11 @@ export interface ExotelParsedCall {
 export type ExotelParsedResult = ExotelParsedCall | { kind: "ignore" };
 
 /**
- * Normalize any form-encoded string to a Record<string, unknown> — Express
- * already parses application/x-www-form-urlencoded into an object via
- * `express.urlencoded()`, so this is mostly a type-guard. For JSON bodies
- * Express hands us the parsed object directly; both paths work.
+ * Normalize any form-encoded string to a Record<string, unknown>.
+ *
+ * server/http/request.ts already parses application/x-www-form-urlencoded and
+ * application/json into an object by Content-Type, so this is mostly a
+ * type-guard for the cases where a raw string still arrives.
  */
 export function coerceFormBody(body: unknown): Record<string, unknown> {
   if (body && typeof body === "object" && !Array.isArray(body)) {

@@ -133,11 +133,12 @@ async function failResponse(method: string, path: string, r: Response): Promise<
 
 // How long a server-side fetch may take before we log it.
 //
-// This measures the round trip from the Next.js server to the Express API,
-// so it captures the network distance between the two deployments as well as
-// the API's own time. The API returns its internal split in a Server-Timing
-// header (see api/src/lib/timing.ts); logging both together is what lets you
-// separate "the API is slow" from "the API is far away".
+// This measures a Server Component's round trip to the API. Both now run in
+// the same app, so it is a loopback call rather than a hop between two
+// deployments -- if this is slow it is the handler, not the network. The API
+// returns its internal split in a Server-Timing header (see
+// src/server/lib/timing.ts); logging both together separates time in Postgres
+// from time in everything else.
 const SLOW_FETCH_MS = Number(process.env.SLOW_FETCH_MS ?? 800);
 
 async function timedFetch(method: string, path: string, init: RequestInit): Promise<Response> {
@@ -1976,7 +1977,7 @@ export async function deleteMediaAsset(id: string): Promise<void> {
  * Two-step under the hood:
  *   1. Browser → Vercel Blob directly (using a short-lived client token
  *      minted by our API's /media/upload-token endpoint). Bytes never
- *      touch our Express server, so the 6MB body cap doesn't apply.
+ *      touch our own server, so the 6MB body cap doesn't apply.
  *   2. FE calls POST /media/assets with the resulting Blob URL and
  *      metadata. The API inserts the media_asset row.
  *
