@@ -51,3 +51,6 @@ api/peek-leads.mjs
 api/backups/
 api/*.csv
 api/import-plan-*.json
+
+.vercel
+.env*
