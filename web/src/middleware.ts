@@ -56,7 +56,25 @@ export async function middleware(req: NextRequest) {
 }
 
 export const config = {
-  // Match everything except Next internals + obvious static files. The
-  // SDK middleware filters further internally.
-  matcher: ["/((?!_next/|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)"],
+  // Match everything except Next internals, static files, and the API.
+  //
+  // `api/` and `webhooks/` are excluded deliberately and this is load-bearing.
+  // This middleware redirects any request without an Auth0 SESSION COOKIE to
+  // /auth/login, which is right for browser navigation and wrong for every
+  // caller of the API:
+  //
+  //   • Twilio and Exotel webhooks authenticate by HMAC / IP allowlist
+  //   • /api/leads/intake is public, gated by X-Intake-Key
+  //   • /api/media/fetch/* is public, gated by a signed URL
+  //   • /api/cron/* is called by Vercel Cron with a bearer secret
+  //   • Server Components call the API with a Bearer TOKEN and no cookie
+  //
+  // Every one of those would have been silently 302'd to a login page. It
+  // never came up before because the API lived on another origin; folding it
+  // into this app brought it under the matcher for the first time.
+  //
+  // The API is not thereby unprotected — it runs its own Auth0 JWT
+  // verification and permission guards via the mount table in server/app.ts,
+  // which is the fence it has always used.
+  matcher: ["/((?!api/|webhooks/|_next/|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)"],
 };

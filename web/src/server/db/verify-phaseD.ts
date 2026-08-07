@@ -1,4 +1,4 @@
-import { pool } from "./client.js";
+import { pool } from "./client";
 
 async function main() {
   const counts = await pool.query<{ tbl: string; n: string }>(`

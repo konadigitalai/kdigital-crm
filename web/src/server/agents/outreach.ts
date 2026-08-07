@@ -9,10 +9,10 @@ import { z } from "zod";
 import { Annotation, StateGraph, START, END } from "@langchain/langgraph";
 import { HumanMessage, SystemMessage } from "@langchain/core/messages";
 import type { RunnableConfig } from "@langchain/core/runnables";
-import { withTenant } from "../db/app.js";
-import { makeChatModel } from "../lib/llm.js";
-import { runWithGraph, getCheckpointer, configurable } from "./runtime.js";
-import { resolveSentinelPartyId } from "../lib/party/resolve.js";
+import { withTenant } from "../db/app";
+import { makeChatModel } from "../lib/llm";
+import { runWithGraph, getCheckpointer, configurable } from "./runtime";
+import { resolveSentinelPartyId } from "../lib/party/resolve";
 
 const SYSTEM_PROMPT = `You are an outreach drafting assistant for an EdTech CRM (Digital Edify).
 Your job is to draft a single warm, concise follow-up message to a prospective learner.
@@ -216,7 +216,17 @@ async function approvalGateNode(state: OutreachStateT, config: RunnableConfig) {
 
 const NODE_ORDER = ["plan", "retrieve_context", "draft", "approval_gate"] as const;
 
-const outreachGraph = new StateGraph(OutreachStateAnn)
+// Compiled on first use, not at import. getCheckpointer() needs DATABASE_URL,
+// and Next loads this module during `next build` to collect page data — where
+// that variable is not necessarily set. Compiling eagerly turned a missing
+// runtime secret into a failed build. See db/app.ts for the same reasoning.
+let _outreachGraph: ReturnType<typeof build_outreachGraph> | null = null;
+function outreachGraph() {
+  return (_outreachGraph ??= build_outreachGraph());
+}
+
+function build_outreachGraph() {
+  return new StateGraph(OutreachStateAnn)
   .addNode("plan", planNode)
   .addNode("retrieve_context", retrieveContextNode)
   .addNode("draft", draftNode)
@@ -226,7 +236,8 @@ const outreachGraph = new StateGraph(OutreachStateAnn)
   .addEdge("retrieve_context", "draft")
   .addEdge("draft", "approval_gate")
   .addEdge("approval_gate", END)
-  .compile({ checkpointer: getCheckpointer() });
+    .compile({ checkpointer: getCheckpointer() });
+}
 
 export async function draftFollowup(
   tenantId: string,
@@ -243,7 +254,7 @@ export async function draftFollowup(
     agentKey: "outreach",
     target: `drafting for ${ctx.name}`,
     nodeOrder: [...NODE_ORDER],
-    graph: outreachGraph,
+    graph: outreachGraph(),
     initialState: { ctx, draftOut: null, approvalId: null, llmModel: null },
     formatStepDetail: (node, update) => {
       if (node === "plan") return `Lead ${ctx.number} · score ${ctx.score ?? "?"}`;

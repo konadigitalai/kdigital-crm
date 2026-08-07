@@ -13,10 +13,10 @@ import { z } from "zod";
 import { Annotation, StateGraph, START, END } from "@langchain/langgraph";
 import { HumanMessage, SystemMessage } from "@langchain/core/messages";
 import type { RunnableConfig } from "@langchain/core/runnables";
-import { withTenant } from "../db/app.js";
-import { makeChatModel } from "../lib/llm.js";
-import { runWithGraph, getCheckpointer, configurable } from "./runtime.js";
-import { resolveSentinelPartyId } from "../lib/party/resolve.js";
+import { withTenant } from "../db/app";
+import { makeChatModel } from "../lib/llm";
+import { runWithGraph, getCheckpointer, configurable } from "./runtime";
+import { resolveSentinelPartyId } from "../lib/party/resolve";
 
 // ── Probability priors per rating ───────────────────────────────────────
 const RATING_PROB: Record<string, number> = {
@@ -480,7 +480,17 @@ async function writeBackNode(state: ForecastStateT, config: RunnableConfig) {
 
 const NODE_ORDER = ["aggregate", "narrate", "write_back"] as const;
 
-const forecastGraph = new StateGraph(ForecastStateAnn)
+// Compiled on first use, not at import. getCheckpointer() needs DATABASE_URL,
+// and Next loads this module during `next build` to collect page data — where
+// that variable is not necessarily set. Compiling eagerly turned a missing
+// runtime secret into a failed build. See db/app.ts for the same reasoning.
+let _forecastGraph: ReturnType<typeof build_forecastGraph> | null = null;
+function forecastGraph() {
+  return (_forecastGraph ??= build_forecastGraph());
+}
+
+function build_forecastGraph() {
+  return new StateGraph(ForecastStateAnn)
   .addNode("aggregate", aggregateNode)
   .addNode("narrate", narrateNode)
   .addNode("write_back", writeBackNode)
@@ -488,7 +498,8 @@ const forecastGraph = new StateGraph(ForecastStateAnn)
   .addEdge("aggregate", "narrate")
   .addEdge("narrate", "write_back")
   .addEdge("write_back", END)
-  .compile({ checkpointer: getCheckpointer() });
+    .compile({ checkpointer: getCheckpointer() });
+}
 
 export async function runForecast(
   tenantId: string,
@@ -504,7 +515,7 @@ export async function runForecast(
     agentKey: "forecast",
     target: `${Math.round(numbers.totals.weightedPipelineINR / 100000) / 10}L weighted pipeline`,
     nodeOrder: [...NODE_ORDER],
-    graph: forecastGraph,
+    graph: forecastGraph(),
     initialState: { numbers, generatedBy, narrative: null, llmModel: null },
     formatStepDetail: (node, update) => {
       if (node === "aggregate")

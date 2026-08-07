@@ -1,40 +1,18 @@
-// Phase 4 Party Model — background dedup sweep worker.
+// Phase 4 Party Model — dedup sweep.
 //
-// Every 6 hours, walks every tenant and runs scanForDuplicates. New
-// candidate pairs land in party_duplicate_candidate for ops review.
+// Walks every tenant and runs scanForDuplicates. New candidate pairs land in
+// party_duplicate_candidate for ops review.
 //
-// setInterval + a per-tick guard so ticks never overlap.
+// Was a `setInterval` started from the Express boot callback. It is now driven
+// by Vercel Cron (see src/app/api/cron/dedup/route.ts), which is an exact
+// match for the schedule this always wanted: every 6 hours, no long-running
+// process required. The per-tick overlap guard went with the timer — cron
+// invocations don't overlap at this cadence, and the sweep is idempotent.
 
-import { appPool, withTenant } from "../../db/app.js";
-import { scanForDuplicates } from "./dedup.js";
+import { appPool, withTenant } from "../../db/app";
+import { scanForDuplicates } from "./dedup";
 
-const TICK_INTERVAL_MS = 6 * 60 * 60 * 1000; // 6 hours
-let timer: ReturnType<typeof setInterval> | null = null;
-let ticking = false;
-
-/** Start the dedup sweep worker. Idempotent — calling twice is a no-op. */
-export function startDedupWorker(): void {
-  if (timer) return;
-  // Run once at boot so a fresh deployment doesn't have to wait 6h for
-  // the first candidate rows to appear.
-  tick().catch((err) =>
-    console.error("[dedup-worker] boot sweep error:", (err as Error).message),
-  );
-  timer = setInterval(() => {
-    if (ticking) return;
-    ticking = true;
-    tick()
-      .catch((err) => console.error("[dedup-worker] tick error:", (err as Error).message))
-      .finally(() => { ticking = false; });
-  }, TICK_INTERVAL_MS);
-  console.log("[dedup-worker] started (every 6h)");
-}
-
-export function stopDedupWorker(): void {
-  if (timer) { clearInterval(timer); timer = null; }
-}
-
-async function tick(): Promise<void> {
+export async function runDedupSweep(): Promise<void> {
   const client = await appPool.connect();
   let tenantIds: string[];
   try {

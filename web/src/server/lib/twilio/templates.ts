@@ -10,7 +10,7 @@
 // everywhere else. We read them via readTwilioAuthToken/readTwilioConfig
 // so a missing TWILIO_AUTH_TOKEN produces the same error path as sends.
 
-import { readTwilioConfig, TwilioNotConfigured } from "./client.js";
+import { readTwilioConfig, TwilioNotConfigured } from "./client";
 
 const CONTENT_BASE = "https://content.twilio.com/v1";
 const REQ_TIMEOUT_MS = 10_000;

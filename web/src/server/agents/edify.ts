@@ -14,10 +14,10 @@
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { HumanMessage, SystemMessage } from "@langchain/core/messages";
-import { withTenant } from "../db/app.js";
-import { makeChatModel } from "../lib/llm.js";
-import { resolveActorPartyId, partyIdFromAppUserId } from "../lib/party/resolve.js";
-import { loadLeadContext, renderLeadContextBlock } from "./lead-context.js";
+import { withTenant } from "../db/app";
+import { makeChatModel } from "../lib/llm";
+import { resolveActorPartyId, partyIdFromAppUserId } from "../lib/party/resolve";
+import { loadLeadContext, renderLeadContextBlock } from "./lead-context";
 
 const VALID_ACTIONS = [
   "draft_outreach",

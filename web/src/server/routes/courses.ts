@@ -1,6 +1,6 @@
-import { Router } from "express";
+import { Router } from "@/server/http";
 import { sql } from "drizzle-orm";
-import { withTenant } from "../db/app.js";
+import { withTenant } from "../db/app";
 
 export const coursesRouter = Router();
 

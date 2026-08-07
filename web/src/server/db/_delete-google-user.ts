@@ -5,7 +5,7 @@
 // Read + delete. Dry-run by default: shows what would be deleted. Add
 // --apply to actually delete.
 
-import { pool } from "./client.js";
+import { pool } from "./client";
 
 const APPLY = process.argv.includes("--apply");
 const TARGET_EMAIL = "eswar@digitaledify.ai";

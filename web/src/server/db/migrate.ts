@@ -24,7 +24,7 @@
 
 import { drizzle } from "drizzle-orm/node-postgres";
 import { migrate } from "drizzle-orm/node-postgres/migrator";
-import { pool } from "./client.js";
+import { pool } from "./client";
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 

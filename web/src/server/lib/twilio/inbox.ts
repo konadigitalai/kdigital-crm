@@ -14,8 +14,8 @@
 // is responsible for setting the tenant context, we just execute queries.
 
 import { sql, type SQL } from "drizzle-orm";
-import type { TwChannel } from "./phone.js";
-import type { ParsedInboundMessage, ParsedStatusUpdate } from "./webhook.js";
+import type { TwChannel } from "./phone";
+import type { ParsedInboundMessage, ParsedStatusUpdate } from "./webhook";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export type DbExec = { execute: (q: SQL) => Promise<any> };

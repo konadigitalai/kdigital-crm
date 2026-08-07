@@ -4,7 +4,7 @@
 //
 // Run: npm run db:twilio-raw-peek
 
-import { pool } from "./client.js";
+import { pool } from "./client";
 
 async function main() {
   const r = await pool.query<{

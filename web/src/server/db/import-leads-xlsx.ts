@@ -31,7 +31,7 @@
 
 import { readFileSync, writeFileSync } from "node:fs";
 import xlsx from "xlsx";
-import { pool } from "./client.js";
+import { pool } from "./client";
 
 // ─── CLI ─────────────────────────────────────────────────────────────────
 const args = process.argv.slice(2);

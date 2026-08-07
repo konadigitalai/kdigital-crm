@@ -2065,6 +2065,12 @@ export const campaignRecipient = pgTable(
     twMessageId:         uuid("tw_message_id").references(() => twMessage.id, { onDelete: "set null" }),
     resolvedVariables:   jsonb("resolved_variables"),
     queuedAt:            timestamp("queued_at", { withTimezone: true }).notNull().defaultNow(),
+    // Stamped when the dispatcher claims the row (pending → sending), cleared
+    // on reap. Lets the reaper distinguish a row genuinely in flight in a
+    // concurrent invocation from one stranded by an invocation that died —
+    // which matters because reaping a live row re-sends it, and that is a
+    // duplicate WhatsApp/SMS to a real person and a second charge.
+    sendingAt:           timestamp("sending_at", { withTimezone: true }),
     sentAt:              timestamp("sent_at", { withTimezone: true }),
     deliveredAt:         timestamp("delivered_at", { withTimezone: true }),
   },

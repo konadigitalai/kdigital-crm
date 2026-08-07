@@ -27,7 +27,7 @@
 // Runs as decrm_admin in one transaction. Nothing is deleted unless every
 // step succeeds.
 
-import { pool } from "./client.js";
+import { pool } from "./client";
 
 const APPLY = process.argv.includes("--apply");
 

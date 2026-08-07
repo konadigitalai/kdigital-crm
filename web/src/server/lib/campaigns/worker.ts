@@ -1,10 +1,10 @@
-// Campaign drip worker.
+// Campaign drip dispatcher.
 //
-// setInterval-based; wakes every WORKER_TICK_MS. Per tick, per tenant:
+// Per pass, per tenant:
 //   1. Move any `scheduled` campaigns whose scheduled_at has passed into
 //      `running` (and stamp started_at).
 //   2. For each `running` campaign: fetch a small batch of `pending`
-//      recipients — batch size = send_rate_per_sec * tick_seconds — filter
+//      recipients — batch size = send_rate_per_sec * window_seconds — filter
 //      through party_consent, resolve variables, call sendMessage(),
 //      record tw_message rows, and update campaign_recipient.status.
 //   3. When a campaign has 0 pending AND 0 sending recipients, flip it to
@@ -15,56 +15,101 @@
 // (We use server-local midnight here; a per-tenant timezone override is a
 // future addition.)
 //
-// Follows the same shape as api/src/lib/party/dedup-worker.ts — plain
-// setInterval + a per-tick guard so ticks never overlap. Dies with the
-// process; a redeploy resumes cleanly because state lives in DB.
+// This was a `setInterval` living in the Express process. It is now invoked
+// from a route handler — immediately on campaign launch/resume, and once a
+// minute by cron. All state lives in the DB, which is why that swap was
+// possible at all: no invocation needs to remember anything from the last one.
+// See runCampaignDispatch below for the concurrency argument.
 
 import { sql } from "drizzle-orm";
-import { appPool, withTenant } from "../../db/app.js";
+import { appPool, withTenant } from "../../db/app";
 import {
   readTwilioConfig, sendMessage, TwilioNotConfigured,
-} from "../twilio/client.js";
-import { formatTwilioAddr } from "../twilio/phone.js";
-import type { TwChannel } from "../twilio/phone.js";
-import { filterConsentedRecipients } from "../party/consent.js";
-import { resolveBindings, missingBindings, type RecipientContext } from "./variables.js";
-import { recordOutbound, upsertConversation } from "../twilio/inbox.js";
+} from "../twilio/client";
+import { formatTwilioAddr } from "../twilio/phone";
+import type { TwChannel } from "../twilio/phone";
+import { filterConsentedRecipients } from "../party/consent";
+import { resolveBindings, missingBindings, type RecipientContext } from "./variables";
+import { recordOutbound, upsertConversation } from "../twilio/inbox";
 
-const WORKER_TICK_MS = 5_000; // 5 seconds
-const MAX_BATCH = 100;         // hard cap per tick per campaign regardless of rate
+const MAX_BATCH = 100;         // hard cap per pass per campaign regardless of rate
 
-let timer: ReturnType<typeof setInterval> | null = null;
-let ticking = false;
+/**
+ * Pacing window for one dispatch pass. Was WORKER_TICK_MS, the setInterval
+ * period; it survives because batch size is `send_rate_per_sec × window`, so
+ * this is what actually enforces send_rate_per_sec.
+ */
+const DISPATCH_WINDOW_MS = 5_000;
 
-export function startCampaignWorker(): void {
-  if (timer) return;
-  // Boot: sweep anything left in `sending` from a prior process. `withTenant`
-  // wraps a transaction, so an in-tick crash rolls back the pre-send UPDATE
-  // as well as the post-send one. The only way a `sending` row survives is
-  // if the process died between COMMIT of the pre-send UPDATE and COMMIT of
-  // the post-send UPDATE — a small window, but exists. Boot-sweep only —
-  // never sweep during a tick, else we'd move in-flight rows back to pending.
-  reapAllStuckSending().catch((err) =>
-    console.error("[campaign-worker] boot reap error:", (err as Error).message),
+/**
+ * How long one invocation keeps draining before handing back to the next cron
+ * run. Under the 300s maxDuration with headroom for the final pass to finish
+ * its Twilio calls.
+ */
+const DISPATCH_BUDGET_MS = Number(process.env.CAMPAIGN_DISPATCH_BUDGET_MS ?? 240_000);
+
+/**
+ * A recipient left in `sending` for longer than this had its invocation die
+ * mid-flight. Nothing live holds a row that long: the claim uses
+ * `FOR UPDATE … SKIP LOCKED` and the pre-send UPDATE is guarded on
+ * `status = 'pending'`, so a row goes pending → sending → sent inside a single
+ * dispatch. The age check is what makes the reap safe to run on every cron
+ * invocation rather than only at boot — there is no longer a "boot" to hook.
+ */
+const STUCK_SENDING_MS = Number(process.env.CAMPAIGN_STUCK_SENDING_MS ?? 5 * 60_000);
+
+/**
+ * One dispatch pass: reap stragglers, then promote → dispatch → complete for
+ * every tenant.
+ *
+ * This was a 5-second `setInterval`. It is now called from two places:
+ *
+ *   1. Immediately when a campaign is started or resumed (routes/campaigns.ts),
+ *      so a send begins draining at once instead of waiting for a tick. That
+ *      is FASTER than the old 5-second poll, not slower.
+ *   2. Vercel Cron every minute (src/app/api/cron/campaigns/route.ts), which
+ *      picks up scheduled campaigns whose time has come, retries anything the
+ *      trigger path dropped, and reaps stuck rows.
+ *
+ * Safe to run concurrently with itself — the recipient claim is
+ * `FOR UPDATE OF cr SKIP LOCKED`, so overlapping invocations take disjoint
+ * batches. The old `ticking` flag existed to stop a single process overlapping
+ * itself; it could not have coordinated across invocations anyway.
+ */
+export async function runCampaignDispatch(): Promise<void> {
+  await reapAllStuckSending().catch((err) =>
+    console.error("[campaign-worker] reap error:", (err as Error).message),
   );
-  tick().catch((err) =>
-    console.error("[campaign-worker] boot tick error:", (err as Error).message),
-  );
-  timer = setInterval(() => {
-    if (ticking) return;
-    ticking = true;
-    tick()
-      .catch((err) => console.error("[campaign-worker] tick error:", (err as Error).message))
-      .finally(() => { ticking = false; });
-  }, WORKER_TICK_MS);
-  console.log(`[campaign-worker] started (every ${WORKER_TICK_MS}ms)`);
+
+  // Drain in a loop rather than doing one pass and returning.
+  //
+  // Batch size is `send_rate_per_sec × window`, which under the old
+  // setInterval was rate × 5s, twelve times a minute. A single pass per cron
+  // invocation would therefore have cut sustained throughput by 12× without
+  // anything obviously breaking — a large campaign would simply have taken
+  // half a day. Looping here at the same 5-second cadence reproduces the
+  // original pacing (and so the same respect for send_rate_per_sec, which
+  // exists to stay inside Twilio/WhatsApp limits) inside one invocation.
+  const deadline = Date.now() + DISPATCH_BUDGET_MS;
+  for (;;) {
+    const dispatched = await tick();
+    if (dispatched === 0) return;             // nothing left to do
+    if (Date.now() >= deadline) {
+      // Out of time, not out of work. The next cron invocation resumes from
+      // the same queue — state lives entirely in campaign_recipient.
+      console.log("[campaign-worker] budget reached with work remaining; deferring to next run");
+      return;
+    }
+    await sleep(DISPATCH_WINDOW_MS);
+  }
 }
 
-export function stopCampaignWorker(): void {
-  if (timer) { clearInterval(timer); timer = null; }
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function tick(): Promise<void> {
+/** Returns how many recipients were dispatched, so the drain loop can stop. */
+async function tick(): Promise<number> {
   // Load tenants once — reuses appPool without RLS since we only need ids.
   const client = await appPool.connect();
   let tenantIds: string[];
@@ -75,27 +120,32 @@ async function tick(): Promise<void> {
     client.release();
   }
 
+  let dispatched = 0;
   for (const tenantId of tenantIds) {
     try {
       // promoteScheduled and completeIfDrained are pure SQL and stay in short
       // transactions. dispatchRunning manages its own, because it has to send
       // to Twilio between them — see the contract on withTenant in db/app.ts.
       await withTenant(tenantId, (db) => promoteScheduled(db));
-      await dispatchRunning(tenantId);
+      dispatched += await dispatchRunning(tenantId);
       await withTenant(tenantId, (db) => completeIfDrained(db));
     } catch (err) {
       console.error(`[campaign-worker] tenant ${tenantId}:`, (err as Error).message);
     }
   }
+  return dispatched;
 }
 
-// ─── Boot sweep: reap rows stuck in 'sending' from a prior process ────────
-// setInterval + `withTenant` means every dispatch tick runs inside its own
-// short transaction. A crash inside the tick rolls back the pre-send UPDATE,
-// so `sending` can only survive a crash between the tick's COMMIT and the
-// next tick — a small window that only matters across process restarts.
-// Sweep once on boot, never during a tick (that would move in-flight rows
-// backward and cause duplicate Twilio charges).
+// ─── Reap rows stranded in 'sending' by a died-mid-flight invocation ──────
+//
+// Previously this ran once at boot and was explicitly forbidden during a tick:
+// unqualified, it would move in-flight rows back to `pending` and re-send them,
+// which means duplicate WhatsApp/SMS charges against real people.
+//
+// There is no boot to hook any more, so the guard moved into the query as an
+// age check (STUCK_SENDING_MS). A row younger than that may still be in flight
+// in a concurrent invocation and is left alone; a row older than that cannot
+// be, because a dispatch never holds one that long.
 async function reapAllStuckSending(): Promise<void> {
   const client = await appPool.connect();
   let tenantIds: string[];
@@ -110,8 +160,11 @@ async function reapAllStuckSending(): Promise<void> {
       await withTenant(tenantId, async (db) => {
         const r = await db.execute(sql`
           UPDATE campaign_recipient
-          SET status = 'pending', error_code = NULL, error_message = NULL
+          SET status = 'pending', error_code = NULL, error_message = NULL,
+              sending_at = NULL
           WHERE status = 'sending'
+            AND sending_at IS NOT NULL
+            AND sending_at < NOW() - (${STUCK_SENDING_MS}::text || ' milliseconds')::interval
           RETURNING id
         `);
         if (r.rows.length > 0) {
@@ -147,12 +200,12 @@ interface CampaignRow {
   dailyCap:                 number | null;
 }
 
-async function dispatchRunning(tenantId: string): Promise<void> {
+async function dispatchRunning(tenantId: string): Promise<number> {
   // Grab config once — same rules apply to every campaign.
   let cfg;
   try { cfg = readTwilioConfig(); }
   catch (e) {
-    if (e instanceof TwilioNotConfigured) return; // stay quiet if not configured
+    if (e instanceof TwilioNotConfigured) return 0; // stay quiet if not configured
     throw e;
   }
 
@@ -169,8 +222,11 @@ async function dispatchRunning(tenantId: string): Promise<void> {
     `);
     return cR.rows as unknown as CampaignRow[];
   });
-  if (campaigns.length === 0) return;
+  if (campaigns.length === 0) return 0;
 
+  // Dispatched count drives the drain loop in runCampaignDispatch: a pass
+  // that claims nothing means the queue is empty and looping can stop.
+  let dispatched = 0;
   for (const c of campaigns) {
     // Daily cap check first — cheap and a hard stop.
     if (c.dailyCap != null) {
@@ -194,8 +250,10 @@ async function dispatchRunning(tenantId: string): Promise<void> {
       if (capped) continue;
     }
 
-    // Batch size = rate × tick_seconds, capped
-    const batchSize = Math.min(MAX_BATCH, Math.max(1, c.sendRatePerSec * (WORKER_TICK_MS / 1000)));
+    // Batch size = rate × window_seconds, capped. DISPATCH_WINDOW_MS is the
+    // old setInterval period; the drain loop sleeps for exactly that between
+    // passes, so send_rate_per_sec is enforced the same way it always was.
+    const batchSize = Math.min(MAX_BATCH, Math.max(1, c.sendRatePerSec * (DISPATCH_WINDOW_MS / 1000)));
 
     // ── Claim phase ──────────────────────────────────────────────────────
     // One transaction: lock a batch, mark it 'sending', apply the consent and
@@ -323,9 +381,14 @@ async function dispatchRunning(tenantId: string): Promise<void> {
       // SKIP LOCKED fence above: if a concurrent worker somehow got there
       // first, this updates 0 rows and we drop the recipient from the batch
       // rather than sending twice.
+      // sending_at stamps WHEN the claim happened. The reap uses it to tell a
+      // row still in flight in a concurrent invocation from one whose
+      // invocation died — see STUCK_SENDING_MS.
       const claimRes = await db.execute(sql`
         UPDATE campaign_recipient
-        SET status = 'sending', resolved_variables = ${JSON.stringify(resolved)}::jsonb
+        SET status = 'sending',
+            sending_at = NOW(),
+            resolved_variables = ${JSON.stringify(resolved)}::jsonb
         WHERE id = ${rec.recipientId} AND status = 'pending'
         RETURNING id
       `);
@@ -338,6 +401,7 @@ async function dispatchRunning(tenantId: string): Promise<void> {
     });
 
     if (claimed.length === 0) continue;
+    dispatched += claimed.length;
 
     // ── Send phase ───────────────────────────────────────────────────────
     // No transaction held. Every recipient here is already marked 'sending'
@@ -370,11 +434,11 @@ async function dispatchRunning(tenantId: string): Promise<void> {
         const conv = await upsertConversation(
           // The upsert helper takes a Drizzle db; withTenant already gave us
           // one — cast through unknown to satisfy the interface.
-          db as unknown as import("../twilio/inbox.js").DbExec,
+          db as unknown as import("../twilio/inbox").DbExec,
           rec.partyId, channel, rec.workItemId == null,
         );
         const msgId = await recordOutbound(
-          db as unknown as import("../twilio/inbox.js").DbExec,
+          db as unknown as import("../twilio/inbox").DbExec,
           conv.id,
           {
             channel,
@@ -407,6 +471,7 @@ async function dispatchRunning(tenantId: string): Promise<void> {
       });
     }
   }
+  return dispatched;
 }
 
 // ─── Phase 3: mark completed when the queue is drained ────────────────────

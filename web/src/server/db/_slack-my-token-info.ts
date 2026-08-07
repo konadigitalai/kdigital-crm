@@ -1,7 +1,7 @@
 // Read-only diagnostic. Show what scopes the current user's Slack link
 // actually has, and hit Slack's conversations.list live to see how many
 // channels each type returns.
-import { pool } from "./client.js";
+import { pool } from "./client";
 
 const SLACK_API = "https://slack.com/api";
 

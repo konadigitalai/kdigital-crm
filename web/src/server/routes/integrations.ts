@@ -3,10 +3,10 @@
 // Reads: integrations.read · Writes: integrations.manage
 // (Both gates applied via the `readWrite` helper at the index.ts mount.)
 
-import { Router } from "express";
+import { Router } from "@/server/http";
 import { sql } from "drizzle-orm";
-import { withTenant } from "../db/app.js";
-import { dispatchSlack, postToSlack } from "../lib/slack.js";
+import { withTenant } from "../db/app";
+import { dispatchSlack, postToSlack } from "../lib/slack";
 import {
   fetchShareRecord,
   isShareSurface,
@@ -15,8 +15,8 @@ import {
   SHARE_FIELD_CATALOG,
   SHARE_SURFACES,
   type ShareSurface,
-} from "../lib/share.js";
-import type { DomainEvent, DomainEventType } from "../lib/events.js";
+} from "../lib/share";
+import type { DomainEvent, DomainEventType } from "../lib/events";
 
 export const integrationsRouter = Router();
 
@@ -452,7 +452,7 @@ integrationsRouter.post("/slack/workspace", async (req, res, next) => {
       return res.status(400).json({ error: "botToken must start with xoxb- (Bot User OAuth Token)" });
     }
     // Verify it live before persisting.
-    const { authTest } = await import("../lib/slack-api.js");
+    const { authTest } = await import("../lib/slack-api");
     let info;
     try { info = await authTest(raw); }
     catch (err) {
@@ -479,7 +479,7 @@ integrationsRouter.post("/slack/workspace/test", async (req, res, next) => {
   try {
     const token = await loadBotToken(req.tenantId!);
     if (!token) return res.status(409).json({ error: "No bot token configured" });
-    const { authTest } = await import("../lib/slack-api.js");
+    const { authTest } = await import("../lib/slack-api");
     try {
       const info = await authTest(token);
       res.json({ ok: true, teamName: info.team, teamId: info.team_id, botUser: info.user, url: info.url });
@@ -495,7 +495,7 @@ integrationsRouter.post("/slack/directory/refresh", async (req, res, next) => {
   try {
     const token = await loadBotToken(req.tenantId!);
     if (!token) return res.status(409).json({ error: "No bot token configured" });
-    const { listAllChannels, listAllUsers } = await import("../lib/slack-api.js");
+    const { listAllChannels, listAllUsers } = await import("../lib/slack-api");
     const [channels, users] = await Promise.all([
       listAllChannels(token),
       listAllUsers(token),
@@ -665,7 +665,7 @@ integrationsRouter.get("/slack/my-directory", async (req, res, next) => {
     const link = await loadUserToken(req.tenantId!, req.userId);
     if (!link) return res.status(409).json({ error: "Slack not connected. Click Connect Slack first." });
 
-    const { listAllChannels } = await import("../lib/slack-api.js");
+    const { listAllChannels } = await import("../lib/slack-api");
     let channels;
     try { channels = await listAllChannels(link.token); }
     catch (err) {

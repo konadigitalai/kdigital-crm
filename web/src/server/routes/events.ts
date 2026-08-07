@@ -1,11 +1,11 @@
 // Calendar events — in-app only. Organizer creates an event, picks invitees,
 // invitees see it on their /calendar with Accept / Decline / Tentative buttons.
 
-import { Router } from "express";
+import { Router } from "@/server/http";
 import { sql } from "drizzle-orm";
-import { withTenant } from "../db/app.js";
-import { requirePermission } from "../middleware/require.js";
-import { partyIdFromAppUserId } from "../lib/party/resolve.js";
+import { withTenant } from "../db/app";
+import { requirePermission } from "../middleware/require";
+import { partyIdFromAppUserId } from "../lib/party/resolve";
 
 export const eventsRouter = Router();
 

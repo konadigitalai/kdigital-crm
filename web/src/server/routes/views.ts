@@ -17,11 +17,11 @@
 //     columns: string[] | null,        // visible column keys, in display order
 //   }
 
-import { Router } from "express";
+import { Router } from "@/server/http";
 import { sql } from "drizzle-orm";
-import { withTenant } from "../db/app.js";
-import type { Permission } from "../lib/permissions.js";
-import { partyIdFromAppUserId } from "../lib/party/resolve.js";
+import { withTenant } from "../db/app";
+import type { Permission } from "../lib/permissions";
+import { partyIdFromAppUserId } from "../lib/party/resolve";
 
 export const viewsRouter = Router();
 

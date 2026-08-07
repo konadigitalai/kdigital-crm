@@ -9,11 +9,11 @@
 // /sessions handler). Paths here are distinct (/board, /summary) so the two
 // routers never collide. Every handler is gated by admin.batches.manage.
 
-import { Router } from "express";
+import { Router } from "@/server/http";
 import { sql } from "drizzle-orm";
-import { withTenant } from "../db/app.js";
-import { requirePermission } from "../middleware/require.js";
-import { partyIdFromAppUserId } from "../lib/party/resolve.js";
+import { withTenant } from "../db/app";
+import { requirePermission } from "../middleware/require";
+import { partyIdFromAppUserId } from "../lib/party/resolve";
 
 export const batchBoardRouter = Router();
 

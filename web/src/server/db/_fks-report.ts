@@ -1,6 +1,6 @@
 // Throwaway: dump every FK that references work_item or party, along with
 // on-delete action. Feeds the wipe script's cleanup order.
-import { pool } from "./client.js";
+import { pool } from "./client";
 
 async function main() {
   const q = async (target: string) => pool.query<{

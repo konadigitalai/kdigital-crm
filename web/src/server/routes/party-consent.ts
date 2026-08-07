@@ -3,11 +3,11 @@
 // Mounted at /party. Routes carry the partyId in their own path pattern so
 // each handler owns its params (no mergeParams needed).
 
-import { Router } from "express";
+import { Router } from "@/server/http";
 import { sql } from "drizzle-orm";
-import { withTenant } from "../db/app.js";
-import { setConsent, type Channel } from "../lib/party/consent.js";
-import { resolveActorPartyId } from "../lib/party/resolve.js";
+import { withTenant } from "../db/app";
+import { setConsent, type Channel } from "../lib/party/consent";
+import { resolveActorPartyId } from "../lib/party/resolve";
 
 export const partyConsentRouter = Router();
 

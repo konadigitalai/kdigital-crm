@@ -12,8 +12,8 @@
 // fails and we return 403 — that's the correct failure mode.
 
 import { createHmac, timingSafeEqual } from "node:crypto";
-import type { TwChannel } from "./phone.js";
-import { parseTwilioAddr } from "./phone.js";
+import type { TwChannel } from "./phone";
+import { parseTwilioAddr } from "./phone";
 
 export function verifyTwilioSignature(
   signature: string | undefined,

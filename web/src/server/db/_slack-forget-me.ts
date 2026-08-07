@@ -6,7 +6,7 @@
 // Nukes every row in slack_user_link — safe on local dev where you
 // are the only tester. If you're on a shared DB, prefer:
 //   DELETE FROM slack_user_link WHERE app_user_id = '<your uuid>'
-import { pool } from "./client.js";
+import { pool } from "./client";
 
 async function main() {
   const info = await pool.query<{ current_database: string }>(`SELECT current_database()`);

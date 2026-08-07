@@ -1,6 +1,6 @@
 // Read-only diagnostic: what DB am I actually connected to, and do
 // the Slack tables exist there?
-import { pool } from "./client.js";
+import { pool } from "./client";
 
 async function main() {
   const info = await pool.query<{ current_database: string; server_version: string }>(

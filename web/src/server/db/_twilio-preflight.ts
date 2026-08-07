@@ -7,7 +7,7 @@
 // Run:  DATABASE_URL=<target-db-url> npm run db:twilio-preflight
 //   or just: npm run db:twilio-preflight  (uses api/.env's DATABASE_URL)
 
-import { pool } from "./client.js";
+import { pool } from "./client";
 
 type CheckResult = { name: string; ok: boolean; detail: string };
 const results: CheckResult[] = [];

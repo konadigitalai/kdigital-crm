@@ -2,7 +2,7 @@
 // Prints channels + humans-only users so you can eyeball what the
 // refresh pulled in.
 
-import { pool } from "./client.js";
+import { pool } from "./client";
 
 async function main() {
   const t = await pool.query<{ id: string; name: string }>(

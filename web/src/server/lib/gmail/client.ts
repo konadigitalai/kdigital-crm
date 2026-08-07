@@ -12,7 +12,7 @@
 // here in `accessTokenFor()` rather than in a config object.
 
 import { sql } from "drizzle-orm";
-import type { DbExec } from "../twilio/inbox.js";
+import type { DbExec } from "../twilio/inbox";
 
 const GMAIL_API = "https://gmail.googleapis.com/gmail/v1";
 const TOKEN_URL = "https://oauth2.googleapis.com/token";

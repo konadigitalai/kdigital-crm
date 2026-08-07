@@ -5,7 +5,7 @@
 // in here is about flattening that into: who, to whom, subject, text, html,
 // attachments, and the two header values that stitch replies to their parents.
 
-import type { GmailMessage, GmailPart } from "./client.js";
+import type { GmailMessage, GmailPart } from "./client";
 
 export interface ParsedEmail {
   providerMessageId: string;       // Gmail's message id

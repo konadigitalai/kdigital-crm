@@ -12,7 +12,7 @@
 // so we don't silently overwrite an existing backup — pass a suffix to force a
 // new one, e.g. `npx tsx src/db/backup-catalog.ts retry2`.
 
-import { pool } from "./client.js";
+import { pool } from "./client";
 
 const TABLES = [
   "program",

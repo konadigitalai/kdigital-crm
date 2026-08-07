@@ -1,5 +1,5 @@
 // Drop everything in the public schema. ONLY for dev. Run: npm run db:reset
-import { pool } from "./client.js";
+import { pool } from "./client";
 
 async function main() {
   console.log("DROP SCHEMA public CASCADE; CREATE SCHEMA public;");

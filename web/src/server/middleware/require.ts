@@ -1,5 +1,5 @@
-import type { Request, Response, NextFunction } from "express";
-import type { Permission } from "../lib/permissions.js";
+import type { ApiRequest as Request, ApiResponse as Response, NextFunction } from "@/server/http";
+import type { Permission } from "../lib/permissions";
 
 // requirePermission — guard middleware factory. Use AFTER authMiddleware.
 export function requirePermission(perm: Permission) {

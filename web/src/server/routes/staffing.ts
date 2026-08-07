@@ -11,9 +11,9 @@
 // `candidate_eligible` view (post-0091) and this router reads it rather than
 // restating the predicate, so there is exactly one place to change it.
 
-import { Router } from "express";
+import { Router } from "@/server/http";
 import { sql } from "drizzle-orm";
-import { withTenant } from "../db/app.js";
+import { withTenant } from "../db/app";
 
 export const requisitionsRouter = Router();
 export const candidatesRouter   = Router();

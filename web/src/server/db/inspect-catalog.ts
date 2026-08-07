@@ -3,7 +3,7 @@
 //
 // Usage: npx tsx src/db/inspect-catalog.ts
 
-import { pool } from "./client.js";
+import { pool } from "./client";
 
 async function main() {
   const q = await pool.query<{ table_name: string; column_name: string; data_type: string; is_nullable: string }>(

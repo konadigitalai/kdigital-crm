@@ -12,9 +12,9 @@
 // The first is the one that matters: it stops the directory becoming a
 // second, divergent copy of people the CRM already knows.
 
-import { Router } from "express";
+import { Router } from "@/server/http";
 import { sql } from "drizzle-orm";
-import { withTenant } from "../db/app.js";
+import { withTenant } from "../db/app";
 
 export const workersRouter = Router();
 

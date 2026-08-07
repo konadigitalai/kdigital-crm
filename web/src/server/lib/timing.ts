@@ -16,7 +16,12 @@
 //      surface in Render's logs without anyone watching a browser.
 
 import { AsyncLocalStorage } from "node:async_hooks";
-import type { Request, Response, NextFunction } from "express";
+import type { ApiRequest as Request, ApiResponse as Response } from "@/server/http";
+
+// `Response` is taken by the alias above (this file predates the migration and
+// its body reads better keeping the Express names), so the Web Response — what
+// the dispatcher actually returns — needs its own name.
+type Response_ = globalThis.Response;
 
 interface RequestTiming {
   startedAt: number;
@@ -46,11 +51,19 @@ export function recordPoolWait(ms: number): void {
 }
 
 /**
- * Mount early — before the routers, after the body parsers — so the store
- * covers every handler. Cheap: one AsyncLocalStorage frame and one Date.now()
- * per request.
+ * Wrap the whole dispatch so the AsyncLocalStorage store covers every handler.
+ *
+ * This was Express middleware that called `next()` from inside `store.run()`,
+ * which worked because Express invokes the rest of the chain synchronously
+ * within that call. The replacement dispatcher returns from a middleware before
+ * continuing, so a `next()`-based version would leave the store scope and every
+ * `recordDbTime` call would silently find no store — Server-Timing would report
+ * db=0 on every request. Wrapping the dispatch keeps the whole request inside
+ * one context instead.
+ *
+ * Cheap: one AsyncLocalStorage frame and one Date.now() per request.
  */
-export function timingMiddleware(req: Request, res: Response, next: NextFunction): void {
+export function runWithTiming(req: Request, res: Response, dispatch: () => Promise<Response_>): Promise<Response_> {
   const timing: RequestTiming = {
     startedAt: Date.now(),
     dbMs: 0,
@@ -58,7 +71,23 @@ export function timingMiddleware(req: Request, res: Response, next: NextFunction
     poolWaitMs: 0,
   };
 
-  store.run(timing, () => {
+  return store.run(timing, () => {
+    // Runs immediately before the Response is constructed, which is the only
+    // moment the final numbers are known and the headers are still mutable.
+    res.onBeforeSend(() => {
+      const total = Date.now() - timing.startedAt;
+      const other = Math.max(0, total - timing.dbMs);
+      res.setHeader(
+        "Server-Timing",
+        [
+          `db;desc="Postgres (${timing.dbQueries} queries)";dur=${timing.dbMs}`,
+          `pool;desc="Waiting for a connection";dur=${timing.poolWaitMs}`,
+          `other;desc="App + external APIs";dur=${other}`,
+          `total;dur=${total}`,
+        ].join(", "),
+      );
+    });
+
     res.on("finish", () => {
       const total = Date.now() - timing.startedAt;
       // Everything that isn't Postgres: external APIs, JSON serialisation, and
@@ -75,31 +104,6 @@ export function timingMiddleware(req: Request, res: Response, next: NextFunction
       }
     });
 
-    // Set the header before handlers run — once a handler calls res.json()
-    // the headers are already flushed and a later set is silently dropped.
-    // The values are read at flush time via a getter-ish trick: we can't know
-    // the final numbers this early, so instead we hook writeHead.
-    const originalWriteHead = res.writeHead.bind(res);
-    res.writeHead = function patchedWriteHead(this: Response, ...args: unknown[]) {
-      const total = Date.now() - timing.startedAt;
-      const other = Math.max(0, total - timing.dbMs);
-      try {
-        res.setHeader(
-          "Server-Timing",
-          [
-            `db;desc="Postgres (${timing.dbQueries} queries)";dur=${timing.dbMs}`,
-            `pool;desc="Waiting for a connection";dur=${timing.poolWaitMs}`,
-            `other;desc="App + external APIs";dur=${other}`,
-            `total;dur=${total}`,
-          ].join(", "),
-        );
-      } catch {
-        // Headers already sent (streamed response) — timing is best-effort.
-      }
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      return originalWriteHead(...(args as [any]));
-    } as Response["writeHead"];
-
-    next();
+    return dispatch();
   });
 }

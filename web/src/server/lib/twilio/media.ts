@@ -7,7 +7,7 @@
 // We enforce these BOTH client-side (helpful pre-submit error) AND
 // server-side (defense in depth — a malicious client can bypass the FE).
 
-import type { TwChannel } from "./phone.js";
+import type { TwChannel } from "./phone";
 
 /** Human-readable size cap per channel + MIME family. */
 export interface MediaCap {

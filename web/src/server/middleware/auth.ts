@@ -12,46 +12,46 @@
 // This replaces the previous cookie-session middleware. The `decrm_session`
 // cookie, the `session` table, and bcrypt hashes are no longer involved.
 
-import type { Request, Response, NextFunction } from "express";
+import type { ApiRequest as Request, ApiResponse as Response, NextFunction } from "@/server/http";
 import { createRemoteJWKSet, jwtVerify, type JWTPayload } from "jose";
-import { appPool } from "../db/app.js";
-import { provisionPartyForInternalUser } from "../lib/party/provision.js";
+import { appPool } from "../db/app";
+import { provisionPartyForInternalUser } from "../lib/party/provision";
 
-declare global {
-  namespace Express {
-    interface Request {
-      tenantId?: string;
-      userId?: string;
-      user?: {
-        id: string;
-        tenantId: string;
-        email: string;
-        name: string | null;
-        role: string;
-        active: boolean;
-      };
-      permissions?: Set<string>;
-    }
-  }
-}
+// tenantId / userId / user / permissions used to be bolted onto Express's
+// Request via a global namespace augmentation. They are now declared directly
+// on ApiRequest (see server/http/types.ts), which is both narrower and
+// checkable — nothing else in the process can widen the request type.
 
 // ─── Env-driven config ──────────────────────────────────────────────────────
 
-const AUTH0_DOMAIN   = required("AUTH0_DOMAIN");
-const AUTH0_AUDIENCE = required("AUTH0_AUDIENCE");
 const PERMISSIONS_CLAIM =
   process.env.AUTH0_PERMISSIONS_CLAIM?.trim() ||
   "https://digitaledify.com/permissions";
 
-const ISSUER = `https://${AUTH0_DOMAIN}/`;
-const JWKS = createRemoteJWKSet(new URL(`${ISSUER}.well-known/jwks.json`));
-
 function required(name: string): string {
   const v = process.env[name];
   if (!v || !v.trim()) {
-    throw new Error(`Env var ${name} is required (set in api/.env)`);
+    throw new Error(`Env var ${name} is required (set in web/.env.local)`);
   }
   return v.trim();
+}
+
+// Resolved on first request rather than at import, for the same reason the
+// database pool is (see db/app.ts): Next loads this module during `next build`
+// to collect page data, and a module-scope throw would fail the build instead
+// of surfacing a clear error at request time. The JWKS fetcher caches its keys
+// internally, so building it once per instance is all that's needed.
+let _verifier: { issuer: string; audience: string; jwks: ReturnType<typeof createRemoteJWKSet> } | null = null;
+
+function verifier() {
+  if (_verifier) return _verifier;
+  const issuer = `https://${required("AUTH0_DOMAIN")}/`;
+  _verifier = {
+    issuer,
+    audience: required("AUTH0_AUDIENCE"),
+    jwks: createRemoteJWKSet(new URL(`${issuer}.well-known/jwks.json`)),
+  };
+  return _verifier;
 }
 
 // ─── JIT user provisioning ──────────────────────────────────────────────────
@@ -349,10 +349,8 @@ export async function authMiddleware(req: Request, res: Response, next: NextFunc
 
     let claims: JWTPayload;
     try {
-      const verified = await jwtVerify(token, JWKS, {
-        issuer: ISSUER,
-        audience: AUTH0_AUDIENCE,
-      });
+      const { jwks, issuer, audience } = verifier();
+      const verified = await jwtVerify(token, jwks, { issuer, audience });
       claims = verified.payload;
     } catch (err) {
       return res.status(401).json({

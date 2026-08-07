@@ -6,7 +6,7 @@
 // The contract: emitEvent NEVER throws. The originating write path has
 // already committed; a notification failure must not 500 the request.
 
-import { dispatchSlack } from "./slack.js";
+import { dispatchSlack } from "./slack";
 
 export type DomainEventType = "lead.created" | "case.opened" | "case.closed";
 

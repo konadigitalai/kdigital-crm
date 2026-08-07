@@ -1,16 +1,13 @@
 // Gmail sync worker.
 //
-// Polls every connected mailbox on a fixed tick and pulls in anything new.
-// Same shape as lib/campaigns/worker.ts and lib/party/dedup-worker.ts —
-// setInterval + a per-tick guard so ticks never overlap, all cursor state in
-// the DB so a Render restart resumes cleanly.
+// Polls every connected mailbox once a minute and pulls in anything new. Was a
+// `setInterval` in the Express process; now driven by Vercel Cron, whose
+// one-minute floor happens to be exactly the old tick. All cursor state lives
+// in the DB, so nothing is carried between invocations.
 //
 // Why polling and not Gmail's Pub/Sub push:
-//   - The API has no queue/Pub/Sub infrastructure, and push would need a GCP
-//     topic + IAM + a watch() renewal loop (watches expire every 7 days).
-//   - Render sleeps the free tier after 15 min idle, so a push arriving at a
-//     cold instance can time out — the same reason the Exotel recording
-//     backfill retries on a timer rather than trusting one callback.
+//   - Push would need a GCP topic + IAM + a watch() renewal loop (watches
+//     expire every 7 days) — real infrastructure for a marginal gain.
 //   - Cost is trivial: history.list is 2 quota units against a 1.2M/day budget,
 //     so one mailbox polled every 60s spends ~2,880 units/day.
 // Push can be layered on later as an accelerator without changing ingest.
@@ -21,15 +18,15 @@
 // rather than dragging in the mailbox's entire history.
 
 import { sql } from "drizzle-orm";
-import { appPool, withTenant } from "../../db/app.js";
+import { appPool, withTenant } from "../../db/app";
 import {
   readGoogleConfig, isGmailConfigured, GoogleNotConfigured,
   accessTokenFor, getProfile, listHistory, listMessages,
   httpStatusOf, isInvalidGrant,
   type GmailAccountRow,
-} from "./client.js";
-import { ingestGmailMessage } from "./ingest.js";
-import type { DbExec } from "../twilio/inbox.js";
+} from "./client";
+import { ingestGmailMessage } from "./ingest";
+import type { DbExec } from "../twilio/inbox";
 
 const WORKER_TICK_MS = 60_000;   // 1 minute
 // How much mail to pull in when an account first connects. Enough that a lead's
@@ -41,30 +38,16 @@ const BACKFILL_MAX   = 100;
 // token doesn't burn a Gmail API call every 60s forever.
 const MAX_SYNC_ERRORS = 10;
 
-let timer: ReturnType<typeof setInterval> | null = null;
-let ticking = false;
-
-export function startGmailWorker(): void {
-  if (timer) return;
-  if (!isGmailConfigured()) {
-    console.log("[gmail-worker] not started — Gmail env not configured");
-    return;
-  }
-  tick().catch((err) =>
-    console.error("[gmail-worker] boot tick error:", (err as Error).message),
-  );
-  timer = setInterval(() => {
-    if (ticking) return;
-    ticking = true;
-    tick()
-      .catch((err) => console.error("[gmail-worker] tick error:", (err as Error).message))
-      .finally(() => { ticking = false; });
-  }, WORKER_TICK_MS);
-  console.log(`[gmail-worker] started (every ${WORKER_TICK_MS}ms)`);
-}
-
-export function stopGmailWorker(): void {
-  if (timer) { clearInterval(timer); timer = null; }
+/**
+ * One Gmail poll pass.
+ *
+ * Was a 60-second `setInterval`; now driven by Vercel Cron (see
+ * src/app/api/cron/gmail/route.ts). Cron's one-minute floor is exactly the
+ * old WORKER_TICK_MS, so the polling cadence is unchanged.
+ */
+export async function runGmailSync(): Promise<void> {
+  if (!isGmailConfigured()) return; // no-op when the Gmail env isn't set
+  return tick();
 }
 
 async function tick(): Promise<void> {

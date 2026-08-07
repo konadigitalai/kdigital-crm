@@ -13,14 +13,14 @@
 // Config: GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET / GOOGLE_REDIRECT_URI /
 // GOOGLE_STATE_SECRET / GMAIL_SHARED_ACCOUNT_EMAIL / GMAIL_INTERNAL_DOMAIN.
 
-import { Router } from "express";
+import { Router } from "@/server/http";
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { sql } from "drizzle-orm";
-import { withTenant } from "../db/app.js";
+import { withTenant } from "../db/app";
 import {
   readGoogleConfig, GoogleNotConfigured, exchangeCode, getProfile,
   GMAIL_SCOPES, type GoogleConfig,
-} from "../lib/gmail/client.js";
+} from "../lib/gmail/client";
 
 export const googleOAuthCallbackRouter = Router();  // public
 export const googleOAuthRouter = Router();          // behind authMiddleware
@@ -246,7 +246,7 @@ googleOAuthRouter.post("/disconnect", async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
-function oauthFail(res: import("express").Response, message: string) {
+function oauthFail(res: import("@/server/http").ApiResponse, message: string) {
   res.status(400).send(`<!doctype html><html><body style="font:14px system-ui;padding:2em">
     <h2>Gmail connection failed</h2>
     <p>${escapeHtml(message)}</p>

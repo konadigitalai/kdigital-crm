@@ -1,8 +1,8 @@
-import { Router } from "express";
+import { Router } from "@/server/http";
 import { sql } from "drizzle-orm";
-import { withTenant } from "../db/app.js";
-import { emitEvent } from "../lib/events.js";
-import { partyIdFromAppUserId, resolveActorPartyId, resolveSentinelPartyId } from "../lib/party/resolve.js";
+import { withTenant } from "../db/app";
+import { emitEvent } from "../lib/events";
+import { partyIdFromAppUserId, resolveActorPartyId, resolveSentinelPartyId } from "../lib/party/resolve";
 
 export const casesRouter = Router();
 

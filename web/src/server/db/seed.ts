@@ -4,8 +4,8 @@
 // Usage: npm run db:seed
 
 import { sql } from "drizzle-orm";
-import { db, pool } from "./client.js";
-import { provisionPartyForInternalUser } from "../lib/party/provision.js";
+import { db, pool } from "./client";
+import { provisionPartyForInternalUser } from "../lib/party/provision";
 import {
   activity,
   agent,
@@ -30,7 +30,7 @@ import {
   tenant,
   supportCase,
   workItem,
-} from "./schema.js";
+} from "./schema";
 // Auth is owned by Auth0 now — seeded users have no password hash and
 // can't log in via the legacy /auth/login (which no longer exists). The
 // only way into the app is Auth0 Universal Login; first sign-in JIT-

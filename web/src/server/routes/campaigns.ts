@@ -7,13 +7,14 @@
 // only mutates DB rows — the worker picks up `scheduled`/`running` state
 // and drips out per-recipient sends.
 
-import { Router } from "express";
+import { Router } from "@/server/http";
+import { kickCampaignDispatch } from "../lib/campaigns/kick";
 import { sql } from "drizzle-orm";
-import { withTenant } from "../db/app.js";
-import { requirePermission } from "../middleware/require.js";
-import { resolveActorPartyId } from "../lib/party/resolve.js";
-import { resolveAudience, listAudienceFields, type FilterState } from "../lib/campaigns/audience.js";
-import { readTwilioConfig, TwilioNotConfigured } from "../lib/twilio/client.js";
+import { withTenant } from "../db/app";
+import { requirePermission } from "../middleware/require";
+import { resolveActorPartyId } from "../lib/party/resolve";
+import { resolveAudience, listAudienceFields, type FilterState } from "../lib/campaigns/audience";
+import { readTwilioConfig, TwilioNotConfigured } from "../lib/twilio/client";
 
 export const campaignsRouter = Router();
 
@@ -181,6 +182,8 @@ campaignsRouter.post("/:id/schedule", requirePermission("messaging.send"), async
     if (result.kind === "not-found")      return res.status(404).json({ error: "campaign not found" });
     if (result.kind === "bad-state")      return res.status(400).json({ error: result.reason });
     if (result.kind === "empty-audience") return res.status(400).json({ error: "audience matched 0 leads" });
+    // Begin draining immediately rather than waiting for the next cron run.
+    kickCampaignDispatch("launch");
     res.json(result);
   } catch (err) { next(err); }
 });
@@ -188,8 +191,8 @@ campaignsRouter.post("/:id/schedule", requirePermission("messaging.send"), async
 // ─── POST /campaigns/:id/pause | /resume | /cancel ────────────────────────
 
 async function transitionCampaign(
-  req: import("express").Request,
-  res: import("express").Response,
+  req: import("@/server/http").ApiRequest,
+  res: import("@/server/http").ApiResponse,
   from: string[],
   to: string,
 ): Promise<void> {
@@ -224,7 +227,9 @@ campaignsRouter.post("/:id/pause",  requirePermission("messaging.send"), (req, r
   transitionCampaign(req, res, ["running", "scheduled"], "paused").catch(next);
 });
 campaignsRouter.post("/:id/resume", requirePermission("messaging.send"), (req, res, next) => {
-  transitionCampaign(req, res, ["paused"], "running").catch(next);
+  transitionCampaign(req, res, ["paused"], "running")
+    .then(() => kickCampaignDispatch("resume"))
+    .catch(next);
 });
 campaignsRouter.post("/:id/cancel", requirePermission("messaging.send"), (req, res, next) => {
   transitionCampaign(req, res, ["draft", "scheduled", "running", "paused"], "cancelled").catch(next);

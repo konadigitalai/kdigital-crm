@@ -1,7 +1,7 @@
-import { Router } from "express";
+import { Router } from "@/server/http";
 import { sql, type SQL } from "drizzle-orm";
-import { withTenant } from "../db/app.js";
-import { resolveActorPartyId } from "../lib/party/resolve.js";
+import { withTenant } from "../db/app";
+import { resolveActorPartyId } from "../lib/party/resolve";
 
 export const enrollmentsRouter = Router();
 

@@ -1,13 +1,13 @@
-import { Router } from "express";
+import { Router } from "@/server/http";
 import { sql } from "drizzle-orm";
-import { withTenant } from "../db/app.js";
-import { emitEvent } from "../lib/events.js";
-import { requirePermission } from "../middleware/require.js";
-import { partyIdFromAppUserId, resolveActorPartyId, resolveSentinelPartyId } from "../lib/party/resolve.js";
-import { evaluateTriggers } from "../lib/campaigns/triggers.js";
-import { bootstrapConsent } from "../lib/party/consent.js";
-import { composeFullE164 } from "../lib/twilio/phone.js";
-import { syncLeadToInterakt, LEAD_SYNC_COLUMNS, type LeadForSync, type SyncOutcome } from "../lib/interakt.js";
+import { withTenant } from "../db/app";
+import { emitEvent } from "../lib/events";
+import { requirePermission } from "../middleware/require";
+import { partyIdFromAppUserId, resolveActorPartyId, resolveSentinelPartyId } from "../lib/party/resolve";
+import { evaluateTriggers } from "../lib/campaigns/triggers";
+import { bootstrapConsent } from "../lib/party/consent";
+import { composeFullE164 } from "../lib/twilio/phone";
+import { syncLeadToInterakt, LEAD_SYNC_COLUMNS, type LeadForSync, type SyncOutcome } from "../lib/interakt";
 
 export const leadsRouter = Router();
 
@@ -619,7 +619,11 @@ leadsRouter.post("/:idOrNumber/sync-interakt", async (req, res, next) => {
         WHERE ${isU ? sql`wi.id = ${idOrNumber}` : sql`wi.number = ${idOrNumber}`} AND wi.type = 'lead'
         LIMIT 1
       `);
-      const lead = r.rows[0] as (LeadForSync & { wiId: string }) | undefined;
+      // Double cast: db.execute returns Record<string, unknown> rows, which
+      // don't structurally overlap the target. The `| undefined` is kept
+      // deliberately — rows[0] really can be absent, and the guard below
+      // depends on it.
+      const lead = r.rows[0] as unknown as (LeadForSync & { wiId: string }) | undefined;
       if (!lead) return { kind: "not-found" as const };
       return { kind: "ok" as const, key, lead };
     });

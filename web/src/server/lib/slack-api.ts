@@ -11,7 +11,7 @@
 // We surface that as SlackRateLimitedError and let the caller decide
 // whether to retry.
 
-import type { SlackPayload } from "./slack.js";
+import type { SlackPayload } from "./slack";
 
 const SLACK_API = "https://slack.com/api";
 

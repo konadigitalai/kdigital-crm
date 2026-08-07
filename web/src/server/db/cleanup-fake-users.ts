@@ -23,7 +23,7 @@
 //   npx tsx src/db/cleanup-fake-users.ts --apply \
 //     --reassign-to crmadmin@gmail.com
 
-import { pool } from "./client.js";
+import { pool } from "./client";
 
 interface Args {
   apply: boolean;

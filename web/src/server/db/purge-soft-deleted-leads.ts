@@ -37,7 +37,7 @@
 //   - a sample of 5 targets (name, LEAD-#, deleted date)
 // Nothing is written.
 
-import { pool } from "./client.js";
+import { pool } from "./client";
 
 const args = process.argv.slice(2);
 const APPLY = args.includes("--apply");

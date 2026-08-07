@@ -9,8 +9,8 @@
 // (channel column already there).
 
 import { sql } from "drizzle-orm";
-import { withTenant } from "../db/app.js";
-import type { DomainEvent } from "./events.js";
+import { withTenant } from "../db/app";
+import type { DomainEvent } from "./events";
 
 interface SlackRuleRow {
   id: string;

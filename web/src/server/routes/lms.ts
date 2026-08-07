@@ -19,10 +19,10 @@
 // Unreachable rows return 404, never 403: a learner shouldn't be able to
 // probe which module ids exist by reading the status code.
 
-import { Router } from "express";
+import { Router } from "@/server/http";
 import { sql } from "drizzle-orm";
-import { withTenant } from "../db/app.js";
-import { partyIdFromAppUserId } from "../lib/party/resolve.js";
+import { withTenant } from "../db/app";
+import { partyIdFromAppUserId } from "../lib/party/resolve";
 
 export const lmsRouter = Router();
 

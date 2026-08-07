@@ -1,5 +1,5 @@
 // Connection sanity check. Run: npm run db:check
-import { pool } from "./client.js";
+import { pool } from "./client";
 
 const required = ["pgcrypto", "pg_trgm", "vector"];
 

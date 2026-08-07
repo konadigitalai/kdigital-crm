@@ -1,5 +1,5 @@
 // Diagnose RLS: is the policy itself broken, or is our verify code wrong?
-import { pool } from "./client.js";
+import { pool } from "./client";
 
 async function main() {
   // 1. Connecting role + bypass attributes

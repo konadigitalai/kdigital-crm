@@ -1,47 +1,101 @@
 // App-role pool: connects as decrm_app (NOBYPASSRLS).
 // All HTTP handlers go through this pool, not the admin pool.
-import "dotenv/config";
+//
+// No `dotenv/config` import: Next.js loads .env / .env.local itself before any
+// module here evaluates. The ops scripts under db/ still import it, because
+// they run standalone under tsx with no framework to do it for them.
 import pg from "pg";
 import { drizzle } from "drizzle-orm/node-postgres";
-import * as schema from "./schema.js";
-import { recordDbTime, recordPoolWait } from "../lib/timing.js";
+import * as schema from "./schema";
+import { recordDbTime, recordPoolWait } from "../lib/timing";
 
-const url = process.env.APP_DATABASE_URL;
-if (!url) {
-  throw new Error("APP_DATABASE_URL is not set. The API must connect as decrm_app, not admin.");
-}
-
-const usesAzure = url.includes(".postgres.database.azure.com");
-
-// Pool size. The old value was 10, which starved the whole API whenever a
-// handful of requests held a connection across a slow external call (Twilio
-// send, LangGraph LLM stream). Those callers have since been restructured to
-// release the connection before doing network I/O — see withTenant's contract
-// below — but 10 was tight regardless for a process serving 46 routers plus
-// three background workers.
+// Pool size — PER INVOCATION, which is the whole point of this comment.
 //
-// Keep this comfortably under the server's max_connections minus what the
-// migrate runner and any psql session need. Azure Flexible Server's default on
-// the smaller SKUs is 50-ish per vCore; DB_POOL_MAX lets ops retune without a
-// deploy.
-const POOL_MAX = Number(process.env.DB_POOL_MAX ?? 20);
-
-export const appPool = new pg.Pool({
-  connectionString: url,
-  ssl: usesAzure ? { rejectUnauthorized: true } : false,
-  max: POOL_MAX,
-  // Don't let a wedged socket hold a pool slot forever.
-  idleTimeoutMillis: 30_000,
-  connectionTimeoutMillis: 10_000,
-});
+// This was 10, then raised to 20 during the performance work because a single
+// always-on Express process served every request and 10 starved it. That
+// reasoning INVERTS under serverless. There is no longer one process with one
+// pool: every concurrent invocation is its own process with its own pool, so
+// the real number of connections reaching Postgres is
+//
+//     concurrent invocations × DB_POOL_MAX
+//
+// Leaving it at 20 would mean ten concurrent requests asking for 200
+// connections from a server whose smaller Azure SKUs cap out around 50 — the
+// failure mode being "too many connections" errors under exactly the load you
+// least want them.
+//
+// So: keep this small and let a POOLER do the multiplexing. Point
+// APP_DATABASE_URL at PgBouncer — Azure Flexible Server has it built in on
+// port 6432 (General Purpose / Memory Optimized tiers; NOT Burstable, so check
+// your SKU). Transaction mode is correct and safe here: `withTenant` scopes
+// its tenant with `SET LOCAL`, which is transaction-scoped and therefore
+// survives transaction-mode pooling unchanged.
+//
+// The default is deliberately 2, sized for THIS deployment: de-crm-pg is a
+// Burstable B1ms, which caps near 35 connections and — because Azure only
+// offers built-in PgBouncer on General Purpose and Memory Optimized — has no
+// pooler available to it. Raise this once one is in front of Postgres.
+const POOL_MAX = Number(process.env.DB_POOL_MAX ?? 2);
 
 // Surface pool exhaustion instead of letting it read as "the app is slow".
 // A connect() that waits longer than this is almost always a handler holding a
 // transaction open across something it shouldn't.
 const POOL_WAIT_WARN_MS = Number(process.env.DB_POOL_WAIT_WARN_MS ?? 250);
 
-appPool.on("error", (err) => {
-  console.error("[db] idle client error:", err.message);
+// The pool is built on first use, not at import.
+//
+// Under Express this module was only ever loaded by a booting server that had
+// its env, so validating at module scope was fine. Next imports route modules
+// during `next build` to collect page data, where runtime secrets are not
+// necessarily present — a module-scope throw turns a missing variable into a
+// failed BUILD rather than a clear error on the first request. Deferring also
+// means a cold invocation that never touches Postgres never opens a connection.
+let _pool: pg.Pool | null = null;
+
+function initPool(): pg.Pool {
+  if (_pool) return _pool;
+
+  const url = process.env.APP_DATABASE_URL;
+  if (!url) {
+    throw new Error("APP_DATABASE_URL is not set. The API must connect as decrm_app, not admin.");
+  }
+  const usesAzure = url.includes(".postgres.database.azure.com");
+
+  _pool = new pg.Pool({
+    connectionString: url,
+    ssl: usesAzure ? { rejectUnauthorized: true } : false,
+    max: POOL_MAX,
+    // Don't let a wedged socket hold a pool slot forever.
+    idleTimeoutMillis: 30_000,
+    connectionTimeoutMillis: 10_000,
+  });
+
+  _pool.on("error", (err) => {
+    console.error("[db] idle client error:", err.message);
+  });
+
+  return _pool;
+}
+
+/**
+ * The app pool, as a lazy stand-in for the real one.
+ *
+ * A Proxy rather than a `getAppPool()` function purely so the ~40 existing call
+ * sites (`appPool.query`, `appPool.connect`, `appPool.idleCount`, …) keep
+ * working untouched. Every property access initialises the pool on demand.
+ */
+export const appPool: pg.Pool = new Proxy({} as pg.Pool, {
+  get(_target, prop) {
+    const pool = initPool();
+    const value = Reflect.get(pool, prop, pool);
+    return typeof value === "function" ? value.bind(pool) : value;
+  },
+  set(_target, prop, value) {
+    return Reflect.set(initPool(), prop, value);
+  },
+  has(_target, prop) {
+    return Reflect.has(initPool(), prop);
+  },
 });
 
 async function connectWithWaitWarning(label: string) {

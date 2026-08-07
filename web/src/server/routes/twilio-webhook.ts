@@ -19,20 +19,21 @@
 // same trick as routes/intake.ts. Multi-tenant deployments will need to
 // disambiguate via the "To" number in a follow-up.
 
-import { Router } from "express";
+import { Router } from "@/server/http";
+import { rateLimit, clientIp } from "../lib/rate-limit";
 import { sql } from "drizzle-orm";
-import { appPool, withTenant } from "../db/app.js";
-import { readTwilioAuthToken, readTwilioConfig, TwilioNotConfigured } from "../lib/twilio/client.js";
-import { parseTwilioWebhook, verifyTwilioSignature, isOptOutMessage, isOptInMessage } from "../lib/twilio/webhook.js";
-import { setConsent, type Channel as ConsentChannel } from "../lib/party/consent.js";
+import { appPool, withTenant } from "../db/app";
+import { readTwilioAuthToken, readTwilioConfig, TwilioNotConfigured } from "../lib/twilio/client";
+import { parseTwilioWebhook, verifyTwilioSignature, isOptOutMessage, isOptInMessage } from "../lib/twilio/webhook";
+import { setConsent, type Channel as ConsentChannel } from "../lib/party/consent";
 import {
   matchOrCreatePartyByPhone,
   upsertConversation,
   insertInboundMessage,
   applyStatusUpdate,
   insertActivityForMessage,
-} from "../lib/twilio/inbox.js";
-import { resolveSentinelPartyId } from "../lib/party/resolve.js";
+} from "../lib/twilio/inbox";
+import { resolveSentinelPartyId } from "../lib/party/resolve";
 
 export const twilioWebhookRouter = Router();
 
@@ -40,24 +41,6 @@ export const twilioWebhookRouter = Router();
 
 const RATE_WINDOW_MS = 60_000;
 const RATE_MAX = 120;
-const rateHits = new Map<string, number[]>();
-
-function rateLimit(ip: string): boolean {
-  const now = Date.now();
-  const arr = (rateHits.get(ip) ?? []).filter((t) => now - t < RATE_WINDOW_MS);
-  if (arr.length >= RATE_MAX) {
-    rateHits.set(ip, arr);
-    return false;
-  }
-  arr.push(now);
-  rateHits.set(ip, arr);
-  return true;
-}
-
-function clientIp(req: import("express").Request): string {
-  const xf = String(req.headers["x-forwarded-for"] ?? "").split(",")[0]?.trim();
-  return xf || req.socket.remoteAddress || "unknown";
-}
 
 // ─── Tenant resolution (mirrors routes/intake.ts) ─────────────────────────
 
@@ -80,11 +63,11 @@ async function resolveDefaultTenantId(): Promise<string | null> {
 
 twilioWebhookRouter.post("/", async (req, res) => {
   // TEMP DEBUG — remove once inbound is verified on hosted envs.
-  console.log(`[twilio-webhook] hit ip=${clientIp(req)} bodyKeys=${Object.keys(req.body ?? {}).join(",")}`);
+  console.log(`[twilio-webhook] hit ip=${clientIp(req.headers)} bodyKeys=${Object.keys(req.body ?? {}).join(",")}`);
 
   // 1) Rate limit BEFORE HMAC to keep DoS cheap.
-  if (!rateLimit(clientIp(req))) {
-    console.warn(`[twilio-webhook] rate-limited ip=${clientIp(req)}`);
+  if (!(await rateLimit(`twilio-webhook:${clientIp(req.headers)}`, RATE_MAX, RATE_WINDOW_MS))) {
+    console.warn(`[twilio-webhook] rate-limited ip=${clientIp(req.headers)}`);
     return res.status(429).type("text/plain").send("rate limited");
   }
 
@@ -108,7 +91,7 @@ twilioWebhookRouter.post("/", async (req, res) => {
   const form = coerceFormBody(req.body);
   const sig = req.header("x-twilio-signature") ?? req.header("X-Twilio-Signature");
   if (!verifyTwilioSignature(sig, expectedUrl, form, token)) {
-    console.warn("[twilio-webhook] signature mismatch — url=%s ip=%s", expectedUrl, clientIp(req));
+    console.warn("[twilio-webhook] signature mismatch — url=%s ip=%s", expectedUrl, clientIp(req.headers));
     return res.status(403).type("text/plain").send("forbidden");
   }
 

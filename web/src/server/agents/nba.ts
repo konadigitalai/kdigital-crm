@@ -12,10 +12,10 @@ import { z } from "zod";
 import { Annotation, StateGraph, START, END } from "@langchain/langgraph";
 import { HumanMessage, SystemMessage } from "@langchain/core/messages";
 import type { RunnableConfig } from "@langchain/core/runnables";
-import { makeChatModel } from "../lib/llm.js";
-import { runWithGraph, getCheckpointer, configurable } from "./runtime.js";
-import { loadLeadContext, renderLeadContextBlock, type LeadContext } from "./lead-context.js";
-import { resolveSentinelPartyId } from "../lib/party/resolve.js";
+import { makeChatModel } from "../lib/llm";
+import { runWithGraph, getCheckpointer, configurable } from "./runtime";
+import { loadLeadContext, renderLeadContextBlock, type LeadContext } from "./lead-context";
+import { resolveSentinelPartyId } from "../lib/party/resolve";
 
 const VALID_ICONS = ["send", "clock", "mail", "star", "check", "info", "money"] as const;
 type NbaIcon = (typeof VALID_ICONS)[number];
@@ -145,7 +145,17 @@ async function writeBackNode(state: NbaStateT, config: RunnableConfig) {
 
 const NODE_ORDER = ["plan", "retrieve_context", "suggest", "write_back"] as const;
 
-const nbaGraph = new StateGraph(NbaStateAnn)
+// Compiled on first use, not at import. getCheckpointer() needs DATABASE_URL,
+// and Next loads this module during `next build` to collect page data — where
+// that variable is not necessarily set. Compiling eagerly turned a missing
+// runtime secret into a failed build. See db/app.ts for the same reasoning.
+let _nbaGraph: ReturnType<typeof build_nbaGraph> | null = null;
+function nbaGraph() {
+  return (_nbaGraph ??= build_nbaGraph());
+}
+
+function build_nbaGraph() {
+  return new StateGraph(NbaStateAnn)
   .addNode("plan", planNode)
   .addNode("retrieve_context", retrieveContextNode)
   .addNode("suggest", suggestNode)
@@ -155,7 +165,8 @@ const nbaGraph = new StateGraph(NbaStateAnn)
   .addEdge("retrieve_context", "suggest")
   .addEdge("suggest", "write_back")
   .addEdge("write_back", END)
-  .compile({ checkpointer: getCheckpointer() });
+    .compile({ checkpointer: getCheckpointer() });
+}
 
 export async function suggestNba(
   tenantId: string,
@@ -169,7 +180,7 @@ export async function suggestNba(
     agentKey: "nba",
     target: `suggesting NBA for ${ctx.name}`,
     nodeOrder: [...NODE_ORDER],
-    graph: nbaGraph,
+    graph: nbaGraph(),
     initialState: { ctx, nba: null, llmModel: null },
     formatStepDetail: (node, update) => {
       if (node === "plan") return `Lead ${ctx.number} · rating ${ctx.rating}`;

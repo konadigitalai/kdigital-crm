@@ -8,11 +8,11 @@
 // Permissions: for now, gate at the auth-middleware level (admins only).
 // A dedicated `parties.dedup.run` Auth0 permission is deferred.
 
-import { Router } from "express";
+import { Router } from "@/server/http";
 import { sql } from "drizzle-orm";
-import { withTenant } from "../db/app.js";
-import { scanForDuplicates, mergeParties } from "../lib/party/dedup.js";
-import { partyIdFromAppUserId, resolveActorPartyId } from "../lib/party/resolve.js";
+import { withTenant } from "../db/app";
+import { scanForDuplicates, mergeParties } from "../lib/party/dedup";
+import { partyIdFromAppUserId, resolveActorPartyId } from "../lib/party/resolve";
 
 export const partiesRouter = Router();
 

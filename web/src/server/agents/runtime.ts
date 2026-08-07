@@ -21,8 +21,8 @@ import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import { PostgresSaver } from "@langchain/langgraph-checkpoint-postgres";
 import type { CompiledStateGraph } from "@langchain/langgraph";
 import type { RunnableConfig } from "@langchain/core/runnables";
-import * as schema from "../db/schema.js";
-import { withTenant, appPool, tenantExec } from "../db/app.js";
+import * as schema from "../db/schema";
+import { withTenant, appPool, tenantExec } from "../db/app";
 
 export type StepState = "queued" | "active" | "done" | "failed";
 export interface RunStep {
@@ -98,11 +98,30 @@ export function getCheckpointer(): PostgresSaver {
   return _checkpointer;
 }
 
-let _setupDone = false;
-export async function ensureCheckpointerSetup(): Promise<void> {
-  if (_setupDone) return;
-  await getCheckpointer().setup();
-  _setupDone = true;
+// Creates the LangGraph checkpoint tables. Idempotent (CREATE TABLE IF NOT
+// EXISTS), so it is safe to call on every run.
+//
+// This used to be invoked once from the Express boot callback. There is no
+// boot any more, so runWithGraph calls it lazily instead — otherwise the
+// tables would simply never be created and the first agent run would fail.
+//
+// The cached PROMISE (rather than a done flag) matters: several agent runs can
+// start concurrently on a cold instance, and a boolean set after the await
+// would let all of them race into setup() at once.
+let _setupPromise: Promise<void> | null = null;
+export function ensureCheckpointerSetup(): Promise<void> {
+  if (!_setupPromise) {
+    _setupPromise = getCheckpointer().setup().then(
+      () => undefined,
+      (err) => {
+        // Don't cache a failure — a transient DB blip would otherwise poison
+        // this instance for its whole lifetime.
+        _setupPromise = null;
+        throw err;
+      },
+    );
+  }
+  return _setupPromise;
 }
 
 // ─── Run minting ─────────────────────────────────────────────────────────────
@@ -117,6 +136,9 @@ async function nextRunNumber(): Promise<string> {
 export async function runWithGraph<S extends object, R>(
   opts: RunWithGraphOpts<S, R>,
 ): Promise<{ result: R; runWorkItemId: string }> {
+  // Was done once at Express boot; there is no boot now, so it happens here.
+  await ensureCheckpointerSetup();
+
   const number = await nextRunNumber();
 
   // Initial steps array — first node `active`, rest `queued`.

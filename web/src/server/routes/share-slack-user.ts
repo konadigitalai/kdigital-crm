@@ -11,10 +11,10 @@
 // stay in integrations.ts behind integrations.manage. This router only
 // exposes the reads a share-dialog needs.
 
-import { Router } from "express";
+import { Router } from "@/server/http";
 import { sql } from "drizzle-orm";
-import { withTenant } from "../db/app.js";
-import { loadBotToken, loadUserToken } from "./integrations.js";
+import { withTenant } from "../db/app";
+import { loadBotToken, loadUserToken } from "./integrations";
 
 export const shareSlackUserRouter = Router();
 
@@ -94,7 +94,7 @@ shareSlackUserRouter.get("/directory", async (req, res, next) => {
     // Channel picker — prefer user's own token when they've connected.
     const userLink = await loadUserToken(req.tenantId!, req.userId);
     if (userLink) {
-      const { listAllChannels } = await import("../lib/slack-api.js");
+      const { listAllChannels } = await import("../lib/slack-api");
       let channels;
       try { channels = await listAllChannels(userLink.token); }
       catch (err) {

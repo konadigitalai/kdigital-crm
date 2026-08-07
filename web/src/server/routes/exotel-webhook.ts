@@ -17,38 +17,26 @@
 //      through matchOrCreatePartyByPhone which won't attach random E.164s
 //      to real parties without contact_point evidence.
 
-import { Router } from "express";
+import { Router } from "@/server/http";
+import { rateLimit, clientIp } from "../lib/rate-limit";
 import { sql } from "drizzle-orm";
-import { appPool, withTenant } from "../db/app.js";
-import { readExotelConfig, ExotelNotConfigured, fetchCallDetails } from "../lib/exotel/client.js";
-import { parseExotelCallback, isIpAllowed, type ExotelParsedCall } from "../lib/exotel/webhook.js";
+import { appPool, withTenant } from "../db/app";
+import { readExotelConfig, ExotelNotConfigured, fetchCallDetails } from "../lib/exotel/client";
+import { parseExotelCallback, isIpAllowed, type ExotelParsedCall } from "../lib/exotel/webhook";
 import {
   matchOrCreatePartyByPhone,
   upsertConversation,
   insertInboundMessage,
   insertActivityForMessage,
-} from "../lib/twilio/inbox.js";
-import { bootstrapConsent } from "../lib/party/consent.js";
-import { resolveSentinelPartyId } from "../lib/party/resolve.js";
+} from "../lib/twilio/inbox";
+import { bootstrapConsent } from "../lib/party/consent";
+import { resolveSentinelPartyId } from "../lib/party/resolve";
 
 export const exotelWebhookRouter = Router();
 
 // ─── Per-IP rate limit (same as Twilio webhook) ──────────────────────────
 const RATE_WINDOW_MS = 60_000;
 const RATE_MAX = 120;
-const rateHits = new Map<string, number[]>();
-function rateLimit(ip: string): boolean {
-  const now = Date.now();
-  const arr = (rateHits.get(ip) ?? []).filter((t) => now - t < RATE_WINDOW_MS);
-  if (arr.length >= RATE_MAX) { rateHits.set(ip, arr); return false; }
-  arr.push(now);
-  rateHits.set(ip, arr);
-  return true;
-}
-function clientIp(req: import("express").Request): string {
-  const xf = String(req.headers["x-forwarded-for"] ?? "").split(",")[0]?.trim();
-  return xf || req.socket.remoteAddress || "unknown";
-}
 
 // ─── Tenant resolution (mirror routes/twilio-webhook.ts) ─────────────────
 let cachedTenantId: string | null = null;
@@ -67,8 +55,8 @@ async function resolveDefaultTenantId(): Promise<string | null> {
 }
 
 // ─── Shared entry ────────────────────────────────────────────────────────
-async function handle(req: import("express").Request, res: import("express").Response): Promise<void> {
-  const ip = clientIp(req);
+async function handle(req: import("@/server/http").ApiRequest, res: import("@/server/http").ApiResponse): Promise<void> {
+  const ip = clientIp(req.headers);
   // Exotel's Passthru applet sends params via query string on GET, not a
   // POST body — despite what their docs suggest. StatusCallback on outbound
   // Connect API calls DOES send JSON POST though. Read from wherever the
@@ -79,7 +67,7 @@ async function handle(req: import("express").Request, res: import("express").Res
   };
   console.log(`[exotel-webhook] hit ip=${ip} method=${req.method} path=${req.path} keys=${Object.keys(params).join(",")}`);
 
-  if (!rateLimit(ip)) {
+  if (!(await rateLimit(`exotel-webhook:${ip}`, RATE_MAX, RATE_WINDOW_MS))) {
     console.warn(`[exotel-webhook] rate-limited ip=${ip}`);
     res.status(429).type("text/plain").send("rate limited");
     return;

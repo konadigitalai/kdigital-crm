@@ -21,7 +21,7 @@
 // `npm run db:migrate` deletes every enrolment and cohort in the business.
 // The ledger check below is the whole reason this file exists.
 
-import { pool } from "./client.js";
+import { pool } from "./client";
 import { readdirSync } from "node:fs";
 
 // Same path dance migrate.ts does — on Windows the file: URL needs the

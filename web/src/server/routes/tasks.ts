@@ -13,10 +13,10 @@
 // assignee_party_id stores party.id. Resolve at the boundary, never leak
 // party ids to the client.
 
-import { Router } from "express";
+import { Router } from "@/server/http";
 import { sql } from "drizzle-orm";
-import { withTenant } from "../db/app.js";
-import { partyIdFromAppUserId, resolveActorPartyId } from "../lib/party/resolve.js";
+import { withTenant } from "../db/app";
+import { partyIdFromAppUserId, resolveActorPartyId } from "../lib/party/resolve";
 
 export const tasksRouter = Router();
 

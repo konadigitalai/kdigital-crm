@@ -11,7 +11,7 @@
 // is NOT the same as the account SID; both live in Exotel Console under
 // Settings → API. SID is a separate value used only in the URL path.
 
-import { toE164 } from "../twilio/phone.js";
+import { toE164 } from "../twilio/phone";
 
 export interface ExotelConfig {
   sid:                   string;   // Account SID, e.g. "digitaledify1"

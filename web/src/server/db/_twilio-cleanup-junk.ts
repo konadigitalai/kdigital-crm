@@ -13,7 +13,7 @@
 // any legit "Unknown +919…" contacts we auto-created from real inbound
 // webhooks — those all have realistic-length numbers.
 
-import { pool } from "./client.js";
+import { pool } from "./client";
 
 async function main() {
   const dryRun = !process.argv.includes("--yes");

@@ -12,26 +12,26 @@
 // Inbound Twilio media is Basic-auth gated. /media/proxy/:id fetches
 // server-side with those credentials and streams the bytes to the browser.
 
-import { Router } from "express";
+import { Router } from "@/server/http";
 import { sql } from "drizzle-orm";
-import { withTenant } from "../db/app.js";
-import { requirePermission } from "../middleware/require.js";
-import { resolveActorPartyId } from "../lib/party/resolve.js";
+import { withTenant } from "../db/app";
+import { requirePermission } from "../middleware/require";
+import { resolveActorPartyId } from "../lib/party/resolve";
 import {
   handleBlobUpload, deleteBlob, tenantPathname,
   BlobNotConfigured, type AuthorizedUpload,
-} from "../lib/blob.js";
+} from "../lib/blob";
 import type { HandleUploadBody } from "@vercel/blob/client";
 import {
   ALLOWED_UPLOAD_CONTENT_TYPES,
   MAX_UPLOAD_BYTES,
-} from "../lib/twilio/media.js";
+} from "../lib/twilio/media";
 import {
   accessTokenFor, getAttachment, type GmailAccountRow,
-} from "../lib/gmail/client.js";
-import { readTwilioAuthToken, readTwilioConfig } from "../lib/twilio/client.js";
-import { readExotelBasicAuth } from "../lib/exotel/client.js";
-import type { DbExec } from "../lib/twilio/inbox.js";
+} from "../lib/gmail/client";
+import { readTwilioAuthToken, readTwilioConfig } from "../lib/twilio/client";
+import { readExotelBasicAuth } from "../lib/exotel/client";
+import type { DbExec } from "../lib/twilio/inbox";
 
 export const mediaRouter = Router();
 
@@ -458,11 +458,11 @@ mediaRouter.get("/proxy/:id", requirePermission("media.read"), async (req, res, 
     res.setHeader("Content-Type", upstream.headers.get("content-type") ?? meta.contentType);
     res.setHeader("Cache-Control", "private, max-age=300");
     res.setHeader("Content-Disposition", `inline; filename="${meta.filename.replace(/"/g, "")}"`);
-    // Stream through. Node 20's fetch returns a web ReadableStream; convert.
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const { Readable } = await import("node:stream");
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    Readable.fromWeb(upstream.body as any).pipe(res);
+    // Stream through. Previously this had to bridge worlds — fetch returns a
+    // web ReadableStream, and Express's res is a Node writable, so it went
+    // via Readable.fromWeb(...).pipe(res). The response is now itself
+    // Web-standard, so the body passes straight through.
+    res.stream(upstream.body);
   } catch (err) { next(err); }
 });
 
@@ -493,7 +493,7 @@ async function fetchGmailAttachment(locator: string): Promise<Buffer | null> {
   if (!m) return null;
   const [, accountId, messageId, attachmentId] = m;
   try {
-    const { appPool } = await import("../db/app.js");
+    const { appPool } = await import("../db/app");
     const owner = await appPool.query<{ tenantId: string }>(
       `SELECT tenant_id AS "tenantId" FROM gmail_account WHERE id = $1 LIMIT 1`,
       [accountId],
@@ -568,7 +568,7 @@ mediaFetchRouter.get("/:id", async (req, res) => {
     // the raw admin pool but scoped to the asset id — cross-tenant asset
     // access is prevented by the signature (attacker can't forge an ID
     // for a different tenant's asset without our secret).
-    const { appPool } = await import("../db/app.js");
+    const { appPool } = await import("../db/app");
     const q = await appPool.query<{
       filename: string; contentType: string; blobUrl: string; providerHosted: boolean;
       source: string;
@@ -630,10 +630,7 @@ mediaFetchRouter.get("/:id", async (req, res) => {
     // `attachment` (not `inline`) so WhatsApp treats it as a downloadable
     // file with the given name. Quote the filename to be safe.
     res.setHeader("Content-Disposition", `attachment; filename="${meta.filename.replace(/"/g, "")}"`);
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const { Readable } = await import("node:stream");
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    Readable.fromWeb(upstream.body as any).pipe(res);
+    res.stream(upstream.body);
   } catch (err) {
     console.error("[media/fetch]", (err as Error).message);
     if (!res.headersSent) res.status(500).type("text/plain").send("error");

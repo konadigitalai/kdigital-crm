@@ -24,10 +24,10 @@
 //   WEB_APP_URL           — where to redirect the user back to when
 //                           `returnTo` is missing/malformed. Fallback.
 
-import { Router } from "express";
+import { Router } from "@/server/http";
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { sql } from "drizzle-orm";
-import { withTenant } from "../db/app.js";
+import { withTenant } from "../db/app";
 
 // Two routers:
 //   - slackOAuthCallbackRouter is PUBLIC (Slack browser redirect,
@@ -210,7 +210,7 @@ slackOAuthRouter.post("/disconnect", async (req, res, next) => {
 // Small helper: render an HTML "error" page rather than dumping JSON,
 // because this is a browser redirect target — the user is looking at
 // the response in a browser tab.
-function oauthFail(res: import("express").Response, message: string) {
+function oauthFail(res: import("@/server/http").ApiResponse, message: string) {
   res.status(400).send(`<!doctype html><html><body style="font:14px system-ui;padding:2em">
     <h2>Slack connection failed</h2>
     <p>${escapeHtml(message)}</p>

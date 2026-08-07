@@ -10,8 +10,8 @@
 //   4. Update routeUrlFor() if the deep-link path differs
 
 import { sql } from "drizzle-orm";
-import { withTenant } from "../db/app.js";
-import type { SlackBlock, SlackPayload } from "./slack.js";
+import { withTenant } from "../db/app";
+import type { SlackBlock, SlackPayload } from "./slack";
 
 export type ShareSurface = "leads" | "learners" | "cases";
 export const SHARE_SURFACES: readonly ShareSurface[] = ["leads", "learners", "cases"];

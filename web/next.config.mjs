@@ -21,24 +21,25 @@ const nextConfig = {
   // it is exactly the default.
   distDir: process.env.NEXT_DIST_DIR || ".next",
 
-  // Browser-side requests go to /api/* on the same Vercel origin and Next.js
-  // forwards them to the actual Express API on Render. This sidesteps the
-  // third-party-cookie problem cross-origin auth has on modern Chrome —
-  // from the browser's POV everything is first-party to the Vercel domain.
+  // The `/api/:path*` rewrite that used to proxy to the Express API on Render
+  // is gone: those handlers are now served by src/app/api/[...path]/route.ts
+  // on this origin, so there is nothing to forward to.
   //
-  // Server Components keep calling API_URL directly (server-side, no
-  // browser cookies / CORS / SameSite to worry about there).
+  // What remains is a compatibility rewrite for the two provider webhooks.
+  // Twilio and Exotel have `/webhooks/...` URLs configured in their consoles,
+  // and those are registered against a live phone number — changing them is a
+  // coordinated cutover, not a deploy. Mapping them onto the API mount keeps
+  // the existing URLs working, so the switchover is one-way and reversible.
   async rewrites() {
-    const target = process.env.API_URL ?? process.env.NEXT_PUBLIC_API_URL;
-    if (!target) {
-      // Local dev usually doesn't set API_URL; fall through and the source
-      // code default of http://localhost:4000 will be used by client fetches.
-      return [];
-    }
     return [
-      { source: "/api/:path*", destination: `${target}/:path*` },
+      { source: "/webhooks/:path*", destination: "/api/webhooks/:path*" },
     ];
   },
+
+  // pg ships optional native bindings it only uses if present. Webpack tries
+  // to resolve them at build time and fails; this tells Next to require them
+  // at runtime instead, which is what the Node runtime does anyway.
+  serverExternalPackages: ["pg", "@langchain/langgraph-checkpoint-postgres"],
 };
 
 export default nextConfig;

@@ -1,14 +1,14 @@
-import { Router } from "express";
+import { Router } from "@/server/http";
 import { sql } from "drizzle-orm";
-import { withTenant } from "../db/app.js";
-import { requirePermission } from "../middleware/require.js";
-import { draftFollowup } from "../agents/outreach.js";
-import { scoreLead, scoreAllOpen } from "../agents/scoring.js";
-import { suggestNba } from "../agents/nba.js";
-import { runForecast, getLatestForecast } from "../agents/forecast.js";
-import { askEdify, listEdifySessions, getEdifySession, deleteEdifySession, renameEdifySession } from "../agents/edify.js";
-import { metaFor } from "../lib/agent-meta.js";
-import { partyIdFromAppUserId } from "../lib/party/resolve.js";
+import { withTenant } from "../db/app";
+import { requirePermission } from "../middleware/require";
+import { draftFollowup } from "../agents/outreach";
+import { scoreLead, scoreAllOpen } from "../agents/scoring";
+import { suggestNba } from "../agents/nba";
+import { runForecast, getLatestForecast } from "../agents/forecast";
+import { askEdify, listEdifySessions, getEdifySession, deleteEdifySession, renameEdifySession } from "../agents/edify";
+import { metaFor } from "../lib/agent-meta";
+import { partyIdFromAppUserId } from "../lib/party/resolve";
 
 export const agentsRouter = Router();
 

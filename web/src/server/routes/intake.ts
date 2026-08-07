@@ -19,16 +19,17 @@
 // attacker can't tell whether the key is right or whether the endpoint is
 // rate-limiting them). The real error is logged server-side.
 
-import { Router } from "express";
+import { Router } from "@/server/http";
+import { rateLimit, clientIp } from "../lib/rate-limit";
 import { sql } from "drizzle-orm";
 import { timingSafeEqual } from "node:crypto";
-import { withTenant } from "../db/app.js";
-import { appPool } from "../db/app.js";
-import { resolveSentinelPartyId } from "../lib/party/resolve.js";
-import { emitEvent } from "../lib/events.js";
-import { evaluateTriggers } from "../lib/campaigns/triggers.js";
-import { bootstrapConsent } from "../lib/party/consent.js";
-import { composeFullE164 } from "../lib/twilio/phone.js";
+import { withTenant } from "../db/app";
+import { appPool } from "../db/app";
+import { resolveSentinelPartyId } from "../lib/party/resolve";
+import { emitEvent } from "../lib/events";
+import { evaluateTriggers } from "../lib/campaigns/triggers";
+import { bootstrapConsent } from "../lib/party/consent";
+import { composeFullE164 } from "../lib/twilio/phone";
 
 export const intakeRouter = Router();
 
@@ -36,34 +37,18 @@ export const intakeRouter = Router();
 
 const INTAKE_API_KEY = (process.env.INTAKE_API_KEY ?? "").trim();
 
-// Per-IP rate limit: 10 requests per 60 seconds. In-memory Map — resets on
-// process restart, which is fine for the intended purpose.
+// Per-IP rate limit: 10 requests per 60 seconds, held in Postgres.
+//
+// This is the only thing rationing a public, unauthenticated endpoint that
+// writes leads, so it must not depend on process memory — see lib/rate-limit.ts.
 const RATE_WINDOW_MS = 60_000;
 const RATE_MAX = 10;
-const rateHits = new Map<string, number[]>();
-
-function rateLimit(ip: string): boolean {
-  const now = Date.now();
-  const arr = (rateHits.get(ip) ?? []).filter((t) => now - t < RATE_WINDOW_MS);
-  if (arr.length >= RATE_MAX) {
-    rateHits.set(ip, arr);
-    return false;
-  }
-  arr.push(now);
-  rateHits.set(ip, arr);
-  return true;
-}
 
 function safeEqual(a: string, b: string): boolean {
   const A = Buffer.from(a);
   const B = Buffer.from(b);
   if (A.length !== B.length) return false;
   return timingSafeEqual(A, B);
-}
-
-function clientIp(req: import("express").Request): string {
-  const xf = String(req.headers["x-forwarded-for"] ?? "").split(",")[0]?.trim();
-  return xf || req.socket.remoteAddress || "unknown";
 }
 
 // ─── Tenant resolution (same as auth.ts, kept local so middleware stays clean) ─
@@ -142,12 +127,12 @@ intakeRouter.post("/", async (req, res) => {
 
   const providedKey = String(req.headers["x-intake-key"] ?? "").trim();
   if (!providedKey || !safeEqual(providedKey, INTAKE_API_KEY)) {
-    console.warn("[intake] bad api key from", clientIp(req));
+    console.warn("[intake] bad api key from", clientIp(req.headers));
     return res.status(200).json({ ok: true });
   }
 
-  const ip = clientIp(req);
-  if (!rateLimit(ip)) {
+  const ip = clientIp(req.headers);
+  if (!(await rateLimit(`intake:${ip}`, RATE_MAX, RATE_WINDOW_MS))) {
     console.warn("[intake] rate-limited", ip);
     return res.status(200).json({ ok: true });
   }

@@ -1,5 +1,5 @@
 // Sanity queries after seed — counts, a join, pending approval, RLS check.
-import { pool } from "./client.js";
+import { pool } from "./client";
 
 async function main() {
   // 1. Counts per table — quick health view

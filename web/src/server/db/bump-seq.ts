@@ -1,6 +1,6 @@
 // One-shot: bump seq_lead past the highest existing LEAD-XXXX number.
 // Safe to re-run.
-import { pool } from "./client.js";
+import { pool } from "./client";
 
 async function main() {
   // Drop any test leads from before the fix (numbers we know we minted)

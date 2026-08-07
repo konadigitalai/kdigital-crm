@@ -11,8 +11,8 @@
 // the permission catalog so any UI that still reads the permission
 // labels (chips, picker dropdowns) doesn't break.
 
-import { Router } from "express";
-import { MODULE_CATALOG, PERMISSIONS, PRESETS } from "../lib/permissions.js";
+import { Router } from "@/server/http";
+import { MODULE_CATALOG, PERMISSIONS, PRESETS } from "../lib/permissions";
 
 export const groupsRouter = Router();
 

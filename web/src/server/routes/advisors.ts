@@ -13,10 +13,10 @@
 // old rows still render "Assigned to Priya", but she stops appearing in new
 // pickers.
 
-import { Router } from "express";
+import { Router } from "@/server/http";
 import { sql } from "drizzle-orm";
-import { appPool, withTenant } from "../db/app.js";
-import { provisionPartyForInternalUser } from "../lib/party/provision.js";
+import { appPool, withTenant } from "../db/app";
+import { provisionPartyForInternalUser } from "../lib/party/provision";
 
 export const advisorsRouter = Router();
 

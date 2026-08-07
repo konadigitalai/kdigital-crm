@@ -8,11 +8,11 @@
 // Grading is separately gated on lms.grade, so you can hire someone to build
 // content without letting them change marks.
 
-import { Router } from "express";
+import { Router } from "@/server/http";
 import { sql } from "drizzle-orm";
-import { withTenant } from "../db/app.js";
-import { requirePermission } from "../middleware/require.js";
-import { partyIdFromAppUserId } from "../lib/party/resolve.js";
+import { withTenant } from "../db/app";
+import { requirePermission } from "../middleware/require";
+import { partyIdFromAppUserId } from "../lib/party/resolve";
 
 export const lmsAdminRouter = Router();
 

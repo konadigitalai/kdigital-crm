@@ -7,7 +7,7 @@
 // reasons about a lead". Adding a new field once → both agents pick it up.
 
 import { sql } from "drizzle-orm";
-import { withTenant } from "../db/app.js";
+import { withTenant } from "../db/app";
 
 export interface ActivityRow {
   actorType: string | null;

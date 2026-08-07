@@ -1,8 +1,8 @@
-import { Router } from "express";
+import { Router } from "@/server/http";
 import { sql } from "drizzle-orm";
-import { withTenant } from "../db/app.js";
-import { requirePermission } from "../middleware/require.js";
-import { resolveActorPartyId } from "../lib/party/resolve.js";
+import { withTenant } from "../db/app";
+import { requirePermission } from "../middleware/require";
+import { resolveActorPartyId } from "../lib/party/resolve";
 
 export const approvalsRouter = Router();
 

@@ -11,9 +11,9 @@
 // (deal_close_date_check), and stage_updated_at is stamped by a trigger when
 // the stage actually moves. "Days in stage" is therefore a real number.
 
-import { Router } from "express";
+import { Router } from "@/server/http";
 import { sql } from "drizzle-orm";
-import { withTenant } from "../db/app.js";
+import { withTenant } from "../db/app";
 
 export const opportunitiesRouter = Router();
 

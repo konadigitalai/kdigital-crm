@@ -10,35 +10,27 @@
 // to EXOTEL_FALLBACK_AGENT_NUMBER ("call desk"). If both are missing,
 // respond with a clear 400 so the FE can prompt the advisor to set one.
 
-import { Router } from "express";
+import { Router } from "@/server/http";
+import { rateLimit, clientIp } from "../lib/rate-limit";
 import { sql } from "drizzle-orm";
-import { withTenant } from "../db/app.js";
-import { requirePermission } from "../middleware/require.js";
-import { resolveActorPartyId } from "../lib/party/resolve.js";
-import { toE164 } from "../lib/twilio/phone.js";
+import { withTenant } from "../db/app";
+import { requirePermission } from "../middleware/require";
+import { resolveActorPartyId } from "../lib/party/resolve";
+import { toE164 } from "../lib/twilio/phone";
 import {
   matchOrCreatePartyByPhone,
   upsertConversation,
   recordOutbound,
   insertActivityForMessage,
-} from "../lib/twilio/inbox.js";
-import { readExotelConfig, ExotelNotConfigured, initiateCall } from "../lib/exotel/client.js";
-import { filterConsentedRecipients } from "../lib/party/consent.js";
+} from "../lib/twilio/inbox";
+import { readExotelConfig, ExotelNotConfigured, initiateCall } from "../lib/exotel/client";
+import { filterConsentedRecipients } from "../lib/party/consent";
 
 export const exotelRouter = Router();
 
-// ─── Per-user in-memory rate limit (30 calls/min) ────────────────────────
+// ─── Per-user rate limit (30 calls/min), held in Postgres ────────────────
 const RATE_WINDOW_MS = 60_000;
 const RATE_MAX = 30;
-const userHits = new Map<string, number[]>();
-function rateLimit(userKey: string): boolean {
-  const now = Date.now();
-  const arr = (userHits.get(userKey) ?? []).filter((t) => now - t < RATE_WINDOW_MS);
-  if (arr.length >= RATE_MAX) { userHits.set(userKey, arr); return false; }
-  arr.push(now);
-  userHits.set(userKey, arr);
-  return true;
-}
 
 // ─── POST /exotel/call ───────────────────────────────────────────────────
 // Body: { to: "+91..." or "LEAD-XXXX" }
@@ -53,7 +45,7 @@ exotelRouter.post("/call", requirePermission("messaging.send"), async (req, res,
 
     // Rate limit before any DB work.
     const userKey = String(req.userId ?? req.headers["x-forwarded-for"] ?? "anon");
-    if (!rateLimit(userKey)) {
+    if (!(await rateLimit(`exotel:${userKey}`, RATE_MAX, RATE_WINDOW_MS))) {
       return res.status(429).json({ error: "too many call attempts — wait a minute" });
     }
 

@@ -16,7 +16,7 @@
 //   $env:DATABASE_URL = 'postgres://decrm_admin:...@.../decrm_prod?sslmode=require'
 //   npx tsx src/db/export-prod-catalog.ts
 
-import { pool } from "./client.js";
+import { pool } from "./client";
 import { writeFileSync } from "node:fs";
 
 function csvCell(v: unknown): string {

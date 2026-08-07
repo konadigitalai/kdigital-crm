@@ -8,25 +8,25 @@
 // mounted with a raw-body parser BEFORE the global express.json in
 // api/src/index.ts — do NOT move handlers between the two files.
 
-import { Router } from "express";
+import { Router } from "@/server/http";
 import { sql } from "drizzle-orm";
-import { withTenant } from "../db/app.js";
-import { requirePermission } from "../middleware/require.js";
-import { resolveActorPartyId } from "../lib/party/resolve.js";
+import { withTenant } from "../db/app";
+import { requirePermission } from "../middleware/require";
+import { resolveActorPartyId } from "../lib/party/resolve";
 import {
   readTwilioConfig, sendMessage, TwilioNotConfigured,
-} from "../lib/twilio/client.js";
-import type { TwChannel } from "../lib/twilio/phone.js";
-import { toE164 } from "../lib/twilio/phone.js";
+} from "../lib/twilio/client";
+import type { TwChannel } from "../lib/twilio/phone";
+import { toE164 } from "../lib/twilio/phone";
 import {
   matchOrCreatePartyByPhone,
   upsertConversation,
   recordOutbound,
   insertActivityForMessage,
-} from "../lib/twilio/inbox.js";
-import { validateMediaForChannel } from "../lib/twilio/media.js";
-import { signMediaFetchUrl } from "./media.js";
-import { bootstrapConsent } from "../lib/party/consent.js";
+} from "../lib/twilio/inbox";
+import { validateMediaForChannel } from "../lib/twilio/media";
+import { signMediaFetchUrl } from "./media";
+import { bootstrapConsent } from "../lib/party/consent";
 
 // Public API base URL — used to build signed media-fetch URLs Twilio can
 // download. Derived from TWILIO_WEBHOOK_URL (already set + validated at

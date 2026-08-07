@@ -14,22 +14,22 @@
 // same policy /twilio/send already follows. The campaign engine is where a
 // gate belongs, and it already applies one.
 
-import { Router } from "express";
+import { Router } from "@/server/http";
 import { sql } from "drizzle-orm";
-import { withTenant, tenantExec } from "../db/app.js";
-import { requirePermission } from "../middleware/require.js";
-import { resolveActorPartyId } from "../lib/party/resolve.js";
+import { withTenant, tenantExec } from "../db/app";
+import { requirePermission } from "../middleware/require";
+import { resolveActorPartyId } from "../lib/party/resolve";
 import {
   readGoogleConfig, GoogleNotConfigured, accessTokenFor, sendRaw,
   type GmailAccountRow,
-} from "../lib/gmail/client.js";
-import { buildMime, type Attachment } from "../lib/gmail/mime.js";
-import { recordOutboundEmail } from "../lib/gmail/ingest.js";
+} from "../lib/gmail/client";
+import { buildMime, type Attachment } from "../lib/gmail/mime";
+import { recordOutboundEmail } from "../lib/gmail/ingest";
 import {
   matchOrCreatePartyByEmail, upsertConversation, insertActivityForMessage,
   type DbExec,
-} from "../lib/twilio/inbox.js";
-import { bootstrapConsent } from "../lib/party/consent.js";
+} from "../lib/twilio/inbox";
+import { bootstrapConsent } from "../lib/party/consent";
 
 export const gmailRouter = Router();
 

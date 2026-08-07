@@ -1,11 +1,11 @@
 // Batch sessions — expand active cohorts (the user is trainer or co-trainer of)
 // into per-day occurrences for the calendar. All times stored/produced in IST.
 
-import { Router } from "express";
+import { Router } from "@/server/http";
 import { sql } from "drizzle-orm";
-import { withTenant } from "../db/app.js";
-import { requirePermission } from "../middleware/require.js";
-import { partyIdFromAppUserId } from "../lib/party/resolve.js";
+import { withTenant } from "../db/app";
+import { requirePermission } from "../middleware/require";
+import { partyIdFromAppUserId } from "../lib/party/resolve";
 
 export const batchesRouter = Router();
 

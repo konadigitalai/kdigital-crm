@@ -7,15 +7,15 @@
 //   GET  /share/slack/preview/:surface/:recordId   → render preview
 //   POST /share/slack/:surface/:recordId           → actually post to Slack
 
-import { Router } from "express";
+import { Router } from "@/server/http";
 import { sql } from "drizzle-orm";
-import { withTenant } from "../db/app.js";
-import { postToSlack } from "../lib/slack.js";
-import { postToDestination, SlackError } from "../lib/slack-api.js";
-import { fetchShareRecord, isShareSurface, renderShare, type ShareSurface } from "../lib/share.js";
-import { loadBotToken, loadShareTarget, loadUserToken } from "./integrations.js";
-import type { Permission } from "../lib/permissions.js";
-import { requirePermission } from "../middleware/require.js";
+import { withTenant } from "../db/app";
+import { postToSlack } from "../lib/slack";
+import { postToDestination, SlackError } from "../lib/slack-api";
+import { fetchShareRecord, isShareSurface, renderShare, type ShareSurface } from "../lib/share";
+import { loadBotToken, loadShareTarget, loadUserToken } from "./integrations";
+import type { Permission } from "../lib/permissions";
+import { requirePermission } from "../middleware/require";
 
 export const shareRouter = Router();
 
@@ -27,7 +27,7 @@ const SURFACE_READ_PERM: Record<ShareSurface, Permission> = {
   cases:    "cases.read",
 };
 
-function gateBySurface(req: import("express").Request, res: import("express").Response, next: import("express").NextFunction) {
+function gateBySurface(req: import("@/server/http").ApiRequest, res: import("@/server/http").ApiResponse, next: import("@/server/http").NextFunction) {
   const surface = String(req.params.surface ?? "");
   if (!isShareSurface(surface)) return res.status(400).json({ error: "unsupported surface" });
   const perm = SURFACE_READ_PERM[surface];

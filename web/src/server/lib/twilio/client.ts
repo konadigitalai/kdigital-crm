@@ -8,7 +8,7 @@
 // tests / local dev can override without a full restart in every case. Env is
 // read only when actually sending — the inbox reads don't need Twilio config.
 
-import { formatTwilioAddr, toE164, type TwChannel } from "./phone.js";
+import { formatTwilioAddr, toE164, type TwChannel } from "./phone";
 
 export interface TwilioConfig {
   sid:       string;

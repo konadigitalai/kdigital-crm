@@ -1,7 +1,7 @@
-import { Router } from "express";
+import { Router } from "@/server/http";
 import { sql } from "drizzle-orm";
-import { withTenant } from "../db/app.js";
-import { formatINR } from "./summary.js";
+import { withTenant } from "../db/app";
+import { formatINR } from "./summary";
 
 export const pipelineRouter = Router();
 

@@ -6,7 +6,7 @@
 // Also lists any "Unknown +…" party rows created by the outbound bug —
 // those are the ones you probably want to drop with _twilio-cleanup-junk.ts.
 
-import { pool } from "./client.js";
+import { pool } from "./client";
 
 async function main() {
   const info = await pool.query<{ current_database: string }>(

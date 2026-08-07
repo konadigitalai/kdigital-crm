@@ -35,7 +35,7 @@
 
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
-import { pool } from "./client.js";
+import { pool } from "./client";
 
 const args = process.argv.slice(2);
 const APPLY = args.includes("--apply");

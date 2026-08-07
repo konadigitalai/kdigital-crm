@@ -24,11 +24,11 @@ import {
   upsertConversation,
   insertActivityForMessage,
   type DbExec,
-} from "../twilio/inbox.js";
-import { bootstrapConsent } from "../party/consent.js";
-import { resolveSentinelPartyId } from "../party/resolve.js";
-import { parseGmailMessage, skipReason, stripQuotedReply } from "./parse.js";
-import { accessTokenFor, getMessage, type GmailAccountRow } from "./client.js";
+} from "../twilio/inbox";
+import { bootstrapConsent } from "../party/consent";
+import { resolveSentinelPartyId } from "../party/resolve";
+import { parseGmailMessage, skipReason, stripQuotedReply } from "./parse";
+import { accessTokenFor, getMessage, type GmailAccountRow } from "./client";
 
 export interface IngestResult {
   status: "inserted" | "duplicate" | "skipped";

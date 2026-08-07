@@ -13,10 +13,10 @@
 //     templates that aren't `approved` yet, or that are stale.
 //   - RLS handles the per-tenant scoping — no explicit tenant filter here.
 
-import { Router } from "express";
+import { Router } from "@/server/http";
 import { sql } from "drizzle-orm";
-import { withTenant } from "../db/app.js";
-import { requirePermission } from "../middleware/require.js";
+import { withTenant } from "../db/app";
+import { requirePermission } from "../middleware/require";
 import {
   listTemplates as twListTemplates,
   fetchTemplate as twFetchTemplate,
@@ -26,9 +26,9 @@ import {
   extractVariableNames,
   type TwilioTemplate,
   type TwilioApproval,
-} from "../lib/twilio/templates.js";
-import { TwilioNotConfigured } from "../lib/twilio/client.js";
-import type { DbExec } from "../lib/twilio/inbox.js";
+} from "../lib/twilio/templates";
+import { TwilioNotConfigured } from "../lib/twilio/client";
+import type { DbExec } from "../lib/twilio/inbox";
 
 export const templatesRouter = Router();
 

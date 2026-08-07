@@ -22,7 +22,7 @@
 
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
-import { pool } from "./client.js";
+import { pool } from "./client";
 
 interface Found { file: string; line: number; sql: string }
 

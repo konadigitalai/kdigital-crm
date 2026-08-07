@@ -14,7 +14,7 @@
 //   npx tsx src/db/backfill-imported-phones.ts            # dry-run
 //   npx tsx src/db/backfill-imported-phones.ts --apply    # commit
 
-import { pool } from "./client.js";
+import { pool } from "./client";
 
 const APPLY = process.argv.includes("--apply");
 

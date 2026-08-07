@@ -27,8 +27,8 @@ import {
   REGISTRY_COURSES,
   REGISTRY_COMPONENTS,
   REGISTRY_CATALOGUE_VERSION,
-} from "./catalogue-registry.data.js";
-import { pool } from "./client.js";
+} from "./catalogue-registry.data";
+import { pool } from "./client";
 
 const args = process.argv.slice(2);
 const APPLY = args.includes("--apply");

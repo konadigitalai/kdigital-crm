@@ -13,11 +13,11 @@ import { z } from "zod";
 import { Annotation, StateGraph, START, END } from "@langchain/langgraph";
 import { HumanMessage, SystemMessage } from "@langchain/core/messages";
 import type { RunnableConfig } from "@langchain/core/runnables";
-import { withTenant } from "../db/app.js";
-import { makeChatModel } from "../lib/llm.js";
-import { runWithGraph, getCheckpointer, configurable } from "./runtime.js";
-import { loadLeadContext, renderLeadContextBlock, type LeadContext } from "./lead-context.js";
-import { resolveSentinelPartyId } from "../lib/party/resolve.js";
+import { withTenant } from "../db/app";
+import { makeChatModel } from "../lib/llm";
+import { runWithGraph, getCheckpointer, configurable } from "./runtime";
+import { loadLeadContext, renderLeadContextBlock, type LeadContext } from "./lead-context";
+import { resolveSentinelPartyId } from "../lib/party/resolve";
 
 const SYSTEM_PROMPT = `You are a sales lead scoring assistant for an EdTech CRM (Digital Edify).
 
@@ -191,7 +191,17 @@ async function writeBackNode(state: ScoringStateT, config: RunnableConfig) {
 
 const NODE_ORDER = ["plan", "retrieve_context", "score", "write_back"] as const;
 
-const scoringGraph = new StateGraph(ScoringState)
+// Compiled on first use, not at import. getCheckpointer() needs DATABASE_URL,
+// and Next loads this module during `next build` to collect page data — where
+// that variable is not necessarily set. Compiling eagerly turned a missing
+// runtime secret into a failed build. See db/app.ts for the same reasoning.
+let _scoringGraph: ReturnType<typeof build_scoringGraph> | null = null;
+function scoringGraph() {
+  return (_scoringGraph ??= build_scoringGraph());
+}
+
+function build_scoringGraph() {
+  return new StateGraph(ScoringState)
   .addNode("plan", planNode)
   .addNode("retrieve_context", retrieveContextNode)
   .addNode("score", scoreNode)
@@ -201,7 +211,8 @@ const scoringGraph = new StateGraph(ScoringState)
   .addEdge("retrieve_context", "score")
   .addEdge("score", "write_back")
   .addEdge("write_back", END)
-  .compile({ checkpointer: getCheckpointer() });
+    .compile({ checkpointer: getCheckpointer() });
+}
 
 // ─── Public entry ────────────────────────────────────────────────────────────
 
@@ -217,7 +228,7 @@ export async function scoreLead(
     agentKey: "scoring",
     target: `re-scoring ${ctx.name}`,
     nodeOrder: [...NODE_ORDER],
-    graph: scoringGraph,
+    graph: scoringGraph(),
     initialState: {
       ctx,
       scoreOut: null,
