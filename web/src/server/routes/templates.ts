@@ -1,7 +1,7 @@
 // WhatsApp templates route — cache Twilio Content Builder templates locally
 // and expose them to the CRM.
 //
-// Mounted at /templates behind authMiddleware (see api/src/index.ts).
+// Mounted at /templates behind requireAuth (see src/server/app.ts).
 //
 // Design notes:
 //   - We keep wa_template as a read-through cache (see post-0068). Twilio is

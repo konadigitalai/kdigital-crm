@@ -4,9 +4,10 @@
 // permission gate (messaging.read for reads, messaging.send for sends,
 // leads.write for promote-to-lead).
 //
-// The public inbound webhook lives in routes/twilio-webhook.ts and is
-// mounted with a raw-body parser BEFORE the global express.json in
-// api/src/index.ts — do NOT move handlers between the two files.
+// The public inbound webhook lives in routes/twilio-webhook.ts and is mounted
+// in src/server/app.ts ABOVE the requireAuth fence — do NOT move handlers
+// between the two files. Anything moved into this one becomes authenticated
+// (Twilio has no JWT); anything moved the other way becomes public.
 
 import { Router } from "@/server/http";
 import { sql } from "drizzle-orm";

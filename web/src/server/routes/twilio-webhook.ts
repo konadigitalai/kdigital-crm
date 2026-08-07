@@ -1,8 +1,8 @@
 // Public Twilio webhook — inbound messages + status callbacks.
 //
-// Mounted at /webhooks/twilio in api/src/index.ts, with express.urlencoded()
-// running BEFORE the global express.json(). Twilio POSTs
-// application/x-www-form-urlencoded bodies.
+// Mounted at /webhooks/twilio in src/server/app.ts. Twilio POSTs
+// application/x-www-form-urlencoded bodies; server/http/request.ts parses by
+// Content-Type and always keeps the raw bytes, which the HMAC check needs.
 //
 // Request flow:
 //   1. Per-IP rate limit (120/min).

@@ -1,7 +1,8 @@
 // Public Exotel webhook — outbound StatusCallback + inbound Passthru.
 //
-// Mounted at /webhooks/exotel in api/src/index.ts, with express.urlencoded()
-// + express.json() BOTH running BEFORE the global express.json(6mb).
+// Mounted at /webhooks/exotel in src/server/app.ts. Exotel sends form-encoded
+// on inbound and JSON on status callbacks; server/http/request.ts parses both
+// by Content-Type, so the old per-mount parser ordering is gone.
 // Exotel posts JSON for StatusCallback (we set the header) and form-urlencoded
 // for Passthru. Both parsers land the body as `req.body: object`.
 //

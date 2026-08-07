@@ -5,7 +5,7 @@
 // migration.
 //
 // Run:  DATABASE_URL=<target-db-url> npm run db:twilio-preflight
-//   or just: npm run db:twilio-preflight  (uses api/.env's DATABASE_URL)
+//   or just: npm run db:twilio-preflight  (uses web/.env.local's DATABASE_URL)
 
 import { pool } from "./client";
 

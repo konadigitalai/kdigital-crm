@@ -85,7 +85,7 @@ export interface RunWithGraphOpts<S extends object, R> {
 // ─── Singleton checkpointer ─────────────────────────────────────────────────
 //
 // One PostgresSaver per process. setup() must be called once on boot
-// (idempotent) — see api/src/index.ts. The saver opens its own pg.Pool against
+// (idempotent) — called lazily by runWithGraph. The saver opens its own pg.Pool against
 // DATABASE_URL; that's fine because checkpoint tables are not RLS-protected
 // (they store transient graph state keyed by thread_id only).
 
