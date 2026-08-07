@@ -23,12 +23,16 @@
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { pool } from "./client";
+import { fileURLToPath } from "node:url";
 
 interface Found { file: string; line: number; sql: string }
 
+// Sibling directories of db/ — web/src/server/{routes,lib}. The non-Windows
+// branch this replaced was cwd-relative (`./src/routes`) and pointed at the
+// wrong place after the move; resolving from import.meta.url is correct on
+// both platforms and independent of cwd.
 function sourceDir(sub: string): string {
-  const here = new URL(`../${sub}/`, import.meta.url).pathname.replace(/^\//, "");
-  return process.platform === "win32" ? here : `./src/${sub}`;
+  return fileURLToPath(new URL(`../${sub}/`, import.meta.url));
 }
 
 function collect(dir: string, prefix: string): Found[] {

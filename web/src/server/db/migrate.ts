@@ -26,7 +26,21 @@ import { drizzle } from "drizzle-orm/node-postgres";
 import { migrate } from "drizzle-orm/node-postgres/migrator";
 import { pool } from "./client";
 import { readdirSync, readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { join } from "node:path";
+
+// The migrations directory, resolved from this file's own location rather than
+// the cwd, so the script behaves the same however it's invoked.
+//
+// Depth is `../../../` because this file sits at web/src/server/db/ — it was
+// `../../` at api/src/db/, and moving one level deeper during the Express →
+// Next migration is what broke it.
+//
+// fileURLToPath rather than `.pathname.replace(/^\//, "")`: on Windows a file:
+// URL's pathname is `/C:/…`, which readdirSync rejects. Handling that is
+// exactly fileURLToPath's job, and using it removes the platform branch this
+// code used to carry.
+const MIGRATIONS_DIR = fileURLToPath(new URL("../../../drizzle/", import.meta.url));
 
 async function main() {
   // 0. Extensions must exist BEFORE Drizzle runs CREATE TABLE (embedding uses vector).
@@ -38,7 +52,7 @@ async function main() {
   // 1. Run Drizzle-generated migrations (DDL for tables/indexes/checks).
   console.log("→ applying drizzle migrations…");
   const db = drizzle(pool);
-  await migrate(db, { migrationsFolder: "./drizzle" });
+  await migrate(db, { migrationsFolder: MIGRATIONS_DIR });
 
   // 2. Ensure our post-migration ledger exists.
   await pool.query(`
@@ -49,9 +63,7 @@ async function main() {
   `);
 
   // 3. Discover all post-*.sql files.
-  const here = new URL("../../drizzle/", import.meta.url).pathname.replace(/^\//, "");
-  const dir = process.platform === "win32" ? here : "./drizzle";
-  const files = readdirSync(dir).filter((f) => f.startsWith("post-") && f.endsWith(".sql")).sort();
+  const files = readdirSync(MIGRATIONS_DIR).filter((f) => f.startsWith("post-") && f.endsWith(".sql")).sort();
 
   // 4. Optional bootstrap: mark every file up to and including
   //    <baseline> as applied WITHOUT running its SQL. Useful on DBs where
@@ -90,7 +102,7 @@ async function main() {
 
   for (const f of pending) {
     console.log(`→ applying ${f}…`);
-    const sql = readFileSync(join(dir, f), "utf8");
+    const sql = readFileSync(join(MIGRATIONS_DIR, f), "utf8");
     await pool.query(sql);
     await pool.query(
       `INSERT INTO "_decrm_post_migrations" (filename) VALUES ($1)`,

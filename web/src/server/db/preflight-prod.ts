@@ -22,13 +22,13 @@
 // The ledger check below is the whole reason this file exists.
 
 import { pool } from "./client";
+import { fileURLToPath } from "node:url";
 import { readdirSync } from "node:fs";
 
-// Same path dance migrate.ts does — on Windows the file: URL needs the
-// leading slash stripped before readdirSync will accept it.
+// Resolved from this file's own location so the script works from any cwd.
+// Depth is `../../../` because this file sits at web/src/server/db/.
 function migrationsDir(): string {
-  const here = new URL("../../drizzle/", import.meta.url).pathname.replace(/^\//, "");
-  return process.platform === "win32" ? here : "./drizzle";
+  return fileURLToPath(new URL("../../../drizzle/", import.meta.url));
 }
 
 type Verdict = "ok" | "warn" | "stop";
