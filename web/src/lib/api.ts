@@ -37,14 +37,32 @@ import type {
 //
 // The browser therefore always uses a relative `/api`. Server Components can't
 // — `fetch` on the server needs an absolute URL — so they resolve this app's
-// own origin. On Vercel that's VERCEL_URL; locally it's the dev server's port.
-// Set NEXT_PUBLIC_SITE_URL to override (e.g. behind a custom domain where you
-// want the canonical host rather than the deployment URL).
+// own origin.
+//
+// WHICH origin matters, and getting it wrong fails in a confusing way.
+// VERCEL_URL is the per-DEPLOYMENT url (kdigital-abc123-team.vercel.app), and
+// Vercel Deployment Protection guards those: a fetch to one returns Vercel's
+// SSO page as HTML with a 200, so the caller gets
+//
+//     SyntaxError: Unexpected token '<', "<!DOCTYPE "... is not valid JSON
+//
+// which points nowhere near the actual cause. VERCEL_PROJECT_PRODUCTION_URL is
+// the public production domain (os.kdigital.ai) and is not protected, so it is
+// preferred. NEXT_PUBLIC_SITE_URL still overrides everything.
+//
+// Preview deployments have the same protection on their branch alias. If a
+// preview shows the error above, either turn Deployment Protection off for
+// preview or set NEXT_PUBLIC_SITE_URL for that branch.
 const isServer = typeof window === "undefined";
 
 function selfOrigin(): string {
   const explicit = process.env.NEXT_PUBLIC_SITE_URL?.trim();
   if (explicit) return explicit.replace(/\/+$/, "");
+  // The public production domain — not deployment-protected.
+  if (process.env.VERCEL_PROJECT_PRODUCTION_URL) {
+    return `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}`;
+  }
+  // Last resort. Works, but only when protection is off for this deployment.
   if (process.env.VERCEL_URL) return `https://${process.env.VERCEL_URL}`;
   return `http://localhost:${process.env.PORT ?? 3000}`;
 }
